@@ -27,11 +27,35 @@ export function dispatchableSet(world: WorldSnapshot): Ticket[] {
 }
 
 /**
+ * Orphaned agent claim: an open ticket carrying the claim marker but with no
+ * open agent PR — leftover from a crashed run. (No live-Worker check yet:
+ * the stateless Orchestrator has no Workers at Tick start until spawning
+ * lands with a later ticket.) Released back to unassigned; it rejoins the
+ * dispatchable set on the next Tick's recomputed snapshot.
+ */
+function isOrphanedClaim(ticket: Ticket, world: WorldSnapshot): boolean {
+  return (
+    ticket.state === "open" &&
+    ticket.assignees.length > 0 &&
+    ticket.hasAgentClaim &&
+    !world.openAgentPrTickets.includes(ticket.number)
+  );
+}
+
+/**
  * The plan phase: a pure function from a world snapshot to the Actions now
- * due. Deterministic — lowest ticket numbers claim first.
+ * due. Deterministic — releases first (recovery before new work), then
+ * lowest ticket numbers claim first.
  */
 export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
-  return dispatchableSet(world)
+  const releases: Action[] = world.tickets
+    .filter((ticket) => isOrphanedClaim(ticket, world))
+    .sort((a, b) => a.number - b.number)
+    .map((ticket) => ({ type: "release", ticket: ticket.number, assignees: ticket.assignees }));
+
+  const claims: Action[] = dispatchableSet(world)
     .slice(0, Math.max(0, config.maxWorkers))
     .map((ticket) => ({ type: "claim", ticket: ticket.number }));
+
+  return [...releases, ...claims];
 }

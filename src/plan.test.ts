@@ -9,12 +9,13 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
     assignees: [],
     labels: ["ready-for-agent"],
     openBlockers: 0,
+    hasAgentClaim: false,
     ...overrides,
   };
 }
 
-function world(tickets: Ticket[]): WorldSnapshot {
-  return { tickets };
+function world(tickets: Ticket[], openAgentPrTickets: number[] = []): WorldSnapshot {
+  return { tickets, openAgentPrTickets };
 }
 
 describe("plan", () => {
@@ -65,6 +66,62 @@ describe("plan", () => {
     );
 
     expect(actions).toEqual([]);
+  });
+
+  it("releases an orphaned agent claim: assigned with marker, no open agent PR", () => {
+    const actions = plan(
+      world([ticket({ number: 5, assignees: ["operator"], hasAgentClaim: true })]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([{ type: "release", ticket: 5, assignees: ["operator"] }]);
+  });
+
+  it("keeps an agent claim whose ticket has an open agent PR", () => {
+    const actions = plan(
+      world(
+        [ticket({ number: 5, assignees: ["operator"], hasAgentClaim: true })],
+        [5],
+      ),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("never touches a human claim: assigned without the marker comment", () => {
+    const actions = plan(
+      world([ticket({ number: 5, assignees: ["some-human"] })]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("does not release a closed ticket that still carries the marker", () => {
+    const actions = plan(
+      world([
+        ticket({ number: 5, state: "closed", assignees: ["operator"], hasAgentClaim: true }),
+      ]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("plans releases before claims, and does not claim a just-released ticket this tick", () => {
+    const actions = plan(
+      world([
+        ticket({ number: 9 }),
+        ticket({ number: 4, assignees: ["operator"], hasAgentClaim: true }),
+      ]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([
+      { type: "release", ticket: 4, assignees: ["operator"] },
+      { type: "claim", ticket: 9 },
+    ]);
   });
 
   it("caps claims at maxWorkers, lowest ticket numbers first", () => {

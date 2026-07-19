@@ -1,16 +1,18 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
+import { act } from "./act.js";
 import { ConfigError, loadConfigFile, resolveConfig, type Flags } from "./config.js";
 import { plan } from "./plan.js";
 import { renderPlan } from "./render.js";
 import { readScope } from "./tracker.js";
 
-const USAGE = `Usage: border-collie tick --dry-run [options]
+const USAGE = `Usage: border-collie tick [options]
 
-Runs one Tick against the target repo in the current working directory.
+Runs one Tick against the target repo in the current working directory:
+release orphaned agent claims, then claim dispatchable tickets (assign + marker comment).
 
 Options:
-  --dry-run            print the dispatch plan without writing anything (required for now)
+  --dry-run            print the dispatch plan without writing anything
   --parent <n>         scope: sub-issues of parent issue #n (overrides config file)
   --all                scope: every agent-ready issue in the repo (explicit opt-in)
   --max-workers <n>    cap on planned claims (default 3, overrides config file)
@@ -47,13 +49,6 @@ async function main(argv: string[]): Promise<number> {
     console.error(USAGE);
     return 1;
   }
-  if (!values["dry-run"]) {
-    console.error(
-      "tick without --dry-run is not implemented yet (claiming lands with issue #3). Re-run with --dry-run.",
-    );
-    return 1;
-  }
-
   const flags: Flags = {};
   const parent = parseIntFlag(values.parent, "--parent");
   if (parent !== undefined) flags.parent = parent;
@@ -63,9 +58,11 @@ async function main(argv: string[]): Promise<number> {
 
   const config = resolveConfig(loadConfigFile(process.cwd()), flags);
 
+  const dryRun = values["dry-run"];
   const world = await readScope(config.scope);
   const actions = plan(world, { maxWorkers: config.maxWorkers });
-  console.log(renderPlan(config, world, actions));
+  console.log(renderPlan(config, world, actions, { dryRun }));
+  if (!dryRun) await act(actions);
   return 0;
 }
 

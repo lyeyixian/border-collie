@@ -2,11 +2,12 @@ import type { ResolvedConfig } from "./config.js";
 import { dispatchableSet } from "./plan.js";
 import type { Action, WorldSnapshot } from "./types.js";
 
-/** Render the dry-run dispatch plan as human-readable lines. Pure. */
+/** Render the dispatch plan as human-readable lines. Pure. */
 export function renderPlan(
   { scope, maxWorkers }: ResolvedConfig,
   world: WorldSnapshot,
   actions: Action[],
+  { dryRun }: { dryRun: boolean },
 ): string {
   const lines: string[] = [];
   const open = world.tickets.filter((t) => t.state === "open").length;
@@ -29,10 +30,18 @@ export function renderPlan(
   } else {
     lines.push(`Plan (max_workers=${maxWorkers}):`);
     for (const action of actions) {
-      lines.push(`  claim #${action.ticket} — ${titles.get(action.ticket) ?? ""}`);
+      const title = titles.get(action.ticket) ?? "";
+      switch (action.type) {
+        case "claim":
+          lines.push(`  claim #${action.ticket} — ${title}`);
+          break;
+        case "release":
+          lines.push(`  release #${action.ticket} — ${title} (orphaned agent claim)`);
+          break;
+      }
     }
   }
 
-  lines.push("Dry run: no writes performed.");
+  if (dryRun) lines.push("Dry run: no writes performed.");
   return lines.join("\n");
 }

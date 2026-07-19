@@ -17,7 +17,7 @@ A ticket that is open, unassigned, labelled `ready-for-agent`, and whose blocker
 _Avoid_: frontier (the upstream mattpocock-skills docs use "frontier" for this same set), ready, grabbable
 
 **Claim**:
-Assigning a ticket to the working identity *before* any work begins, plus a marker comment identifying the claim as border-collie's. An assignee without the marker comment is a human claim — hands off.
+Assigning a ticket to the working identity *before* any work begins, plus a marker comment identifying the claim as border-collie's. An assignee without the marker comment is a human claim — hands off. Releasing a claim appends a release marker comment (never deletes); the latest marker comment decides whether an assignment is agent-held.
 _Avoid_: lock, lease
 
 **Worker**:
