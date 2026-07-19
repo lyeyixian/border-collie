@@ -1,0 +1,5 @@
+# GitHub-native, single tracker — no adapter layer
+
+border-collie targets GitHub Issues + GitHub PRs exclusively, via the `gh` CLI. We deliberately do not abstract over trackers the way `/setup-matt-pocock-skills`, sortie, and Symphony do — because blocking semantics are the least portable part of any tracker, and both tracker-agnostic reference projects ended up *not* gating dispatch on dependencies at all. The dispatchable set is border-collie's reason to exist, and it leans directly on GitHub-specific machinery: native issue dependencies (`blocked_by`), assignee-as-claim, `ready-for-agent`/`ready-for-human` labels, `Closes #N` auto-close on merge, draft→ready PR transitions, server-computed mergeability, and `gh pr update-branch`.
+
+The hedge: all tracker operations live behind one seam — a single module (dispatchable-set query, claim/release, PR operations) with the `gh` invocations hidden inside — so a future port is "reimplement one module," not "unpick `gh` calls from the loop." No adapter registry, no config switch, no second implementation until a real second tracker demands one.

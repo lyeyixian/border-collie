@@ -1,0 +1,5 @@
+# TypeScript for v1 (Go considered and deferred)
+
+The orchestrator is TypeScript on Node, minimal dependencies. Go was seriously considered — it's the conventional CLI choice (gh and sortie are Go) — but its classic advantages (static-binary distribution, startup latency) don't apply to a resident loop run by its owner from its own repo. The deciding factor: **merging stays human, so the maintainer's code-review fluency is the system's safety gate**, and the maintainer is more proficient reviewing TS than Go. Reviewing fleet-written code in a language you're still learning inverts the review relationship ("looks plausible, approve" is the exact failure mode human-merge exists to prevent). TS also fits the dogfooding flow (`/tdd`/vitest) and models the ticket lifecycle and failure taxonomy well with discriminated unions.
+
+A Go port remains attractive later as a deliberate learning exercise — a settled design with a working reference implementation is a good way to learn a language, and ADR 0002's tracker seam keeps the port bounded.
