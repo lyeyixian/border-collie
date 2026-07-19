@@ -19,10 +19,13 @@ function world(tickets: Ticket[], openAgentPrTickets: number[] = []): WorldSnaps
 }
 
 describe("plan", () => {
-  it("claims a dispatchable ticket", () => {
+  it("claims a dispatchable ticket and spawns a Worker for it", () => {
     const actions = plan(world([ticket({ number: 7 })]), { maxWorkers: 3 });
 
-    expect(actions).toEqual([{ type: "claim", ticket: 7 }]);
+    expect(actions).toEqual([
+      { type: "claim", ticket: 7 },
+      { type: "spawn", ticket: 7 },
+    ]);
   });
 
   it("produces no actions for an empty world", () => {
@@ -121,10 +124,11 @@ describe("plan", () => {
     expect(actions).toEqual([
       { type: "release", ticket: 4, assignees: ["operator"] },
       { type: "claim", ticket: 9 },
+      { type: "spawn", ticket: 9 },
     ]);
   });
 
-  it("caps claims at maxWorkers, lowest ticket numbers first", () => {
+  it("caps claims at maxWorkers, lowest ticket numbers first, each paired with its spawn", () => {
     const actions = plan(
       world([
         ticket({ number: 9 }),
@@ -138,8 +142,11 @@ describe("plan", () => {
 
     expect(actions).toEqual([
       { type: "claim", ticket: 2 },
+      { type: "spawn", ticket: 2 },
       { type: "claim", ticket: 4 },
+      { type: "spawn", ticket: 4 },
       { type: "claim", ticket: 6 },
+      { type: "spawn", ticket: 6 },
     ]);
   });
 
@@ -155,7 +162,9 @@ describe("plan", () => {
 
     expect(actions).toEqual([
       { type: "claim", ticket: 3 },
+      { type: "spawn", ticket: 3 },
       { type: "claim", ticket: 8 },
+      { type: "spawn", ticket: 8 },
     ]);
   });
 });

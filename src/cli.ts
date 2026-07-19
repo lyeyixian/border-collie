@@ -5,20 +5,26 @@ import { ConfigError, loadConfigFile, resolveConfig, type Flags } from "./config
 import { plan } from "./plan.js";
 import { renderPlan } from "./render.js";
 import { readScope } from "./tracker.js";
+import { dispatchWorker } from "./worker.js";
 
 const USAGE = `Usage: border-collie tick [options]
 
 Runs one Tick against the target repo in the current working directory:
-release orphaned agent claims, then claim dispatchable tickets (assign + marker comment).
+release orphaned agent claims, claim dispatchable tickets (assign + marker
+comment), then dispatch one Worker per claim — an isolated worktree on an
+agent branch, running headless claude against exactly that ticket — and
+report each Worker's outcome.
 
 Options:
   --dry-run            print the dispatch plan without writing anything
   --parent <n>         scope: sub-issues of parent issue #n (overrides config file)
   --all                scope: every agent-ready issue in the repo (explicit opt-in)
   --max-workers <n>    cap on planned claims (default 3, overrides config file)
+  --model <name>       model Workers run on (default sonnet, overrides config file)
   -h, --help           show this help
 
-Config: border-collie.json at the target repo root, e.g. {"parent": 1, "max_workers": 3}`;
+Config: border-collie.json at the target repo root,
+e.g. {"parent": 1, "max_workers": 3, "worker_model": "sonnet"}`;
 
 function parseIntFlag(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
@@ -37,6 +43,7 @@ async function main(argv: string[]): Promise<number> {
       parent: { type: "string" },
       all: { type: "boolean", default: false },
       "max-workers": { type: "string" },
+      model: { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   });
@@ -55,6 +62,7 @@ async function main(argv: string[]): Promise<number> {
   const maxWorkers = parseIntFlag(values["max-workers"], "--max-workers");
   if (maxWorkers !== undefined) flags.maxWorkers = maxWorkers;
   if (values.all) flags.all = true;
+  if (values.model !== undefined) flags.model = values.model;
 
   const config = resolveConfig(loadConfigFile(process.cwd()), flags);
 
@@ -62,7 +70,9 @@ async function main(argv: string[]): Promise<number> {
   const world = await readScope(config.scope);
   const actions = plan(world, { maxWorkers: config.maxWorkers });
   console.log(renderPlan(config, world, actions, { dryRun }));
-  if (!dryRun) await act(actions);
+  if (!dryRun) {
+    await act(actions, (ticket) => dispatchWorker(ticket, { model: config.model }));
+  }
   return 0;
 }
 

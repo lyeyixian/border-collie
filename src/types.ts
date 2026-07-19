@@ -69,4 +69,5 @@ export interface PlanConfig {
  */
 export type Action =
   | { type: "claim"; ticket: number }
-  | { type: "release"; ticket: number; assignees: string[] };
+  | { type: "release"; ticket: number; assignees: string[] }
+  | { type: "spawn"; ticket: number };

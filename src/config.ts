@@ -5,6 +5,7 @@ import { join } from "node:path";
 export const CONFIG_FILE = "border-collie.json";
 
 const DEFAULT_MAX_WORKERS = 3;
+const DEFAULT_WORKER_MODEL = "sonnet";
 
 export class ConfigError extends Error {}
 
@@ -13,6 +14,7 @@ export interface Flags {
   parent?: number;
   maxWorkers?: number;
   all?: boolean;
+  model?: string;
 }
 
 export type Scope = { kind: "parent"; parent: number } | { kind: "all" };
@@ -20,11 +22,20 @@ export type Scope = { kind: "parent"; parent: number } | { kind: "all" };
 export interface ResolvedConfig {
   scope: Scope;
   maxWorkers: number;
+  /** Model Workers run on (`claude --model`). */
+  model: string;
 }
 
 function asPositiveInt(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new ConfigError(`${name} must be a positive integer, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+function asNonEmptyString(value: unknown, name: string): string {
+  if (typeof value !== "string" || value === "") {
+    throw new ConfigError(`${name} must be a non-empty string, got ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -44,12 +55,16 @@ export function resolveConfig(fileConfig: unknown, flags: Flags): ResolvedConfig
     flags.maxWorkers ?? file["max_workers"] ?? DEFAULT_MAX_WORKERS,
     "max_workers",
   );
+  const model = asNonEmptyString(
+    flags.model ?? file["worker_model"] ?? DEFAULT_WORKER_MODEL,
+    "worker_model",
+  );
 
   if (flags.all) {
     if (flags.parent !== undefined) {
       throw new ConfigError("--all and --parent are mutually exclusive");
     }
-    return { scope: { kind: "all" }, maxWorkers };
+    return { scope: { kind: "all" }, maxWorkers, model };
   }
 
   const parent = flags.parent ?? file["parent"];
@@ -58,7 +73,7 @@ export function resolveConfig(fileConfig: unknown, flags: Flags): ResolvedConfig
       `no scope: set "parent" in ${CONFIG_FILE} or pass --parent <n> (repo-wide scope requires the explicit --all flag)`,
     );
   }
-  return { scope: { kind: "parent", parent: asPositiveInt(parent, "parent") }, maxWorkers };
+  return { scope: { kind: "parent", parent: asPositiveInt(parent, "parent") }, maxWorkers, model };
 }
 
 /** Read the config file from the target repo root; absent file is fine. */

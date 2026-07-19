@@ -8,6 +8,7 @@ describe("resolveConfig", () => {
     expect(resolved).toEqual({
       scope: { kind: "parent", parent: 1 },
       maxWorkers: 5,
+      model: "sonnet",
     });
   });
 
@@ -19,13 +20,14 @@ describe("resolveConfig", () => {
 
   it("lets flags override the config file", () => {
     const resolved = resolveConfig(
-      { parent: 1, max_workers: 5 },
-      { parent: 4, maxWorkers: 2 },
+      { parent: 1, max_workers: 5, worker_model: "haiku" },
+      { parent: 4, maxWorkers: 2, model: "opus" },
     );
 
     expect(resolved).toEqual({
       scope: { kind: "parent", parent: 4 },
       maxWorkers: 2,
+      model: "opus",
     });
   });
 
@@ -35,13 +37,25 @@ describe("resolveConfig", () => {
     expect(resolved).toEqual({
       scope: { kind: "parent", parent: 9 },
       maxWorkers: 3,
+      model: "sonnet",
     });
   });
 
   it("requires an explicit all flag for repo-wide scope", () => {
     const resolved = resolveConfig({ max_workers: 2 }, { all: true });
 
-    expect(resolved).toEqual({ scope: { kind: "all" }, maxWorkers: 2 });
+    expect(resolved).toEqual({ scope: { kind: "all" }, maxWorkers: 2, model: "sonnet" });
+  });
+
+  it("takes the worker model from the config file", () => {
+    const resolved = resolveConfig({ parent: 1, worker_model: "opus" }, {});
+
+    expect(resolved.model).toBe("opus");
+  });
+
+  it("rejects a worker model that is not a non-empty string", () => {
+    expect(() => resolveConfig({ parent: 1, worker_model: "" }, {})).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1, worker_model: 4 }, {})).toThrow(ConfigError);
   });
 
   it("rejects a run with neither a parent nor the all flag", () => {

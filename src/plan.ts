@@ -45,7 +45,8 @@ function isOrphanedClaim(ticket: Ticket, world: WorldSnapshot): boolean {
 /**
  * The plan phase: a pure function from a world snapshot to the Actions now
  * due. Deterministic — releases first (recovery before new work), then
- * lowest ticket numbers claim first.
+ * lowest ticket numbers claim first, each claim paired with the spawn of
+ * its Worker.
  */
 export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   const releases: Action[] = world.tickets
@@ -53,9 +54,12 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
     .sort((a, b) => a.number - b.number)
     .map((ticket) => ({ type: "release", ticket: ticket.number, assignees: ticket.assignees }));
 
-  const claims: Action[] = dispatchableSet(world)
+  const dispatches: Action[] = dispatchableSet(world)
     .slice(0, Math.max(0, config.maxWorkers))
-    .map((ticket) => ({ type: "claim", ticket: ticket.number }));
+    .flatMap((ticket) => [
+      { type: "claim", ticket: ticket.number },
+      { type: "spawn", ticket: ticket.number },
+    ]);
 
-  return [...releases, ...claims];
+  return [...releases, ...dispatches];
 }

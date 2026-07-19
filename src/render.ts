@@ -4,7 +4,7 @@ import type { Action, WorldSnapshot } from "./types.js";
 
 /** Render the dispatch plan as human-readable lines. Pure. */
 export function renderPlan(
-  { scope, maxWorkers }: ResolvedConfig,
+  { scope, maxWorkers, model }: ResolvedConfig,
   world: WorldSnapshot,
   actions: Action[],
   { dryRun }: { dryRun: boolean },
@@ -37,6 +37,9 @@ export function renderPlan(
           break;
         case "release":
           lines.push(`  release #${action.ticket} — ${title} (orphaned agent claim)`);
+          break;
+        case "spawn":
+          lines.push(`  spawn Worker for #${action.ticket} — ${title} (model ${model})`);
           break;
       }
     }
