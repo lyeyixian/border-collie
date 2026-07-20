@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { claimTicket, readScope, releaseTicket, type Exec } from "./tracker.js";
+import { claimTicket, createDraftPr, readScope, releaseTicket, type Exec } from "./tracker.js";
 import { CLAIM_MARKER, RELEASE_MARKER } from "./types.js";
 
 const issue = (overrides: Record<string, unknown>) => ({
@@ -207,6 +207,37 @@ describe("releaseTicket", () => {
     expect(calls).toEqual([
       ["gh", "issue", "edit", "5", "--remove-assignee", "operator,other"],
       ["gh", "issue", "comment", "5", "--body", expect.stringContaining(RELEASE_MARKER)],
+    ]);
+  });
+});
+
+describe("createDraftPr", () => {
+  it("opens a draft PR from the head branch and resolves with the trimmed URL", async () => {
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      return "https://github.com/o/r/pull/9\n";
+    };
+
+    const url = await createDraftPr(
+      { head: "border-collie/ticket-5", title: "PR opening", body: "A body.\n\nCloses #5" },
+      exec,
+    );
+
+    expect(url).toBe("https://github.com/o/r/pull/9");
+    expect(calls).toEqual([
+      [
+        "gh",
+        "pr",
+        "create",
+        "--draft",
+        "--head",
+        "border-collie/ticket-5",
+        "--title",
+        "PR opening",
+        "--body",
+        "A body.\n\nCloses #5",
+      ],
     ]);
   });
 });

@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import type { Exec } from "./tracker.js";
 import {
+  branchCommitSubjects,
   dispatchWorker,
+  pushAgentBranch,
   workerPrompt,
   type SpawnWorkerProcess,
   type WorkerProcessRequest,
@@ -129,6 +131,7 @@ describe("dispatchWorker", () => {
     expect(outcome).toEqual({
       ticket: 4,
       branch: BRANCH,
+      base: "base-sha",
       transcript: TRANSCRIPT,
       exitCode: 0,
       newCommits: 3,
@@ -179,5 +182,30 @@ describe("dispatchWorker", () => {
     await dispatchWorker(7, { model: "opus" }, exec, spawn);
 
     expect(requests[0]?.args).toContain("opus");
+  });
+});
+
+describe("pushAgentBranch", () => {
+  it("force-pushes the agent branch to origin", async () => {
+    const { exec, calls } = fakeExec();
+
+    await pushAgentBranch(BRANCH, exec);
+
+    expect(calls).toEqual([["git", "push", "--force", "origin", BRANCH]]);
+  });
+});
+
+describe("branchCommitSubjects", () => {
+  it("lists the Attempt's commit subjects oldest first", async () => {
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      return "First commit\nSecond commit\n";
+    };
+
+    const subjects = await branchCommitSubjects("base-sha", BRANCH, exec);
+
+    expect(calls).toEqual([["git", "log", "--format=%s", "--reverse", `base-sha..${BRANCH}`]]);
+    expect(subjects).toEqual(["First commit", "Second commit"]);
   });
 });

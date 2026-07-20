@@ -24,6 +24,8 @@ export interface WorkerOutcome {
   ticket: number;
   /** Agent-prefixed branch the Worker committed to; retained after cleanup. */
   branch: string;
+  /** Commit the branch was cut from; `base..branch` is the Attempt's work. */
+  base: string;
   /** Transcript file path, for post-mortems. */
   transcript: string;
   exitCode: number | null;
@@ -108,6 +110,28 @@ function withGitLock<T>(operation: () => Promise<T>): Promise<T> {
 }
 
 /**
+ * Push an agent branch to origin so a PR can be opened on it. Force, because
+ * `-B` resets the branch each attempt: whatever a crashed run left on the
+ * remote is superseded, never recorded progress (ADR 0001). Only ever called
+ * on agent-prefixed branches.
+ */
+export async function pushAgentBranch(branch: string, exec: Exec = realExec): Promise<void> {
+  await withGitLock(() => exec("git", ["push", "--force", "origin", branch]));
+}
+
+/** Commit subjects of an Attempt's work, oldest first. */
+export async function branchCommitSubjects(
+  base: string,
+  branch: string,
+  exec: Exec = realExec,
+): Promise<string[]> {
+  const stdout = await withGitLock(() =>
+    exec("git", ["log", "--format=%s", "--reverse", `${base}..${branch}`]),
+  );
+  return stdout.split("\n").filter((line) => line.trim() !== "");
+}
+
+/**
  * Dispatch one Worker against one claimed ticket: cut an agent branch in an
  * isolated worktree, run headless claude in it streaming to a transcript,
  * then judge the outcome and remove the worktree (branch retained). `-B` and
@@ -160,6 +184,7 @@ export async function dispatchWorker(
     return {
       ticket,
       branch,
+      base,
       transcript,
       exitCode,
       newCommits,

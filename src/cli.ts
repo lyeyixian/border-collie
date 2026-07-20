@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { act } from "./act.js";
 import { ConfigError, loadConfigFile, resolveConfig, type Flags } from "./config.js";
 import { plan } from "./plan.js";
+import { openPrForOutcome } from "./pr.js";
 import { renderPlan } from "./render.js";
 import { readScope } from "./tracker.js";
 import { dispatchWorker } from "./worker.js";
@@ -13,7 +14,9 @@ Runs one Tick against the target repo in the current working directory:
 release orphaned agent claims, claim dispatchable tickets (assign + marker
 comment), then dispatch one Worker per claim — an isolated worktree on an
 agent branch, running headless claude against exactly that ticket — and
-report each Worker's outcome.
+report each Worker's outcome. A successful Worker's branch is pushed and
+opened as a draft PR that closes its ticket on merge, its body taken from
+the Worker's final message (mechanical fallback: ticket + commit subjects).
 
 Options:
   --dry-run            print the dispatch plan without writing anything
@@ -71,7 +74,12 @@ async function main(argv: string[]): Promise<number> {
   const actions = plan(world, { maxWorkers: config.maxWorkers });
   console.log(renderPlan(config, world, actions, { dryRun }));
   if (!dryRun) {
-    await act(actions, (ticket) => dispatchWorker(ticket, { model: config.model }));
+    const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
+    await act(
+      actions,
+      (ticket) => dispatchWorker(ticket, { model: config.model }),
+      (outcome) => openPrForOutcome(outcome, titles.get(outcome.ticket) ?? `Ticket #${outcome.ticket}`),
+    );
   }
   return 0;
 }

@@ -147,3 +147,25 @@ export async function releaseTicket(
   await exec("gh", ["issue", "edit", String(ticket), "--remove-assignee", assignees.join(",")]);
   await exec("gh", ["issue", "comment", String(ticket), "--body", RELEASE_COMMENT]);
 }
+
+/**
+ * Act phase: open a draft PR from an already-pushed head branch against the
+ * repo's default base. Resolves with the PR URL `gh` prints.
+ */
+export async function createDraftPr(
+  request: { head: string; title: string; body: string },
+  exec: Exec = realExec,
+): Promise<string> {
+  const stdout = await exec("gh", [
+    "pr",
+    "create",
+    "--draft",
+    "--head",
+    request.head,
+    "--title",
+    request.title,
+    "--body",
+    request.body,
+  ]);
+  return stdout.trim();
+}
