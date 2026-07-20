@@ -66,7 +66,9 @@ describe("dispatchWorker", () => {
     expect(calls).toEqual([
       ["git", "worktree", "remove", "--force", WORKTREE],
       ["git", "worktree", "prune"],
-      ["git", "worktree", "add", WORKTREE, "-B", BRANCH],
+      ["git", "fetch", "origin"],
+      ["git", "remote", "set-head", "origin", "--auto"],
+      ["git", "worktree", "add", WORKTREE, "-B", BRANCH, "origin/HEAD"],
       ["git", "rev-parse", BRANCH],
       ["git", "rev-list", "--count", `base-sha..${BRANCH}`],
       ["git", "worktree", "remove", "--force", WORKTREE],
@@ -109,16 +111,23 @@ describe("dispatchWorker", () => {
       dispatchWorker(2, { model: "sonnet" }, exec, spawn),
     ]);
 
-    expect(calls.slice(0, 8)).toEqual([
-      ["git", "worktree", "remove", "--force", ".border-collie/worktrees/ticket-1"],
+    const setupBlock = (ticket: number) => [
+      ["git", "worktree", "remove", "--force", `.border-collie/worktrees/ticket-${ticket}`],
       ["git", "worktree", "prune"],
-      ["git", "worktree", "add", ".border-collie/worktrees/ticket-1", "-B", "border-collie/ticket-1"],
-      ["git", "rev-parse", "border-collie/ticket-1"],
-      ["git", "worktree", "remove", "--force", ".border-collie/worktrees/ticket-2"],
-      ["git", "worktree", "prune"],
-      ["git", "worktree", "add", ".border-collie/worktrees/ticket-2", "-B", "border-collie/ticket-2"],
-      ["git", "rev-parse", "border-collie/ticket-2"],
-    ]);
+      ["git", "fetch", "origin"],
+      ["git", "remote", "set-head", "origin", "--auto"],
+      [
+        "git",
+        "worktree",
+        "add",
+        `.border-collie/worktrees/ticket-${ticket}`,
+        "-B",
+        `border-collie/ticket-${ticket}`,
+        "origin/HEAD",
+      ],
+      ["git", "rev-parse", `border-collie/ticket-${ticket}`],
+    ];
+    expect(calls.slice(0, 12)).toEqual([...setupBlock(1), ...setupBlock(2)]);
     expect(outcomes.map((o) => o.ok)).toEqual([true, true]);
   });
 
