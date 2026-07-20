@@ -35,6 +35,7 @@ function recordingOpenPr(): { openPr: OpenPr; opened: number[] } {
 function outcome(ticket: number, overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
   return {
     ticket,
+    attempt: 1,
     branch: `border-collie/ticket-${ticket}`,
     base: "base-sha",
     transcript: `.border-collie/transcripts/ticket-${ticket}.jsonl`,
@@ -144,7 +145,7 @@ describe("act", () => {
   it("releases a failed attempt with its forensic record after Workers settle", async () => {
     const { exec, calls } = recordingExec();
     const dispatch: DispatchWorker = async () =>
-      outcome(7, { exitCode: null, failure: "stall", ok: false });
+      outcome(7, { attempt: 2, exitCode: null, failure: "stall", ok: false });
 
     await act([{ type: "spawn", ticket: 7, attempt: 2 }], dispatch, recordingOpenPr().openPr, exec, () => {});
 

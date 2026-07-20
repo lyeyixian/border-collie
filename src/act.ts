@@ -18,21 +18,20 @@ export type DispatchWorker = (ticket: number, attempt: number) => Promise<Worker
 /** Open the draft PR for a successful Attempt; resolves with the PR URL. */
 export type OpenPr = (outcome: WorkerOutcome) => Promise<string>;
 
-/** What one spawn action came to: the Attempt, its rung, and its PR when one was opened. */
+/** What one spawn action came to: the Attempt, and its PR when one was opened. */
 interface SpawnResult {
   outcome: WorkerOutcome;
-  attempt: number;
   prUrl?: string;
   /** PR opening failed after a successful Attempt; reported, then rethrown. */
   prFailure?: unknown;
 }
 
-function describeOutcome({ outcome, attempt }: SpawnResult): string {
+function describeOutcome(outcome: WorkerOutcome): string {
   const commits = `${outcome.newCommits} new commit${outcome.newCommits === 1 ? "" : "s"}`;
   const where = `on ${outcome.branch} (transcript: ${outcome.transcript})`;
   return outcome.ok
     ? `Worker for #${outcome.ticket} succeeded: ${commits} ${where}`
-    : `Worker for #${outcome.ticket} failed attempt ${attempt} (${outcome.failure}): exit ${outcome.exitCode}, ${commits} ${where}`;
+    : `Worker for #${outcome.ticket} failed attempt ${outcome.attempt} (${outcome.failure}): exit ${outcome.exitCode}, ${commits} ${where}`;
 }
 
 /**
@@ -71,35 +70,33 @@ export async function act(
         await escalateTicket(action.ticket, action.failures, exec);
         log(`escalated #${action.ticket} to ready-for-human (attempts exhausted)`);
         break;
-      case "spawn": {
-        const attempt = action.attempt;
+      case "spawn":
         workers.push(
-          dispatch(action.ticket, attempt).then(async (outcome): Promise<SpawnResult> => {
-            if (!outcome.ok) return { outcome, attempt };
+          dispatch(action.ticket, action.attempt).then(async (outcome): Promise<SpawnResult> => {
+            if (!outcome.ok) return { outcome };
             try {
-              return { outcome, attempt, prUrl: await openPr(outcome) };
+              return { outcome, prUrl: await openPr(outcome) };
             } catch (error) {
-              return { outcome, attempt, prFailure: error };
+              return { outcome, prFailure: error };
             }
           }),
         );
-        log(`spawned Worker for #${action.ticket} (attempt ${attempt})`);
+        log(`spawned Worker for #${action.ticket} (attempt ${action.attempt})`);
         break;
-      }
     }
   }
 
   const settled = await Promise.allSettled(workers);
   for (const result of settled) {
     if (result.status !== "fulfilled") continue;
-    const { outcome, attempt, prUrl } = result.value;
-    log(describeOutcome(result.value));
+    const { outcome, prUrl } = result.value;
+    log(describeOutcome(outcome));
     if (prUrl !== undefined) log(`opened draft PR for #${outcome.ticket}: ${prUrl}`);
     if (outcome.failure) {
       await releaseFailedTicket(
         outcome.ticket,
         {
-          attempt,
+          attempt: outcome.attempt,
           reason: outcome.failure,
           model: outcome.model,
           branch: outcome.branch,
@@ -107,7 +104,9 @@ export async function act(
         },
         exec,
       );
-      log(`released #${outcome.ticket} with the attempt record (failed attempt ${attempt})`);
+      log(
+        `released #${outcome.ticket} with the attempt record (failed attempt ${outcome.attempt})`,
+      );
     }
   }
   const rejected = settled.find((result) => result.status === "rejected");

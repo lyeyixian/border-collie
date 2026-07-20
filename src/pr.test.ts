@@ -107,6 +107,7 @@ describe("ensureCloseKeyword", () => {
 
 const OUTCOME: WorkerOutcome = {
   ticket: 5,
+  attempt: 1,
   branch: "border-collie/ticket-5",
   base: "base-sha",
   transcript: ".border-collie/transcripts/ticket-5.jsonl",

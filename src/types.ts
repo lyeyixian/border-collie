@@ -54,7 +54,11 @@ export function attemptMarker(failure: AttemptFailure): string {
   return `${ATTEMPT_MARKER_OPEN}${JSON.stringify(failure)}${ATTEMPT_MARKER_CLOSE}`;
 }
 
-/** The attempt record in a comment body, or undefined when absent/mangled. */
+/**
+ * The attempt record in a comment body, or undefined when absent or mangled.
+ * Shape-checked: comment bodies are world input, edited or truncated by
+ * anyone with tracker access.
+ */
 export function parseAttemptMarker(body: string): AttemptFailure | undefined {
   const start = body.indexOf(ATTEMPT_MARKER_OPEN);
   if (start === -1) return undefined;
@@ -62,7 +66,15 @@ export function parseAttemptMarker(body: string): AttemptFailure | undefined {
   const end = rest.indexOf(ATTEMPT_MARKER_CLOSE);
   if (end === -1) return undefined;
   try {
-    return JSON.parse(rest.slice(0, end)) as AttemptFailure;
+    const parsed = JSON.parse(rest.slice(0, end)) as Partial<AttemptFailure>;
+    const wellFormed =
+      typeof parsed.attempt === "number" &&
+      typeof parsed.reason === "string" &&
+      parsed.reason in FAILURE_DESCRIPTIONS &&
+      typeof parsed.model === "string" &&
+      typeof parsed.branch === "string" &&
+      typeof parsed.transcript === "string";
+    return wellFormed ? (parsed as AttemptFailure) : undefined;
   } catch {
     return undefined;
   }

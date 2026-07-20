@@ -167,19 +167,23 @@ export async function claimTicket(ticket: number, exec: Exec = realExec): Promis
 }
 
 /**
- * Act phase: release an orphaned claim back to unassigned. Unassign first —
- * a crash in between leaves the ticket unassigned with a stale claim marker,
- * which the next Tick claims afresh (self-healing). The release marker then
- * neutralizes the claim marker so a later human assignment is never misread
- * as agent-held.
+ * The shared release shape: unassign first — a crash in between leaves the
+ * ticket unassigned with a stale claim marker, which the next Tick claims
+ * afresh (self-healing). The release marker then neutralizes the claim
+ * marker so a later human assignment is never misread as agent-held.
  */
+async function release(ticket: number, assignees: string, body: string, exec: Exec): Promise<void> {
+  await exec("gh", ["issue", "edit", String(ticket), "--remove-assignee", assignees]);
+  await exec("gh", ["issue", "comment", String(ticket), "--body", body]);
+}
+
+/** Act phase: release an orphaned claim back to unassigned. */
 export async function releaseTicket(
   ticket: number,
   assignees: string[],
   exec: Exec = realExec,
 ): Promise<void> {
-  await exec("gh", ["issue", "edit", String(ticket), "--remove-assignee", assignees.join(",")]);
-  await exec("gh", ["issue", "comment", String(ticket), "--body", RELEASE_COMMENT]);
+  await release(ticket, assignees.join(","), RELEASE_COMMENT, exec);
 }
 
 /**
@@ -208,8 +212,7 @@ export async function createDraftPr(
  * Act phase: release a ticket whose Attempt just failed, embedding the
  * attempt's forensic record in the release comment — the tracker is the only
  * state store, so this comment IS the attempt history that the next Tick's
- * retry ladder and a later Escalation read back. Same crash-safe ordering as
- * releaseTicket: unassign first.
+ * retry ladder and a later Escalation read back.
  */
 export async function releaseFailedTicket(
   ticket: number,
@@ -222,8 +225,7 @@ export async function releaseFailedTicket(
     `🐕 Attempt ${failure.attempt} failed: ${FAILURE_DESCRIPTIONS[failure.reason]} (model ${failure.model}).`,
     `Worktree torn down; branch \`${failure.branch}\` abandoned; transcript at \`${failure.transcript}\`.`,
   ].join("\n");
-  await exec("gh", ["issue", "edit", String(ticket), "--remove-assignee", "@me"]);
-  await exec("gh", ["issue", "comment", String(ticket), "--body", body]);
+  await release(ticket, "@me", body, exec);
 }
 
 /**
@@ -231,7 +233,9 @@ export async function releaseFailedTicket(
  * comment first, then the label swap that removes it from the dispatchable
  * set for good. A crash in between re-escalates next Tick (worst case a
  * duplicate comment); the swap first would strand the forensics unwritten
- * with no trigger left to write them.
+ * with no trigger left to write them. The glossary's "unassign" is already
+ * done: only unassigned tickets escalate (every failure or orphan release
+ * unassigns first), so no assignee write belongs here.
  */
 export async function escalateTicket(
   ticket: number,

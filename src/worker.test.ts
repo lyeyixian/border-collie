@@ -16,10 +16,10 @@ import {
 } from "./worker.js";
 
 const WORKTREE = ".border-collie/worktrees/ticket-4";
-const BRANCH = "border-collie/ticket-4";
-const TRANSCRIPT = ".border-collie/transcripts/ticket-4.jsonl";
+const BRANCH = "border-collie/ticket-4-attempt-1";
+const TRANSCRIPT = ".border-collie/transcripts/ticket-4-attempt-1.jsonl";
 
-const CONFIG: WorkerConfig = { model: "sonnet", timeoutMs: 60_000, stallMs: 30_000 };
+const CONFIG: WorkerConfig = { model: "sonnet", attempt: 1, timeoutMs: 60_000, stallMs: 30_000 };
 
 /**
  * Fake the git side of the subprocess seam: reads are answered from fixtures,
@@ -98,7 +98,7 @@ describe("dispatchWorker", () => {
         ],
         cwd: WORKTREE,
         transcriptPath: TRANSCRIPT,
-        stderrPath: ".border-collie/transcripts/ticket-4.stderr.log",
+        stderrPath: ".border-collie/transcripts/ticket-4-attempt-1.stderr.log",
         timeoutMs: 60_000,
         stallMs: 30_000,
       },
@@ -133,10 +133,10 @@ describe("dispatchWorker", () => {
         "add",
         `.border-collie/worktrees/ticket-${ticket}`,
         "-B",
-        `border-collie/ticket-${ticket}`,
+        `border-collie/ticket-${ticket}-attempt-1`,
         "origin/HEAD",
       ],
-      ["git", "rev-parse", `border-collie/ticket-${ticket}`],
+      ["git", "rev-parse", `border-collie/ticket-${ticket}-attempt-1`],
     ];
     expect(calls.slice(0, 10)).toEqual([...setupBlock(1), ...setupBlock(2)]);
     expect(outcomes.map((o) => o.ok)).toEqual([true, true]);
@@ -150,6 +150,7 @@ describe("dispatchWorker", () => {
 
     expect(outcome).toEqual({
       ticket: 4,
+      attempt: 1,
       branch: BRANCH,
       base: "base-sha",
       transcript: TRANSCRIPT,
@@ -222,6 +223,16 @@ describe("dispatchWorker", () => {
     await dispatchWorker(7, { ...CONFIG, model: "opus" }, exec, spawn);
 
     expect(requests[0]?.args).toContain("opus");
+  });
+
+  it("namespaces branch and transcript per attempt, so a retry never clobbers prior evidence", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(1);
+
+    const outcome = await dispatchWorker(7, { ...CONFIG, attempt: 2 }, exec, spawn);
+
+    expect(outcome.branch).toBe("border-collie/ticket-7-attempt-2");
+    expect(outcome.transcript).toBe(".border-collie/transcripts/ticket-7-attempt-2.jsonl");
   });
 });
 

@@ -99,6 +99,11 @@ export function resolveConfig(fileConfig: unknown, flags: Flags): ResolvedConfig
   return { scope: { kind: "parent", parent: asPositiveInt(parent, "parent") }, ...shared };
 }
 
+/** The retry ladder's model binding: attempt two runs the stronger retry model. */
+export function modelForAttempt(config: ResolvedConfig, attempt: number): string {
+  return attempt >= 2 ? config.retryModel : config.model;
+}
+
 /** Read the config file from the target repo root; absent file is fine. */
 export function loadConfigFile(repoDir: string): unknown {
   let raw: string;

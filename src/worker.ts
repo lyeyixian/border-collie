@@ -17,6 +17,12 @@ export const RUN_DIR = ".border-collie";
 export interface WorkerConfig {
   /** Model the Worker runs on (`claude --model`). */
   model: string;
+  /**
+   * Which Attempt this dispatch is (1-based). Namespaces the branch and
+   * transcript so a retry never clobbers the prior attempt's evidence — an
+   * Escalation must be able to cite every attempt's forensics.
+   */
+  attempt: number;
   /** Wall-clock ceiling for the whole Worker process. */
   timeoutMs: number;
   /** Max quiet time between output events before the Worker counts as stalled. */
@@ -26,6 +32,8 @@ export interface WorkerConfig {
 /** One finished Attempt, as observed by the Orchestrator. */
 export interface WorkerOutcome {
   ticket: number;
+  /** Attempt number the dispatch ran as, echoed from the config. */
+  attempt: number;
   /** Agent-prefixed branch the Worker committed to; retained after cleanup. */
   branch: string;
   /** Commit the branch was cut from; `base..branch` is the Attempt's work. */
@@ -176,10 +184,12 @@ export async function branchCommitSubjects(
  * each dispatch), never the local checkout: a ticket is Dispatchable only
  * once its blockers' PRs have merged, and that gating holds only if the
  * Worker's base contains those merges — the local checkout goes stale the
- * moment a sibling merges mid-run. `-B` and the up-front removal reset leftovers from a
- * crashed run or failed attempt — a local branch that never became a PR is
- * not recorded progress, so a fresh attempt supersedes it and the recovery
- * story stays "re-run the Tick".
+ * moment a sibling merges mid-run. Branch and transcript are namespaced per
+ * attempt so a retry leaves the failed attempt's evidence intact for
+ * Escalation. `-B` and the up-front removal reset leftovers of the SAME
+ * attempt from a crashed run — a local branch that never became a PR is not
+ * recorded progress (ADR 0001: GitHub is the only state store), so
+ * re-running the Tick supersedes it.
  */
 export async function dispatchWorker(
   ticket: number,
@@ -187,10 +197,14 @@ export async function dispatchWorker(
   exec: Exec = realExec,
   spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
 ): Promise<WorkerOutcome> {
-  const branch = `${AGENT_BRANCH_PREFIX}${ticket}`;
+  const branch = `${AGENT_BRANCH_PREFIX}${ticket}-attempt-${config.attempt}`;
   const worktree = join(RUN_DIR, "worktrees", `ticket-${ticket}`);
-  const transcript = join(RUN_DIR, "transcripts", `ticket-${ticket}.jsonl`);
-  const stderrLog = join(RUN_DIR, "transcripts", `ticket-${ticket}.stderr.log`);
+  const transcript = join(RUN_DIR, "transcripts", `ticket-${ticket}-attempt-${config.attempt}.jsonl`);
+  const stderrLog = join(
+    RUN_DIR,
+    "transcripts",
+    `ticket-${ticket}-attempt-${config.attempt}.stderr.log`,
+  );
 
   const base = await withGitLock(async () => {
     await removeWorktree(worktree, exec);
@@ -237,6 +251,7 @@ export async function dispatchWorker(
             : undefined;
     return {
       ticket,
+      attempt: config.attempt,
       branch,
       base,
       transcript,

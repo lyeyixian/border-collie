@@ -1,7 +1,13 @@
 #!/usr/bin/env node
 import { parseArgs } from "node:util";
 import { act } from "./act.js";
-import { ConfigError, loadConfigFile, resolveConfig, type Flags } from "./config.js";
+import {
+  ConfigError,
+  loadConfigFile,
+  modelForAttempt,
+  resolveConfig,
+  type Flags,
+} from "./config.js";
 import { plan } from "./plan.js";
 import { openPrForOutcome } from "./pr.js";
 import { renderPlan } from "./render.js";
@@ -88,7 +94,8 @@ async function main(argv: string[]): Promise<number> {
       actions,
       (ticket, attempt) =>
         dispatchWorker(ticket, {
-          model: attempt >= 2 ? config.retryModel : config.model,
+          model: modelForAttempt(config, attempt),
+          attempt,
           timeoutMs: config.timeoutMinutes * 60_000,
           stallMs: config.stallMinutes * 60_000,
         }),
