@@ -28,6 +28,16 @@ describe("attemptMarker", () => {
   it("parses nothing from a mangled marker payload", () => {
     expect(parseAttemptMarker("<!-- border-collie:attempt not-json -->")).toBeUndefined();
   });
+
+  it("parses nothing from valid JSON that is not an attempt record", () => {
+    expect(parseAttemptMarker('<!-- border-collie:attempt {"attempt":1} -->')).toBeUndefined();
+    expect(parseAttemptMarker("<!-- border-collie:attempt null -->")).toBeUndefined();
+    expect(
+      parseAttemptMarker(
+        `<!-- border-collie:attempt ${JSON.stringify({ ...FAILURE, reason: "made-up" })} -->`,
+      ),
+    ).toBeUndefined();
+  });
 });
 
 describe("ticketFromAgentBranch", () => {

@@ -1,14 +1,15 @@
-import type { ResolvedConfig } from "./config.js";
+import { modelForAttempt, type ResolvedConfig } from "./config.js";
 import { dispatchableSet } from "./plan.js";
 import type { Action, WorldSnapshot } from "./types.js";
 
 /** Render the dispatch plan as human-readable lines. Pure. */
 export function renderPlan(
-  { scope, maxWorkers, model, retryModel }: ResolvedConfig,
+  config: ResolvedConfig,
   world: WorldSnapshot,
   actions: Action[],
   { dryRun }: { dryRun: boolean },
 ): string {
+  const { scope, maxWorkers } = config;
   const lines: string[] = [];
   const open = world.tickets.filter((t) => t.state === "open").length;
   const scopeLabel =
@@ -40,9 +41,10 @@ export function renderPlan(
           break;
         case "spawn":
           lines.push(
-            `  spawn Worker for #${action.ticket} — ${title} (model ${
-              action.attempt >= 2 ? retryModel : model
-            }, attempt ${action.attempt})`,
+            `  spawn Worker for #${action.ticket} — ${title} (model ${modelForAttempt(
+              config,
+              action.attempt,
+            )}, attempt ${action.attempt})`,
           );
           break;
         case "escalate":

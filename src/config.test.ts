@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ConfigError, resolveConfig } from "./config.js";
+import { ConfigError, modelForAttempt, resolveConfig } from "./config.js";
 
 describe("resolveConfig", () => {
   it("takes the scope parent and max_workers from the config file", () => {
@@ -108,6 +108,13 @@ describe("resolveConfig", () => {
     const resolved = resolveConfig({ parent: 1 }, { all: true });
 
     expect(resolved.scope).toEqual({ kind: "all" });
+  });
+
+  it("binds attempt one to the base model and later attempts to the retry model", () => {
+    const config = resolveConfig({ parent: 1 }, {});
+
+    expect(modelForAttempt(config, 1)).toBe("sonnet");
+    expect(modelForAttempt(config, 2)).toBe("opus");
   });
 
   it("rejects a non-positive max_workers", () => {
