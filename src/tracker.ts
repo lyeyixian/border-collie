@@ -1,10 +1,16 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
+  attemptMarker,
   CLAIM_MARKER,
+  FAILURE_DESCRIPTIONS,
+  MAX_ATTEMPTS,
+  parseAttemptMarker,
   READY_FOR_AGENT,
+  READY_FOR_HUMAN,
   RELEASE_MARKER,
   ticketFromAgentBranch,
+  type AttemptFailure,
   type Ticket,
   type WorldSnapshot,
 } from "./types.js";
@@ -47,6 +53,8 @@ function toTicket(issue: GithubIssue): Ticket {
     labels: (issue.labels ?? []).map((l) => l.name),
     openBlockers: issue.issue_dependencies_summary?.blocked_by ?? 0,
     hasAgentClaim: false,
+    agentClaimCount: 0,
+    attemptFailures: [],
   };
 }
 
@@ -56,22 +64,37 @@ async function readPages<T>(endpoint: string, exec: Exec): Promise<T[]> {
   return pages.flat();
 }
 
+interface ClaimHistory {
+  hasAgentClaim: boolean;
+  agentClaimCount: number;
+  attemptFailures: AttemptFailure[];
+}
+
 /**
- * The latest border-collie marker comment decides claim ownership: a claim
- * marker after any release marker means the assignment is agent-held. Both
- * are append-only, so history stays auditable.
+ * One pass over a ticket's comments, oldest first. The latest border-collie
+ * marker comment decides claim ownership: a claim marker after any release
+ * marker means the assignment is agent-held. The claim markers ever posted
+ * count Attempts (each Attempt is preceded by exactly one claim), and release
+ * comments carry the failed attempts' forensic records. All append-only, so
+ * history stays auditable and attempt state needs no local store.
  */
-async function ticketHasAgentClaim(ticket: number, exec: Exec): Promise<boolean> {
+async function readClaimHistory(ticket: number, exec: Exec): Promise<ClaimHistory> {
   const comments = await readPages<{ body?: string }>(
     `repos/{owner}/{repo}/issues/${ticket}/comments?per_page=100`,
     exec,
   );
-  let claimed = false;
+  const history: ClaimHistory = { hasAgentClaim: false, agentClaimCount: 0, attemptFailures: [] };
   for (const comment of comments) {
-    if (comment.body?.includes(CLAIM_MARKER)) claimed = true;
-    else if (comment.body?.includes(RELEASE_MARKER)) claimed = false;
+    if (comment.body?.includes(CLAIM_MARKER)) {
+      history.hasAgentClaim = true;
+      history.agentClaimCount += 1;
+    } else if (comment.body?.includes(RELEASE_MARKER)) {
+      history.hasAgentClaim = false;
+      const failure = parseAttemptMarker(comment.body);
+      if (failure) history.attemptFailures.push(failure);
+    }
   }
-  return claimed;
+  return history;
 }
 
 /** Ticket numbers of open PRs whose head branch carries the agent prefix. */
@@ -102,15 +125,26 @@ export async function readScope(scope: Scope, exec: Exec = realExec): Promise<Wo
     .filter((issue) => issue.pull_request === undefined)
     .map(toTicket);
 
+  // Claim history is read where it can matter: assigned tickets (claim
+  // ownership) and unassigned dispatch candidates (the Attempt counter that
+  // picks the retry rung or triggers Escalation).
   for (const ticket of tickets) {
-    if (ticket.state === "open" && ticket.assignees.length > 0) {
-      ticket.hasAgentClaim = await ticketHasAgentClaim(ticket.number, exec);
+    const isDispatchCandidate =
+      ticket.labels.includes(READY_FOR_AGENT) && ticket.openBlockers === 0;
+    if (ticket.state === "open" && (ticket.assignees.length > 0 || isDispatchCandidate)) {
+      const history = await readClaimHistory(ticket.number, exec);
+      ticket.hasAgentClaim = history.hasAgentClaim;
+      ticket.agentClaimCount = history.agentClaimCount;
+      ticket.attemptFailures = history.attemptFailures;
     }
   }
 
-  // Open agent PRs matter only to orphan detection, which needs an agent
-  // claim to exist — skip the read otherwise.
-  const openAgentPrTickets = tickets.some((t) => t.hasAgentClaim)
+  // Open agent PRs matter only to orphan detection (which needs an agent
+  // claim to exist) and to the escalation veto (which needs exhausted
+  // attempts) — skip the read otherwise.
+  const openAgentPrTickets = tickets.some(
+    (t) => t.hasAgentClaim || t.agentClaimCount >= MAX_ATTEMPTS,
+  )
     ? await listOpenAgentPrTickets(exec)
     : [];
 
@@ -168,4 +202,62 @@ export async function createDraftPr(
     request.body,
   ]);
   return stdout.trim();
+}
+
+/**
+ * Act phase: release a ticket whose Attempt just failed, embedding the
+ * attempt's forensic record in the release comment — the tracker is the only
+ * state store, so this comment IS the attempt history that the next Tick's
+ * retry ladder and a later Escalation read back. Same crash-safe ordering as
+ * releaseTicket: unassign first.
+ */
+export async function releaseFailedTicket(
+  ticket: number,
+  failure: AttemptFailure,
+  exec: Exec = realExec,
+): Promise<void> {
+  const body = [
+    RELEASE_MARKER,
+    attemptMarker(failure),
+    `🐕 Attempt ${failure.attempt} failed: ${FAILURE_DESCRIPTIONS[failure.reason]} (model ${failure.model}).`,
+    `Worktree torn down; branch \`${failure.branch}\` abandoned; transcript at \`${failure.transcript}\`.`,
+  ].join("\n");
+  await exec("gh", ["issue", "edit", String(ticket), "--remove-assignee", "@me"]);
+  await exec("gh", ["issue", "comment", String(ticket), "--body", body]);
+}
+
+/**
+ * Act phase: Escalate a ticket whose Attempts are exhausted — the forensic
+ * comment first, then the label swap that removes it from the dispatchable
+ * set for good. A crash in between re-escalates next Tick (worst case a
+ * duplicate comment); the swap first would strand the forensics unwritten
+ * with no trigger left to write them.
+ */
+export async function escalateTicket(
+  ticket: number,
+  failures: AttemptFailure[],
+  exec: Exec = realExec,
+): Promise<void> {
+  const evidence =
+    failures.length === 0
+      ? ["(no attempt records found — the claims were likely released as orphans after crashes)"]
+      : failures.map(
+          (f) =>
+            `- Attempt ${f.attempt} (${f.model}): ${FAILURE_DESCRIPTIONS[f.reason]} — transcript \`${f.transcript}\`, abandoned branch \`${f.branch}\``,
+        );
+  const body = [
+    `🐕 Escalated by border-collie: ${MAX_ATTEMPTS} Attempts exhausted, handing this ticket to a human.`,
+    "",
+    ...evidence,
+  ].join("\n");
+  await exec("gh", ["issue", "comment", String(ticket), "--body", body]);
+  await exec("gh", [
+    "issue",
+    "edit",
+    String(ticket),
+    "--remove-label",
+    READY_FOR_AGENT,
+    "--add-label",
+    READY_FOR_HUMAN,
+  ]);
 }

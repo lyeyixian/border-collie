@@ -18,16 +18,23 @@ report each Worker's outcome. A successful Worker's branch is pushed and
 opened as a draft PR that closes its ticket on merge, its body taken from
 the Worker's final message (mechanical fallback: ticket + commit subjects).
 
+Every way a Worker can die is noticed — non-zero exit, no commits, wall-clock
+timeout, stall — and released with a forensic attempt record. A once-failed
+ticket is retried fresh on the stronger retry model; a twice-failed ticket is
+Escalated to ready-for-human with the evidence.
+
 Options:
   --dry-run            print the dispatch plan without writing anything
   --parent <n>         scope: sub-issues of parent issue #n (overrides config file)
   --all                scope: every agent-ready issue in the repo (explicit opt-in)
   --max-workers <n>    cap on planned claims (default 3, overrides config file)
   --model <name>       model Workers run on (default sonnet, overrides config file)
+  --retry-model <name> model second attempts run on (default opus, overrides config file)
   -h, --help           show this help
 
 Config: border-collie.json at the target repo root,
-e.g. {"parent": 1, "max_workers": 3, "worker_model": "sonnet"}`;
+e.g. {"parent": 1, "max_workers": 3, "worker_model": "sonnet",
+"retry_model": "opus", "worker_timeout_minutes": 45, "worker_stall_minutes": 10}`;
 
 function parseIntFlag(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
@@ -47,6 +54,7 @@ async function main(argv: string[]): Promise<number> {
       all: { type: "boolean", default: false },
       "max-workers": { type: "string" },
       model: { type: "string" },
+      "retry-model": { type: "string" },
       help: { type: "boolean", short: "h", default: false },
     },
   });
@@ -66,6 +74,7 @@ async function main(argv: string[]): Promise<number> {
   if (maxWorkers !== undefined) flags.maxWorkers = maxWorkers;
   if (values.all) flags.all = true;
   if (values.model !== undefined) flags.model = values.model;
+  if (values["retry-model"] !== undefined) flags.retryModel = values["retry-model"];
 
   const config = resolveConfig(loadConfigFile(process.cwd()), flags);
 
@@ -77,7 +86,12 @@ async function main(argv: string[]): Promise<number> {
     const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
     await act(
       actions,
-      (ticket) => dispatchWorker(ticket, { model: config.model }),
+      (ticket, attempt) =>
+        dispatchWorker(ticket, {
+          model: attempt >= 2 ? config.retryModel : config.model,
+          timeoutMs: config.timeoutMinutes * 60_000,
+          stallMs: config.stallMinutes * 60_000,
+        }),
       (outcome) => openPrForOutcome(outcome, titles.get(outcome.ticket) ?? `Ticket #${outcome.ticket}`),
     );
   }

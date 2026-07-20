@@ -4,7 +4,7 @@ import type { Action, WorldSnapshot } from "./types.js";
 
 /** Render the dispatch plan as human-readable lines. Pure. */
 export function renderPlan(
-  { scope, maxWorkers, model }: ResolvedConfig,
+  { scope, maxWorkers, model, retryModel }: ResolvedConfig,
   world: WorldSnapshot,
   actions: Action[],
   { dryRun }: { dryRun: boolean },
@@ -39,7 +39,16 @@ export function renderPlan(
           lines.push(`  release #${action.ticket} — ${title} (orphaned agent claim)`);
           break;
         case "spawn":
-          lines.push(`  spawn Worker for #${action.ticket} — ${title} (model ${model})`);
+          lines.push(
+            `  spawn Worker for #${action.ticket} — ${title} (model ${
+              action.attempt >= 2 ? retryModel : model
+            }, attempt ${action.attempt})`,
+          );
+          break;
+        case "escalate":
+          lines.push(
+            `  escalate #${action.ticket} — ${title} (attempts exhausted → ready-for-human)`,
+          );
           break;
       }
     }

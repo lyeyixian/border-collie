@@ -2,7 +2,7 @@ import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { realExec, type Exec } from "./tracker.js";
-import { AGENT_BRANCH_PREFIX } from "./types.js";
+import { AGENT_BRANCH_PREFIX, type FailureReason } from "./types.js";
 
 /**
  * The WorkerHost seam: everything a dispatched Worker needs around it —
@@ -17,6 +17,10 @@ export const RUN_DIR = ".border-collie";
 export interface WorkerConfig {
   /** Model the Worker runs on (`claude --model`). */
   model: string;
+  /** Wall-clock ceiling for the whole Worker process. */
+  timeoutMs: number;
+  /** Max quiet time between output events before the Worker counts as stalled. */
+  stallMs: number;
 }
 
 /** One finished Attempt, as observed by the Orchestrator. */
@@ -28,14 +32,17 @@ export interface WorkerOutcome {
   base: string;
   /** Transcript file path, for post-mortems. */
   transcript: string;
+  /** Model the attempt ran on, echoed into the attempt record on failure. */
+  model: string;
   exitCode: number | null;
   /** Commits on the branch beyond the base it was cut from. */
   newCommits: number;
   /**
-   * The success predicate: the process exited cleanly AND new commits exist.
-   * Anything else is a failed attempt (classified fully by the
-   * failure-handling ticket).
+   * Which ticket-failure trigger fired, or undefined on success. Exactly the
+   * four triggers: nonzero-exit, no-commits, timeout, stall.
    */
+  failure: FailureReason | undefined;
+  /** The success predicate: no failure trigger fired. */
   ok: boolean;
 }
 
@@ -48,10 +55,20 @@ export interface WorkerProcessRequest {
   transcriptPath: string;
   /** File the process's stderr streams into, kept apart so the transcript stays parseable. */
   stderrPath: string;
+  /** Wall-clock ceiling; the process is killed when it elapses. */
+  timeoutMs: number;
+  /** Stall window; the process is killed when stdout goes quiet this long. */
+  stallMs: number;
 }
 
-/** Process seam: run the Worker to completion, resolving with its exit code. */
-export type SpawnWorkerProcess = (request: WorkerProcessRequest) => Promise<number | null>;
+/** How the Worker process ended: on its own, or killed by which watchdog. */
+export interface WorkerProcessExit {
+  exitCode: number | null;
+  endedBy: "exit" | "timeout" | "stall";
+}
+
+/** Process seam: run the Worker to completion under both watchdogs. */
+export type SpawnWorkerProcess = (request: WorkerProcessRequest) => Promise<WorkerProcessExit>;
 
 export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
   new Promise((resolve, reject) => {
@@ -64,7 +81,27 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
     });
     child.stdout.pipe(transcript);
     child.stderr.pipe(stderr);
+
+    // SIGKILL, not SIGTERM: a stalled Worker may not be servicing signals.
+    let endedBy: WorkerProcessExit["endedBy"] = "exit";
+    const wallTimer = setTimeout(() => {
+      endedBy = "timeout";
+      child.kill("SIGKILL");
+    }, request.timeoutMs);
+    let stallTimer: NodeJS.Timeout | undefined;
+    const rearmStallWatchdog = () => {
+      clearTimeout(stallTimer);
+      stallTimer = setTimeout(() => {
+        endedBy = "stall";
+        child.kill("SIGKILL");
+      }, request.stallMs);
+    };
+    rearmStallWatchdog();
+    child.stdout.on("data", rearmStallWatchdog);
+
     const end = () => {
+      clearTimeout(wallTimer);
+      clearTimeout(stallTimer);
       transcript.end();
       stderr.end();
     };
@@ -74,7 +111,7 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
     });
     child.on("close", (code) => {
       end();
-      resolve(code);
+      resolve({ exitCode: code, endedBy });
     });
   });
 
@@ -167,7 +204,7 @@ export async function dispatchWorker(
     // Headless Workers cannot answer permission prompts; skipping them is
     // what confines the blast radius to the worktree plus the operator's
     // own tracker.
-    const exitCode = await spawnProcess({
+    const { exitCode, endedBy } = await spawnProcess({
       cmd: "claude",
       args: [
         "-p",
@@ -182,18 +219,32 @@ export async function dispatchWorker(
       cwd: worktree,
       transcriptPath: transcript,
       stderrPath: stderrLog,
+      timeoutMs: config.timeoutMs,
+      stallMs: config.stallMs,
     });
     const newCommits = Number(
       (await withGitLock(() => exec("git", ["rev-list", "--count", `${base}..${branch}`]))).trim(),
     );
+    // A killed Worker fails even with commits on the branch: it never got to
+    // finish, so the work is unverified and the PR description is missing.
+    const failure: FailureReason | undefined =
+      endedBy !== "exit"
+        ? endedBy
+        : exitCode !== 0
+          ? "nonzero-exit"
+          : newCommits === 0
+            ? "no-commits"
+            : undefined;
     return {
       ticket,
       branch,
       base,
       transcript,
+      model: config.model,
       exitCode,
       newCommits,
-      ok: exitCode === 0 && newCommits > 0,
+      failure,
+      ok: failure === undefined,
     };
   } finally {
     await withGitLock(() => removeWorktree(worktree, exec));

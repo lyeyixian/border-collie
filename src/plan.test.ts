@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { plan } from "./plan.js";
-import type { Ticket, WorldSnapshot } from "./types.js";
+import type { AttemptFailure, Ticket, WorldSnapshot } from "./types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
   return {
@@ -10,7 +10,19 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
     labels: ["ready-for-agent"],
     openBlockers: 0,
     hasAgentClaim: false,
+    agentClaimCount: 0,
+    attemptFailures: [],
     ...overrides,
+  };
+}
+
+function failure(attempt: number): AttemptFailure {
+  return {
+    attempt,
+    reason: "timeout",
+    model: attempt === 1 ? "sonnet" : "opus",
+    branch: "border-collie/ticket-7",
+    transcript: ".border-collie/transcripts/ticket-7.jsonl",
   };
 }
 
@@ -24,7 +36,7 @@ describe("plan", () => {
 
     expect(actions).toEqual([
       { type: "claim", ticket: 7 },
-      { type: "spawn", ticket: 7 },
+      { type: "spawn", ticket: 7, attempt: 1 },
     ]);
   });
 
@@ -124,7 +136,7 @@ describe("plan", () => {
     expect(actions).toEqual([
       { type: "release", ticket: 4, assignees: ["operator"] },
       { type: "claim", ticket: 9 },
-      { type: "spawn", ticket: 9 },
+      { type: "spawn", ticket: 9, attempt: 1 },
     ]);
   });
 
@@ -142,11 +154,11 @@ describe("plan", () => {
 
     expect(actions).toEqual([
       { type: "claim", ticket: 2 },
-      { type: "spawn", ticket: 2 },
+      { type: "spawn", ticket: 2, attempt: 1 },
       { type: "claim", ticket: 4 },
-      { type: "spawn", ticket: 4 },
+      { type: "spawn", ticket: 4, attempt: 1 },
       { type: "claim", ticket: 6 },
-      { type: "spawn", ticket: 6 },
+      { type: "spawn", ticket: 6, attempt: 1 },
     ]);
   });
 
@@ -162,9 +174,91 @@ describe("plan", () => {
 
     expect(actions).toEqual([
       { type: "claim", ticket: 3 },
-      { type: "spawn", ticket: 3 },
+      { type: "spawn", ticket: 3, attempt: 1 },
       { type: "claim", ticket: 8 },
-      { type: "spawn", ticket: 8 },
+      { type: "spawn", ticket: 8, attempt: 1 },
+    ]);
+  });
+});
+
+describe("plan: retry ladder and Escalation", () => {
+  it("re-claims a once-failed ticket as attempt 2 (the retry ladder)", () => {
+    const actions = plan(
+      world([ticket({ number: 7, agentClaimCount: 1, attemptFailures: [failure(1)] })]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([
+      { type: "claim", ticket: 7 },
+      { type: "spawn", ticket: 7, attempt: 2 },
+    ]);
+  });
+
+  it("escalates instead of dispatching once attempts are exhausted, citing the failure records", () => {
+    const failures = [failure(1), failure(2)];
+    const actions = plan(
+      world([ticket({ number: 7, agentClaimCount: 2, attemptFailures: failures })]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([{ type: "escalate", ticket: 7, failures }]);
+  });
+
+  it("escalates a ticket with more claims than failure records (orphan-released attempts)", () => {
+    const actions = plan(
+      world([ticket({ number: 7, agentClaimCount: 3, attemptFailures: [failure(2)] })]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([{ type: "escalate", ticket: 7, failures: [failure(2)] }]);
+  });
+
+  it("never escalates an already-escalated ticket (label swap removed ready-for-agent)", () => {
+    const actions = plan(
+      world([
+        ticket({ number: 7, labels: ["ready-for-human"], agentClaimCount: 2 }),
+      ]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("does not escalate a ticket whose agent PR is still open — the work may land", () => {
+    const actions = plan(
+      world([ticket({ number: 7, agentClaimCount: 2 })], [7]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("does not escalate an assigned ticket this tick: the orphan release goes first", () => {
+    const actions = plan(
+      world([
+        ticket({ number: 7, assignees: ["operator"], hasAgentClaim: true, agentClaimCount: 2 }),
+      ]),
+      { maxWorkers: 3 },
+    );
+
+    expect(actions).toEqual([{ type: "release", ticket: 7, assignees: ["operator"] }]);
+  });
+
+  it("orders escalations after releases and before dispatches, without consuming Worker slots", () => {
+    const actions = plan(
+      world([
+        ticket({ number: 3 }),
+        ticket({ number: 5, agentClaimCount: 2, attemptFailures: [failure(1), failure(2)] }),
+        ticket({ number: 6, assignees: ["operator"], hasAgentClaim: true }),
+      ]),
+      { maxWorkers: 1 },
+    );
+
+    expect(actions).toEqual([
+      { type: "release", ticket: 6, assignees: ["operator"] },
+      { type: "escalate", ticket: 5, failures: [failure(1), failure(2)] },
+      { type: "claim", ticket: 3 },
+      { type: "spawn", ticket: 3, attempt: 1 },
     ]);
   });
 });

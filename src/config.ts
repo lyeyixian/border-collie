@@ -6,6 +6,9 @@ export const CONFIG_FILE = "border-collie.json";
 
 const DEFAULT_MAX_WORKERS = 3;
 const DEFAULT_WORKER_MODEL = "sonnet";
+const DEFAULT_RETRY_MODEL = "opus";
+const DEFAULT_TIMEOUT_MINUTES = 45;
+const DEFAULT_STALL_MINUTES = 10;
 
 export class ConfigError extends Error {}
 
@@ -15,6 +18,7 @@ export interface Flags {
   maxWorkers?: number;
   all?: boolean;
   model?: string;
+  retryModel?: string;
 }
 
 export type Scope = { kind: "parent"; parent: number } | { kind: "all" };
@@ -24,6 +28,12 @@ export interface ResolvedConfig {
   maxWorkers: number;
   /** Model Workers run on (`claude --model`). */
   model: string;
+  /** Stronger model a second attempt runs on (the retry ladder). */
+  retryModel: string;
+  /** Wall-clock ceiling per Worker. */
+  timeoutMinutes: number;
+  /** Max quiet time between Worker output events. */
+  stallMinutes: number;
 }
 
 function asPositiveInt(value: unknown, name: string): number {
@@ -59,12 +69,25 @@ export function resolveConfig(fileConfig: unknown, flags: Flags): ResolvedConfig
     flags.model ?? file["worker_model"] ?? DEFAULT_WORKER_MODEL,
     "worker_model",
   );
+  const retryModel = asNonEmptyString(
+    flags.retryModel ?? file["retry_model"] ?? DEFAULT_RETRY_MODEL,
+    "retry_model",
+  );
+  const timeoutMinutes = asPositiveInt(
+    file["worker_timeout_minutes"] ?? DEFAULT_TIMEOUT_MINUTES,
+    "worker_timeout_minutes",
+  );
+  const stallMinutes = asPositiveInt(
+    file["worker_stall_minutes"] ?? DEFAULT_STALL_MINUTES,
+    "worker_stall_minutes",
+  );
+  const shared = { maxWorkers, model, retryModel, timeoutMinutes, stallMinutes };
 
   if (flags.all) {
     if (flags.parent !== undefined) {
       throw new ConfigError("--all and --parent are mutually exclusive");
     }
-    return { scope: { kind: "all" }, maxWorkers, model };
+    return { scope: { kind: "all" }, ...shared };
   }
 
   const parent = flags.parent ?? file["parent"];
@@ -73,7 +96,7 @@ export function resolveConfig(fileConfig: unknown, flags: Flags): ResolvedConfig
       `no scope: set "parent" in ${CONFIG_FILE} or pass --parent <n> (repo-wide scope requires the explicit --all flag)`,
     );
   }
-  return { scope: { kind: "parent", parent: asPositiveInt(parent, "parent") }, maxWorkers, model };
+  return { scope: { kind: "parent", parent: asPositiveInt(parent, "parent") }, ...shared };
 }
 
 /** Read the config file from the target repo root; absent file is fine. */
