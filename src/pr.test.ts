@@ -110,8 +110,10 @@ const OUTCOME: WorkerOutcome = {
   branch: "border-collie/ticket-5",
   base: "base-sha",
   transcript: ".border-collie/transcripts/ticket-5.jsonl",
+  model: "sonnet",
   exitCode: 0,
   newCommits: 2,
+  failure: undefined,
   ok: true,
 };
 

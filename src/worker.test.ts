@@ -1,17 +1,25 @@
+import { mkdtempSync, readFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Exec } from "./tracker.js";
 import {
   branchCommitSubjects,
   dispatchWorker,
   pushAgentBranch,
+  realSpawnWorkerProcess,
   workerPrompt,
   type SpawnWorkerProcess,
+  type WorkerConfig,
+  type WorkerProcessExit,
   type WorkerProcessRequest,
 } from "./worker.js";
 
 const WORKTREE = ".border-collie/worktrees/ticket-4";
 const BRANCH = "border-collie/ticket-4";
 const TRANSCRIPT = ".border-collie/transcripts/ticket-4.jsonl";
+
+const CONFIG: WorkerConfig = { model: "sonnet", timeoutMs: 60_000, stallMs: 30_000 };
 
 /**
  * Fake the git side of the subprocess seam: reads are answered from fixtures,
@@ -35,7 +43,10 @@ function fakeExec(opts: { newCommits?: string; removeThrows?: boolean } = {}): {
   return { exec, calls };
 }
 
-function fakeSpawn(result: number | null | Error): {
+function fakeSpawn(
+  result: number | null | Error,
+  endedBy: WorkerProcessExit["endedBy"] = "exit",
+): {
   spawn: SpawnWorkerProcess;
   requests: WorkerProcessRequest[];
 } {
@@ -43,7 +54,7 @@ function fakeSpawn(result: number | null | Error): {
   const spawn: SpawnWorkerProcess = async (request) => {
     requests.push(request);
     if (result instanceof Error) throw result;
-    return result;
+    return { exitCode: result, endedBy };
   };
   return { spawn, requests };
 }
@@ -61,7 +72,7 @@ describe("dispatchWorker", () => {
     const { exec, calls } = fakeExec({ newCommits: "3" });
     const { spawn, requests } = fakeSpawn(0);
 
-    await dispatchWorker(4, { model: "sonnet" }, exec, spawn);
+    await dispatchWorker(4, CONFIG, exec, spawn);
 
     expect(calls).toEqual([
       ["git", "worktree", "remove", "--force", WORKTREE],
@@ -88,6 +99,8 @@ describe("dispatchWorker", () => {
         cwd: WORKTREE,
         transcriptPath: TRANSCRIPT,
         stderrPath: ".border-collie/transcripts/ticket-4.stderr.log",
+        timeoutMs: 60_000,
+        stallMs: 30_000,
       },
     ]);
   });
@@ -106,8 +119,8 @@ describe("dispatchWorker", () => {
     const { spawn } = fakeSpawn(0);
 
     const outcomes = await Promise.all([
-      dispatchWorker(1, { model: "sonnet" }, exec, spawn),
-      dispatchWorker(2, { model: "sonnet" }, exec, spawn),
+      dispatchWorker(1, CONFIG, exec, spawn),
+      dispatchWorker(2, CONFIG, exec, spawn),
     ]);
 
     const setupBlock = (ticket: number) => [
@@ -133,15 +146,17 @@ describe("dispatchWorker", () => {
     const { exec } = fakeExec({ newCommits: "3" });
     const { spawn } = fakeSpawn(0);
 
-    const outcome = await dispatchWorker(4, { model: "sonnet" }, exec, spawn);
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
 
     expect(outcome).toEqual({
       ticket: 4,
       branch: BRANCH,
       base: "base-sha",
       transcript: TRANSCRIPT,
+      model: "sonnet",
       exitCode: 0,
       newCommits: 3,
+      failure: undefined,
       ok: true,
     });
   });
@@ -150,25 +165,43 @@ describe("dispatchWorker", () => {
     const { exec } = fakeExec({ newCommits: "0" });
     const { spawn } = fakeSpawn(0);
 
-    const outcome = await dispatchWorker(4, { model: "sonnet" }, exec, spawn);
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
 
-    expect(outcome).toMatchObject({ ok: false, exitCode: 0, newCommits: 0 });
+    expect(outcome).toMatchObject({ ok: false, exitCode: 0, newCommits: 0, failure: "no-commits" });
   });
 
   it("fails the attempt on a non-zero exit even when commits exist", async () => {
     const { exec } = fakeExec({ newCommits: "2" });
     const { spawn } = fakeSpawn(1);
 
-    const outcome = await dispatchWorker(4, { model: "sonnet" }, exec, spawn);
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
 
-    expect(outcome).toMatchObject({ ok: false, exitCode: 1, newCommits: 2 });
+    expect(outcome).toMatchObject({ ok: false, exitCode: 1, newCommits: 2, failure: "nonzero-exit" });
+  });
+
+  it("fails the attempt as a timeout when the process was killed at the wall clock, even with commits", async () => {
+    const { exec } = fakeExec({ newCommits: "2" });
+    const { spawn } = fakeSpawn(null, "timeout");
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, newCommits: 2, failure: "timeout" });
+  });
+
+  it("fails the attempt as a stall when the process went quiet past the stall window", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(null, "stall");
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: "stall" });
   });
 
   it("tolerates worktree-remove failures: no stale worktree before, best-effort cleanup after", async () => {
     const { exec } = fakeExec({ newCommits: "1", removeThrows: true });
     const { spawn } = fakeSpawn(0);
 
-    const outcome = await dispatchWorker(4, { model: "sonnet" }, exec, spawn);
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
 
     expect(outcome.ok).toBe(true);
   });
@@ -177,7 +210,7 @@ describe("dispatchWorker", () => {
     const { exec, calls } = fakeExec();
     const { spawn } = fakeSpawn(new Error("spawn claude ENOENT"));
 
-    await expect(dispatchWorker(4, { model: "sonnet" }, exec, spawn)).rejects.toThrow("ENOENT");
+    await expect(dispatchWorker(4, CONFIG, exec, spawn)).rejects.toThrow("ENOENT");
 
     expect(calls.at(-1)).toEqual(["git", "worktree", "remove", "--force", WORKTREE]);
   });
@@ -186,7 +219,7 @@ describe("dispatchWorker", () => {
     const { exec } = fakeExec({ newCommits: "1" });
     const { spawn, requests } = fakeSpawn(0);
 
-    await dispatchWorker(7, { model: "opus" }, exec, spawn);
+    await dispatchWorker(7, { ...CONFIG, model: "opus" }, exec, spawn);
 
     expect(requests[0]?.args).toContain("opus");
   });
@@ -214,5 +247,51 @@ describe("branchCommitSubjects", () => {
 
     expect(calls).toEqual([["git", "log", "--format=%s", "--reverse", `base-sha..${BRANCH}`]]);
     expect(subjects).toEqual(["First commit", "Second commit"]);
+  });
+});
+
+/** Drive real node child processes through the seam with tiny windows. */
+describe("realSpawnWorkerProcess", () => {
+  function request(script: string, windows: { timeoutMs: number; stallMs: number }): WorkerProcessRequest {
+    const dir = mkdtempSync(join(tmpdir(), "border-collie-test-"));
+    return {
+      cmd: "node",
+      args: ["-e", script],
+      cwd: dir,
+      transcriptPath: join(dir, "transcript.jsonl"),
+      stderrPath: join(dir, "stderr.log"),
+      ...windows,
+    };
+  }
+
+  it("lets a clean exit through, streaming stdout to the transcript", async () => {
+    const req = request(`console.log("event")`, { timeoutMs: 5_000, stallMs: 5_000 });
+
+    const exit = await realSpawnWorkerProcess(req);
+
+    expect(exit).toEqual({ exitCode: 0, endedBy: "exit" });
+    expect(readFileSync(req.transcriptPath, "utf8")).toContain("event");
+  });
+
+  it("kills a process that outlives the wall-clock timeout even while it keeps emitting output", async () => {
+    const req = request(`setInterval(() => console.log("tick"), 20)`, {
+      timeoutMs: 300,
+      stallMs: 5_000,
+    });
+
+    const exit = await realSpawnWorkerProcess(req);
+
+    expect(exit.endedBy).toBe("timeout");
+  });
+
+  it("kills a process that goes quiet past the stall window", async () => {
+    const req = request(`console.log("hi"); setTimeout(() => {}, 60_000)`, {
+      timeoutMs: 5_000,
+      stallMs: 300,
+    });
+
+    const exit = await realSpawnWorkerProcess(req);
+
+    expect(exit.endedBy).toBe("stall");
   });
 });

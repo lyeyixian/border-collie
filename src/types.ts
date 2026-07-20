@@ -4,6 +4,10 @@
  */
 
 export const READY_FOR_AGENT = "ready-for-agent";
+export const READY_FOR_HUMAN = "ready-for-human";
+
+/** A Ticket gets at most this many Attempts before Escalation (CONTEXT.md). */
+export const MAX_ATTEMPTS = 2;
 
 /**
  * Hidden HTML markers that make a claim structurally border-collie's
@@ -12,6 +16,57 @@ export const READY_FOR_AGENT = "ready-for-agent";
  */
 export const CLAIM_MARKER = "<!-- border-collie:claim -->";
 export const RELEASE_MARKER = "<!-- border-collie:release -->";
+
+/**
+ * The four ticket-failure triggers (CONTEXT.md "Ticket failure"): every way
+ * a Worker can die that counts against the ticket's Attempts.
+ */
+export type FailureReason = "nonzero-exit" | "no-commits" | "timeout" | "stall";
+
+export const FAILURE_DESCRIPTIONS: Record<FailureReason, string> = {
+  "nonzero-exit": "the Worker process exited non-zero",
+  "no-commits": "the Worker exited cleanly but committed nothing",
+  timeout: "the Worker hit the wall-clock timeout",
+  stall: "the Worker produced no output events for the stall window",
+};
+
+/**
+ * One failed Attempt's forensics, embedded in its release comment so attempt
+ * history lives on the tracker (the only state store) and Escalation can cite
+ * evidence without any local record.
+ */
+export interface AttemptFailure {
+  attempt: number;
+  reason: FailureReason;
+  /** Model the attempt ran on. */
+  model: string;
+  /** Abandoned agent branch the attempt committed to (worktree torn down). */
+  branch: string;
+  /** Transcript file path at the target repo root, for post-mortems. */
+  transcript: string;
+}
+
+const ATTEMPT_MARKER_OPEN = "<!-- border-collie:attempt ";
+const ATTEMPT_MARKER_CLOSE = " -->";
+
+/** Hidden HTML marker carrying one attempt's forensics as JSON. */
+export function attemptMarker(failure: AttemptFailure): string {
+  return `${ATTEMPT_MARKER_OPEN}${JSON.stringify(failure)}${ATTEMPT_MARKER_CLOSE}`;
+}
+
+/** The attempt record in a comment body, or undefined when absent/mangled. */
+export function parseAttemptMarker(body: string): AttemptFailure | undefined {
+  const start = body.indexOf(ATTEMPT_MARKER_OPEN);
+  if (start === -1) return undefined;
+  const rest = body.slice(start + ATTEMPT_MARKER_OPEN.length);
+  const end = rest.indexOf(ATTEMPT_MARKER_CLOSE);
+  if (end === -1) return undefined;
+  try {
+    return JSON.parse(rest.slice(0, end)) as AttemptFailure;
+  } catch {
+    return undefined;
+  }
+}
 
 /**
  * Branch naming that makes a PR structurally an agent PR. Workers land with
@@ -48,6 +103,13 @@ export interface Ticket {
    * "Claim").
    */
   hasAgentClaim: boolean;
+  /**
+   * Count of claim marker comments ever posted — the stateless Attempt
+   * counter: each Attempt is preceded by exactly one claim.
+   */
+  agentClaimCount: number;
+  /** Attempt records parsed from release comments, in comment order. */
+  attemptFailures: AttemptFailure[];
 }
 
 /** Everything the planner knows about the world, recomputed each Tick. */
@@ -63,11 +125,13 @@ export interface PlanConfig {
 
 /**
  * One intended write, produced by the pure plan phase.
- * A discriminated union that later tickets extend (spawn worker, open PR,
- * escalate, ...). `release` carries the observed assignee logins so the act
- * phase needs no second look at the world.
+ * A discriminated union that later tickets extend (open PR, ...). `release`
+ * carries the observed assignee logins and `escalate` the observed attempt
+ * records so the act phase needs no second look at the world. `spawn` carries
+ * the attempt number; the caller binds it to a model (the retry ladder).
  */
 export type Action =
   | { type: "claim"; ticket: number }
   | { type: "release"; ticket: number; assignees: string[] }
-  | { type: "spawn"; ticket: number };
+  | { type: "spawn"; ticket: number; attempt: number }
+  | { type: "escalate"; ticket: number; failures: AttemptFailure[] };

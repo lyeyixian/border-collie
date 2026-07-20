@@ -9,6 +9,9 @@ describe("resolveConfig", () => {
       scope: { kind: "parent", parent: 1 },
       maxWorkers: 5,
       model: "sonnet",
+      retryModel: "opus",
+      timeoutMinutes: 45,
+      stallMinutes: 10,
     });
   });
 
@@ -28,6 +31,9 @@ describe("resolveConfig", () => {
       scope: { kind: "parent", parent: 4 },
       maxWorkers: 2,
       model: "opus",
+      retryModel: "opus",
+      timeoutMinutes: 45,
+      stallMinutes: 10,
     });
   });
 
@@ -38,13 +44,16 @@ describe("resolveConfig", () => {
       scope: { kind: "parent", parent: 9 },
       maxWorkers: 3,
       model: "sonnet",
+      retryModel: "opus",
+      timeoutMinutes: 45,
+      stallMinutes: 10,
     });
   });
 
   it("requires an explicit all flag for repo-wide scope", () => {
     const resolved = resolveConfig({ max_workers: 2 }, { all: true });
 
-    expect(resolved).toEqual({ scope: { kind: "all" }, maxWorkers: 2, model: "sonnet" });
+    expect(resolved).toMatchObject({ scope: { kind: "all" }, maxWorkers: 2, model: "sonnet" });
   });
 
   it("takes the worker model from the config file", () => {
@@ -56,6 +65,32 @@ describe("resolveConfig", () => {
   it("rejects a worker model that is not a non-empty string", () => {
     expect(() => resolveConfig({ parent: 1, worker_model: "" }, {})).toThrow(ConfigError);
     expect(() => resolveConfig({ parent: 1, worker_model: 4 }, {})).toThrow(ConfigError);
+  });
+
+  it("takes the retry model from the config file, with a flag override", () => {
+    expect(resolveConfig({ parent: 1, retry_model: "sonnet" }, {}).retryModel).toBe("sonnet");
+    expect(
+      resolveConfig({ parent: 1, retry_model: "sonnet" }, { retryModel: "haiku" }).retryModel,
+    ).toBe("haiku");
+  });
+
+  it("rejects a retry model that is not a non-empty string", () => {
+    expect(() => resolveConfig({ parent: 1, retry_model: "" }, {})).toThrow(ConfigError);
+  });
+
+  it("takes the Worker timeout and stall windows from the config file", () => {
+    const resolved = resolveConfig(
+      { parent: 1, worker_timeout_minutes: 90, worker_stall_minutes: 5 },
+      {},
+    );
+
+    expect(resolved.timeoutMinutes).toBe(90);
+    expect(resolved.stallMinutes).toBe(5);
+  });
+
+  it("rejects non-positive timeout and stall windows", () => {
+    expect(() => resolveConfig({ parent: 1, worker_timeout_minutes: 0 }, {})).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1, worker_stall_minutes: -1 }, {})).toThrow(ConfigError);
   });
 
   it("rejects a run with neither a parent nor the all flag", () => {
