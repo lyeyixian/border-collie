@@ -136,9 +136,10 @@ export async function branchCommitSubjects(
  * isolated worktree, run headless claude in it streaming to a transcript,
  * then judge the outcome and remove the worktree (branch retained). The
  * branch is cut from the remote default branch's current tip (fetched fresh
- * each dispatch), never the local checkout: GitHub is the only state store
- * (ADR 0001), so a stale or diverged local HEAD must not become the base a
- * PR is judged against. `-B` and the up-front removal reset leftovers from a
+ * each dispatch), never the local checkout: a ticket is Dispatchable only
+ * once its blockers' PRs have merged, and that gating holds only if the
+ * Worker's base contains those merges — the local checkout goes stale the
+ * moment a sibling merges mid-run. `-B` and the up-front removal reset leftovers from a
  * crashed run or failed attempt — a local branch that never became a PR is
  * not recorded progress, so a fresh attempt supersedes it and the recovery
  * story stays "re-run the Tick".
@@ -158,9 +159,6 @@ export async function dispatchWorker(
     await removeWorktree(worktree, exec);
     await exec("git", ["worktree", "prune"]);
     await exec("git", ["fetch", "origin"]);
-    // origin/HEAD is a clone-time snapshot; re-resolve it so a renamed or
-    // force-reset default branch (the pasture reseed does this) is picked up.
-    await exec("git", ["remote", "set-head", "origin", "--auto"]);
     await exec("git", ["worktree", "add", worktree, "-B", branch, "origin/HEAD"]);
     return (await exec("git", ["rev-parse", branch])).trim();
   });

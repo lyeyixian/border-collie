@@ -67,7 +67,6 @@ describe("dispatchWorker", () => {
       ["git", "worktree", "remove", "--force", WORKTREE],
       ["git", "worktree", "prune"],
       ["git", "fetch", "origin"],
-      ["git", "remote", "set-head", "origin", "--auto"],
       ["git", "worktree", "add", WORKTREE, "-B", BRANCH, "origin/HEAD"],
       ["git", "rev-parse", BRANCH],
       ["git", "rev-list", "--count", `base-sha..${BRANCH}`],
@@ -115,7 +114,6 @@ describe("dispatchWorker", () => {
       ["git", "worktree", "remove", "--force", `.border-collie/worktrees/ticket-${ticket}`],
       ["git", "worktree", "prune"],
       ["git", "fetch", "origin"],
-      ["git", "remote", "set-head", "origin", "--auto"],
       [
         "git",
         "worktree",
@@ -127,7 +125,7 @@ describe("dispatchWorker", () => {
       ],
       ["git", "rev-parse", `border-collie/ticket-${ticket}`],
     ];
-    expect(calls.slice(0, 12)).toEqual([...setupBlock(1), ...setupBlock(2)]);
+    expect(calls.slice(0, 10)).toEqual([...setupBlock(1), ...setupBlock(2)]);
     expect(outcomes.map((o) => o.ok)).toEqual([true, true]);
   });
 
