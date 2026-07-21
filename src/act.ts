@@ -1,5 +1,6 @@
 import {
   claimTicket,
+  closeTicket,
   escalateTicket,
   realExec,
   releaseFailedTicket,
@@ -69,6 +70,10 @@ export async function act(
       case "escalate":
         await escalateTicket(action.ticket, action.failures, exec);
         log(`escalated #${action.ticket} to ready-for-human (attempts exhausted)`);
+        break;
+      case "close":
+        await closeTicket(action.ticket, action.prUrl, exec);
+        log(`closed #${action.ticket} (merged: ${action.prUrl})`);
         break;
       case "spawn":
         workers.push(

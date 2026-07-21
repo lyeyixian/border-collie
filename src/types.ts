@@ -124,15 +124,29 @@ export interface Ticket {
   attemptFailures: AttemptFailure[];
 }
 
+/**
+ * A merged agent PR observed for a ticket in Scope. Input to closure
+ * verification: a merge whose close keyword failed to fire leaves the ticket
+ * open, and an open ticket freezes its dependents (CONTEXT.md "Done").
+ */
+export interface MergedAgentPr {
+  ticket: number;
+  url: string;
+}
+
 /** Everything the planner knows about the world, recomputed each Tick. */
 export interface WorldSnapshot {
   tickets: Ticket[];
   /** Ticket numbers with an open agent PR (head branch carries the agent prefix). */
   openAgentPrTickets: number[];
+  /** Merged agent PRs whose ticket is in Scope, latest per ticket. */
+  mergedAgentPrs: MergedAgentPr[];
 }
 
 export interface PlanConfig {
   maxWorkers: number;
+  /** Open agent PRs at or above this cap pause dispatch (review bandwidth). */
+  maxOpenPrs: number;
 }
 
 /**
@@ -146,4 +160,5 @@ export type Action =
   | { type: "claim"; ticket: number }
   | { type: "release"; ticket: number; assignees: string[] }
   | { type: "spawn"; ticket: number; attempt: number }
-  | { type: "escalate"; ticket: number; failures: AttemptFailure[] };
+  | { type: "escalate"; ticket: number; failures: AttemptFailure[] }
+  | { type: "close"; ticket: number; prUrl: string };

@@ -74,6 +74,32 @@ describe("act", () => {
     expect(lines).toEqual(["released #4 (orphaned claim)", "claimed #9"]);
   });
 
+  it("closes a merged-but-open ticket via the tracker, linking the PR", async () => {
+    const { exec, calls } = recordingExec();
+    const { openPr } = recordingOpenPr();
+    const lines: string[] = [];
+
+    await act(
+      [{ type: "close", ticket: 6, prUrl: "https://github.com/o/r/pull/60" }],
+      noDispatch,
+      openPr,
+      exec,
+      (line) => lines.push(line),
+    );
+
+    expect(calls).toEqual([
+      [
+        "gh",
+        "issue",
+        "close",
+        "6",
+        "--comment",
+        expect.stringContaining("https://github.com/o/r/pull/60"),
+      ],
+    ]);
+    expect(lines).toEqual(["closed #6 (merged: https://github.com/o/r/pull/60)"]);
+  });
+
   it("performs no writes for an empty plan", async () => {
     const { exec, calls } = recordingExec();
     const { openPr } = recordingOpenPr();

@@ -5,6 +5,8 @@ import { join } from "node:path";
 export const CONFIG_FILE = "border-collie.json";
 
 const DEFAULT_MAX_WORKERS = 3;
+const DEFAULT_MAX_OPEN_PRS = 5;
+const DEFAULT_POLL_SECONDS = 30;
 const DEFAULT_WORKER_MODEL = "sonnet";
 const DEFAULT_RETRY_MODEL = "opus";
 const DEFAULT_TIMEOUT_MINUTES = 45;
@@ -16,6 +18,8 @@ export class ConfigError extends Error {}
 export interface Flags {
   parent?: number;
   maxWorkers?: number;
+  maxOpenPrs?: number;
+  pollSeconds?: number;
   all?: boolean;
   model?: string;
   retryModel?: string;
@@ -26,6 +30,10 @@ export type Scope = { kind: "parent"; parent: number } | { kind: "all" };
 export interface ResolvedConfig {
   scope: Scope;
   maxWorkers: number;
+  /** Open agent PRs at or above this cap pause dispatch (review bandwidth). */
+  maxOpenPrs: number;
+  /** Seconds a run sleeps between Ticks. */
+  pollSeconds: number;
   /** Model Workers run on (`claude --model`). */
   model: string;
   /** Stronger model a second attempt runs on (the retry ladder). */
@@ -65,6 +73,14 @@ export function resolveConfig(fileConfig: unknown, flags: Flags): ResolvedConfig
     flags.maxWorkers ?? file["max_workers"] ?? DEFAULT_MAX_WORKERS,
     "max_workers",
   );
+  const maxOpenPrs = asPositiveInt(
+    flags.maxOpenPrs ?? file["max_open_prs"] ?? DEFAULT_MAX_OPEN_PRS,
+    "max_open_prs",
+  );
+  const pollSeconds = asPositiveInt(
+    flags.pollSeconds ?? file["poll_seconds"] ?? DEFAULT_POLL_SECONDS,
+    "poll_seconds",
+  );
   const model = asNonEmptyString(
     flags.model ?? file["worker_model"] ?? DEFAULT_WORKER_MODEL,
     "worker_model",
@@ -81,7 +97,7 @@ export function resolveConfig(fileConfig: unknown, flags: Flags): ResolvedConfig
     file["worker_stall_minutes"] ?? DEFAULT_STALL_MINUTES,
     "worker_stall_minutes",
   );
-  const shared = { maxWorkers, model, retryModel, timeoutMinutes, stallMinutes };
+  const shared = { maxWorkers, maxOpenPrs, pollSeconds, model, retryModel, timeoutMinutes, stallMinutes };
 
   if (flags.all) {
     if (flags.parent !== undefined) {

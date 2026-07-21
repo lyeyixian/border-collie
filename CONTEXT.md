@@ -13,7 +13,7 @@ An open issue on the tracker produced by `/to-tickets`: a tracer-bullet vertical
 _Avoid_: task, story
 
 **Dispatchable**:
-A ticket that is open, unassigned, labelled `ready-for-agent`, and whose blockers are all closed — eligible for dispatch (the concurrency caps decide how many actually go each Tick). The dispatchable set is the only place the Orchestrator takes work from.
+A ticket that is open, unassigned, labelled `ready-for-agent`, whose blockers are all closed, and with no merged agent PR (a merged PR means the work is Done and only closure verification is pending) — eligible for dispatch (the concurrency caps decide how many actually go each Tick). The dispatchable set is the only place the Orchestrator takes work from.
 _Avoid_: frontier (the upstream mattpocock-skills docs use "frontier" for this same set), ready, grabbable
 
 **Claim**:

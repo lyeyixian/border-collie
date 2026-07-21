@@ -1,6 +1,6 @@
 import { modelForAttempt, type ResolvedConfig } from "./config.js";
 import { dispatchableSet } from "./plan.js";
-import type { Action, WorldSnapshot } from "./types.js";
+import { READY_FOR_AGENT, type Action, type Ticket, type WorldSnapshot } from "./types.js";
 
 /** Render the dispatch plan as human-readable lines. Pure. */
 export function renderPlan(
@@ -9,7 +9,7 @@ export function renderPlan(
   actions: Action[],
   { dryRun }: { dryRun: boolean },
 ): string {
-  const { scope, maxWorkers } = config;
+  const { scope, maxWorkers, maxOpenPrs } = config;
   const lines: string[] = [];
   const open = world.tickets.filter((t) => t.state === "open").length;
   const scopeLabel =
@@ -24,12 +24,17 @@ export function renderPlan(
   } else {
     lines.push(`Dispatchable: ${dispatchable.map((t) => `#${t.number}`).join(", ")}`);
   }
+  if (dispatchable.length > 0 && world.openAgentPrTickets.length >= maxOpenPrs) {
+    lines.push(
+      `Dispatch paused: ${world.openAgentPrTickets.length} open agent PRs at max_open_prs (${maxOpenPrs})`,
+    );
+  }
 
   const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
   if (actions.length === 0) {
-    lines.push(`Plan (max_workers=${maxWorkers}): nothing to do`);
+    lines.push(`Plan (max_workers=${maxWorkers}, max_open_prs=${maxOpenPrs}): nothing to do`);
   } else {
-    lines.push(`Plan (max_workers=${maxWorkers}):`);
+    lines.push(`Plan (max_workers=${maxWorkers}, max_open_prs=${maxOpenPrs}):`);
     for (const action of actions) {
       const title = titles.get(action.ticket) ?? "";
       switch (action.type) {
@@ -52,10 +57,32 @@ export function renderPlan(
             `  escalate #${action.ticket} — ${title} (attempts exhausted → ready-for-human)`,
           );
           break;
+        case "close":
+          lines.push(`  close #${action.ticket} — ${title} (merged: ${action.prUrl})`);
+          break;
       }
     }
   }
 
   if (dryRun) lines.push("Dry run: no writes performed.");
   return lines.join("\n");
+}
+
+/** Why this open ticket cannot move without a human, best effort. */
+function stuckReason(ticket: Ticket): string {
+  const reasons: string[] = [];
+  if (ticket.assignees.length > 0) reasons.push(`claimed by ${ticket.assignees.join(", ")}`);
+  if (!ticket.labels.includes(READY_FOR_AGENT)) reasons.push(`not labelled ${READY_FOR_AGENT}`);
+  if (ticket.openBlockers > 0) {
+    reasons.push(`${ticket.openBlockers} open blocker${ticket.openBlockers === 1 ? "" : "s"}`);
+  }
+  return reasons.join("; ") || "no path forward found";
+}
+
+/** Render the Stuck exit report: each remaining open ticket and why. Pure. */
+export function renderStuck(open: Ticket[]): string {
+  return [
+    "Run Stuck: open tickets remain, but every path forward runs through a human.",
+    ...open.map((ticket) => `  #${ticket.number} — ${ticket.title} (${stuckReason(ticket)})`),
+  ].join("\n");
 }

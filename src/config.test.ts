@@ -12,6 +12,8 @@ describe("resolveConfig", () => {
       retryModel: "opus",
       timeoutMinutes: 45,
       stallMinutes: 10,
+      maxOpenPrs: 5,
+      pollSeconds: 30,
     });
   });
 
@@ -34,6 +36,8 @@ describe("resolveConfig", () => {
       retryModel: "opus",
       timeoutMinutes: 45,
       stallMinutes: 10,
+      maxOpenPrs: 5,
+      pollSeconds: 30,
     });
   });
 
@@ -47,6 +51,8 @@ describe("resolveConfig", () => {
       retryModel: "opus",
       timeoutMinutes: 45,
       stallMinutes: 10,
+      maxOpenPrs: 5,
+      pollSeconds: 30,
     });
   });
 
@@ -124,6 +130,28 @@ describe("resolveConfig", () => {
     expect(() => resolveConfig({ parent: 1 }, { maxWorkers: -2 })).toThrow(
       ConfigError,
     );
+  });
+
+  it("takes max_open_prs and poll_seconds from the config file", () => {
+    const resolved = resolveConfig({ parent: 1, max_open_prs: 2, poll_seconds: 60 }, {});
+
+    expect(resolved.maxOpenPrs).toBe(2);
+    expect(resolved.pollSeconds).toBe(60);
+  });
+
+  it("lets flags override max_open_prs and poll_seconds", () => {
+    const resolved = resolveConfig(
+      { parent: 1, max_open_prs: 2, poll_seconds: 60 },
+      { maxOpenPrs: 8, pollSeconds: 10 },
+    );
+
+    expect(resolved.maxOpenPrs).toBe(8);
+    expect(resolved.pollSeconds).toBe(10);
+  });
+
+  it("rejects a non-positive max_open_prs or poll_seconds", () => {
+    expect(() => resolveConfig({ parent: 1, max_open_prs: 0 }, {})).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1 }, { pollSeconds: 0 })).toThrow(ConfigError);
   });
 
   it("rejects a malformed config file", () => {

@@ -11,6 +11,7 @@ import {
   RELEASE_MARKER,
   ticketFromAgentBranch,
   type AttemptFailure,
+  type MergedAgentPr,
   type Ticket,
   type WorldSnapshot,
 } from "./types.js";
@@ -109,6 +110,28 @@ async function listOpenAgentPrTickets(exec: Exec): Promise<number[]> {
 }
 
 /**
+ * Merged agent PRs, one per ticket (first seen in the listing, which is
+ * newest-created-first). Reads the full closed-PR listing — fine at v1's
+ * repo sizes — and drops closed-without-merge PRs: only a merge means the
+ * work landed (CONTEXT.md "Done").
+ */
+async function listMergedAgentPrs(exec: Exec): Promise<MergedAgentPr[]> {
+  const pulls = await readPages<{
+    head?: { ref?: string };
+    merged_at?: string | null;
+    html_url?: string;
+  }>("repos/{owner}/{repo}/pulls?state=closed&per_page=100", exec);
+  const merged = new Map<number, MergedAgentPr>();
+  for (const pr of pulls) {
+    if (!pr.merged_at) continue;
+    const ticket = ticketFromAgentBranch(pr.head?.ref ?? "");
+    if (ticket === undefined || merged.has(ticket)) continue;
+    merged.set(ticket, { ticket, url: pr.html_url ?? "" });
+  }
+  return [...merged.values()];
+}
+
+/**
  * Observe phase: read the Scope from GitHub. Parent scope lists the parent's
  * sub-issues (open and closed — the planner needs closed ones to reason about
  * later); repo-wide scope lists open agent-ready issues, excluding PRs
@@ -139,16 +162,18 @@ export async function readScope(scope: Scope, exec: Exec = realExec): Promise<Wo
     }
   }
 
-  // Open agent PRs matter only to orphan detection (which needs an agent
-  // claim to exist) and to the escalation veto (which needs exhausted
-  // attempts) — skip the read otherwise.
-  const openAgentPrTickets = tickets.some(
-    (t) => t.hasAgentClaim || t.agentClaimCount >= MAX_ATTEMPTS,
-  )
-    ? await listOpenAgentPrTickets(exec)
+  // Agent PRs matter only while open tickets exist: orphan detection, the
+  // escalation veto, and the max_open_prs throttle read the open ones,
+  // closure verification the merged ones. A fully closed Scope needs
+  // neither read.
+  const hasOpenTickets = tickets.some((t) => t.state === "open");
+  const inScope = new Set(tickets.map((t) => t.number));
+  const openAgentPrTickets = hasOpenTickets ? await listOpenAgentPrTickets(exec) : [];
+  const mergedAgentPrs = hasOpenTickets
+    ? (await listMergedAgentPrs(exec)).filter((pr) => inScope.has(pr.ticket))
     : [];
 
-  return { tickets, openAgentPrTickets };
+  return { tickets, openAgentPrTickets, mergedAgentPrs };
 }
 
 const CLAIM_COMMENT = `${CLAIM_MARKER}\n🐕 Claimed by border-collie: a Worker will be dispatched against this ticket. This assignment is agent-held — see CONTEXT.md "Claim".`;
@@ -184,6 +209,22 @@ export async function releaseTicket(
   exec: Exec = realExec,
 ): Promise<void> {
   await release(ticket, assignees.join(","), RELEASE_COMMENT, exec);
+}
+
+const closeComment = (prUrl: string) =>
+  `🐕 border-collie closure verification: ${prUrl} merged, but this ticket was still open — closing it so its dependents unblock.`;
+
+/**
+ * Act phase: close a ticket whose agent PR merged without closing it (a
+ * mangled close keyword must never silently freeze the DAG), commenting the
+ * merged PR's URL as evidence.
+ */
+export async function closeTicket(
+  ticket: number,
+  prUrl: string,
+  exec: Exec = realExec,
+): Promise<void> {
+  await exec("gh", ["issue", "close", String(ticket), "--comment", closeComment(prUrl)]);
 }
 
 /**

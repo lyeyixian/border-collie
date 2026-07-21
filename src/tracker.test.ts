@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   claimTicket,
+  closeTicket,
   createDraftPr,
   escalateTicket,
   readScope,
@@ -55,22 +56,47 @@ const SUB_ISSUES = "repos/{owner}/{repo}/issues/1/sub_issues?per_page=100";
 const ALL_ISSUES = "repos/{owner}/{repo}/issues?labels=ready-for-agent&state=open&per_page=100";
 const comments = (n: number) => `repos/{owner}/{repo}/issues/${n}/comments?per_page=100`;
 const OPEN_PULLS = "repos/{owner}/{repo}/pulls?state=open&per_page=100";
+const CLOSED_PULLS = "repos/{owner}/{repo}/pulls?state=closed&per_page=100";
+/** Both PR listings answered empty — the common backdrop for open tickets. */
+const NO_PULLS = { [OPEN_PULLS]: [[]], [CLOSED_PULLS]: [[]] };
 
 describe("readScope", () => {
-  it("reads a parent's sub-issues via gh api with pagination", async () => {
-    const { exec, calls } = fakeExec({ [SUB_ISSUES]: [[issue({})]], [comments(2)]: [[]] });
+  it("reads a parent's sub-issues via gh api with pagination, then comments and both PR listings", async () => {
+    const { exec, calls } = fakeExec({
+      [SUB_ISSUES]: [[issue({})]],
+      [comments(2)]: [[]],
+      ...NO_PULLS,
+    });
 
     await readScope({ kind: "parent", parent: 1 }, exec);
 
+    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES, comments(2), OPEN_PULLS, CLOSED_PULLS]);
     expect(calls[0]).toEqual(["gh", "api", SUB_ISSUES, "--paginate", "--slurp"]);
   });
 
   it("reads repo-wide agent-ready issues when scope is all", async () => {
-    const { exec, calls } = fakeExec({ [ALL_ISSUES]: [[issue({})]], [comments(2)]: [[]] });
+    const { exec, calls } = fakeExec({
+      [ALL_ISSUES]: [[issue({})]],
+      [comments(2)]: [[]],
+      ...NO_PULLS,
+    });
 
     await readScope({ kind: "all" }, exec);
 
-    expect(calls[0]).toEqual(["gh", "api", ALL_ISSUES, "--paginate", "--slurp"]);
+    expect(calls.map((c) => c[2])).toEqual([ALL_ISSUES, comments(2), OPEN_PULLS, CLOSED_PULLS]);
+  });
+
+  it("skips both PR reads when no ticket in Scope is open", async () => {
+    const { exec, calls } = fakeExec({
+      [SUB_ISSUES]: [[issue({ number: 3, state: "closed" })]],
+      // Pull endpoints deliberately unmapped: fetching them would throw.
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES]);
+    expect(world.openAgentPrTickets).toEqual([]);
+    expect(world.mergedAgentPrs).toEqual([]);
   });
 
   it("maps issues to Tickets and flattens pages", async () => {
@@ -87,6 +113,7 @@ describe("readScope", () => {
         [issue({ number: 4, title: "Second page" })],
       ],
       [comments(4)]: [[]],
+      ...NO_PULLS,
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -123,6 +150,7 @@ describe("readScope", () => {
         [issue({ number: 5 }), issue({ number: 6, pull_request: { url: "x" } })],
       ],
       [comments(5)]: [[]],
+      ...NO_PULLS,
     });
 
     const world = await readScope({ kind: "all" }, exec);
@@ -134,6 +162,7 @@ describe("readScope", () => {
     const { exec } = fakeExec({
       [SUB_ISSUES]: [[issue({ number: 7, issue_dependencies_summary: undefined })]],
       [comments(7)]: [[]],
+      ...NO_PULLS,
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -153,7 +182,7 @@ describe("readScope", () => {
         [{ body: "human chatter" }, { body: `${CLAIM_MARKER}\n🐕 claimed` }],
       ],
       [comments(6)]: [[]],
-      [OPEN_PULLS]: [[]],
+      ...NO_PULLS,
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -175,11 +204,12 @@ describe("readScope", () => {
           issue({ number: 8, labels: [] }),
         ],
       ],
+      ...NO_PULLS,
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES]);
+    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES, OPEN_PULLS, CLOSED_PULLS]);
     expect(world.tickets.map((t) => t.agentClaimCount)).toEqual([0, 0, 0]);
   });
 
@@ -196,7 +226,7 @@ describe("readScope", () => {
           },
         ],
       ],
-      [OPEN_PULLS]: [[]],
+      ...NO_PULLS,
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -220,6 +250,7 @@ describe("readScope", () => {
         ],
       ],
       [OPEN_PULLS]: [[{ head: { ref: "border-collie/ticket-5" } }]],
+      [CLOSED_PULLS]: [[]],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -227,20 +258,19 @@ describe("readScope", () => {
     expect(world.openAgentPrTickets).toEqual([5]);
   });
 
-  it("treats a release marker after the claim as no agent claim, and skips the PR read", async () => {
-    const { exec, calls } = fakeExec({
+  it("treats a release marker after the claim as no agent claim", async () => {
+    const { exec } = fakeExec({
       [SUB_ISSUES]: [[issue({ number: 5, assignees: [{ login: "a-human" }] })]],
       [comments(5)]: [
         [{ body: `${CLAIM_MARKER}\nclaimed` }, { body: `${RELEASE_MARKER}\nreleased` }],
       ],
-      // OPEN_PULLS deliberately unmapped: fetching it would throw.
+      ...NO_PULLS,
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
     expect(world.tickets[0]?.hasAgentClaim).toBe(false);
     expect(world.openAgentPrTickets).toEqual([]);
-    expect(calls.map((c) => c[2])).not.toContain(OPEN_PULLS);
   });
 
   it("maps open agent-branch PRs to ticket numbers, ignoring other branches", async () => {
@@ -253,11 +283,75 @@ describe("readScope", () => {
           { head: { ref: "feature/unrelated" } },
         ],
       ],
+      [CLOSED_PULLS]: [[]],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
     expect(world.openAgentPrTickets).toEqual([8]);
+  });
+
+  it("surfaces merged agent PRs for tickets in Scope, ignoring closed-unmerged and foreign ones", async () => {
+    const { exec } = fakeExec({
+      [SUB_ISSUES]: [[issue({ number: 5 }), issue({ number: 6 })]],
+      [comments(5)]: [[]],
+      [comments(6)]: [[]],
+      [OPEN_PULLS]: [[]],
+      [CLOSED_PULLS]: [
+        [
+          {
+            head: { ref: "border-collie/ticket-5" },
+            merged_at: "2026-07-20T10:00:00Z",
+            html_url: "https://github.com/o/r/pull/50",
+          },
+          { head: { ref: "border-collie/ticket-6" }, merged_at: null },
+          {
+            head: { ref: "border-collie/ticket-99" },
+            merged_at: "2026-07-19T10:00:00Z",
+            html_url: "https://github.com/o/r/pull/99",
+          },
+          {
+            head: { ref: "feature/unrelated" },
+            merged_at: "2026-07-18T10:00:00Z",
+            html_url: "https://github.com/o/r/pull/40",
+          },
+        ],
+      ],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.mergedAgentPrs).toEqual([
+      { ticket: 5, url: "https://github.com/o/r/pull/50" },
+    ]);
+  });
+
+  it("keeps one merged PR per ticket: the first in the newest-created-first listing", async () => {
+    const { exec } = fakeExec({
+      [SUB_ISSUES]: [[issue({ number: 5 })]],
+      [comments(5)]: [[]],
+      [OPEN_PULLS]: [[]],
+      [CLOSED_PULLS]: [
+        [
+          {
+            head: { ref: "border-collie/ticket-5" },
+            merged_at: "2026-07-20T10:00:00Z",
+            html_url: "https://github.com/o/r/pull/52",
+          },
+          {
+            head: { ref: "border-collie/ticket-5" },
+            merged_at: "2026-07-10T10:00:00Z",
+            html_url: "https://github.com/o/r/pull/51",
+          },
+        ],
+      ],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.mergedAgentPrs).toEqual([
+      { ticket: 5, url: "https://github.com/o/r/pull/52" },
+    ]);
   });
 });
 
@@ -293,6 +387,25 @@ describe("releaseTicket", () => {
     expect(calls).toEqual([
       ["gh", "issue", "edit", "5", "--remove-assignee", "operator,other"],
       ["gh", "issue", "comment", "5", "--body", expect.stringContaining(RELEASE_MARKER)],
+    ]);
+  });
+});
+
+describe("closeTicket", () => {
+  it("closes the ticket with a comment linking the merged PR", async () => {
+    const { exec, calls } = recordingExec();
+
+    await closeTicket(6, "https://github.com/o/r/pull/60", exec);
+
+    expect(calls).toEqual([
+      [
+        "gh",
+        "issue",
+        "close",
+        "6",
+        "--comment",
+        expect.stringContaining("https://github.com/o/r/pull/60"),
+      ],
     ]);
   });
 });
