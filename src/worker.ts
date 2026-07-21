@@ -88,7 +88,7 @@ export function workerPrompt(ticket: number): string {
   return [
     `/implement issue #${ticket}`,
     "",
-    "When the work is committed, make your final message a pull request description for this branch: it will be used verbatim as the PR body.",
+    "When the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like \"Here's the PR description:\", no status narration, no text before or after it.",
   ].join("\n");
 }
 

@@ -51,7 +51,7 @@ function fakeSpawn(result: number | null | Error): {
 describe("workerPrompt", () => {
   it("contains only the ticket reference, the /implement invocation, and the PR-description instruction", () => {
     expect(workerPrompt(4)).toBe(
-      "/implement issue #4\n\nWhen the work is committed, make your final message a pull request description for this branch: it will be used verbatim as the PR body.",
+      '/implement issue #4\n\nWhen the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like "Here\'s the PR description:", no status narration, no text before or after it.',
     );
   });
 });
