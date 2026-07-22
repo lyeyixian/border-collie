@@ -9,6 +9,7 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
     assignees: [],
     labels: ["ready-for-agent"],
     openBlockers: 0,
+    blockedBy: [],
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],
@@ -63,6 +64,21 @@ describe("runStatus", () => {
       state: "stuck",
       open: [humanTicket],
     });
+  });
+
+  it("is stuck despite out-of-scope agent PRs: their merge cannot move this Scope", () => {
+    const humanTicket = ticket({ number: 2, labels: ["ready-for-human"] });
+
+    expect(runStatus(world([humanTicket], [99]), [])).toEqual({
+      state: "stuck",
+      open: [humanTicket],
+    });
+  });
+
+  it("keeps running while a dispatchable ticket waits on headroom held by out-of-scope PRs", () => {
+    // Dispatch was throttled to nothing (actions empty), but the ticket
+    // becomes claimable the moment the foreign PRs merge — not stuck.
+    expect(runStatus(world([ticket({ number: 2 })], [99]), [])).toEqual({ state: "running" });
   });
 });
 
@@ -128,6 +144,24 @@ describe("run", () => {
     expect(state.lines.some((line) => line.includes("Complete"))).toBe(true);
   });
 
+  it("logs a Complete summary report naming every ticket in Scope", async () => {
+    const state = scriptedDeps([
+      {
+        world: world([
+          ticket({ number: 2, title: "Walking skeleton", state: "closed" }),
+          ticket({ number: 7, title: "Hard one", state: "closed", labels: ["ready-for-human"] }),
+        ]),
+        actions: [],
+      },
+    ]);
+
+    await run(30, state.deps);
+
+    const report = state.lines.join("\n");
+    expect(report).toContain("#2 — Walking skeleton");
+    expect(report).toContain("#7 — Hard one");
+  });
+
   it("exits stuck with a report naming the open tickets", async () => {
     const state = scriptedDeps([
       {
@@ -142,5 +176,27 @@ describe("run", () => {
     expect(state.sleeps).toEqual([]);
     expect(state.lines.join("\n")).toContain("Stuck");
     expect(state.lines.join("\n")).toContain("#7");
+  });
+
+  it("resumes from tracker truth when re-run after a human fixes a Stuck state", async () => {
+    // Nothing but GitHub carries state: a run that exits Stuck ...
+    const escalated = ticket({ number: 7, labels: ["ready-for-human"] });
+    const first = scriptedDeps([{ world: world([escalated]), actions: [] }]);
+    expect(await run(30, first.deps)).toBe("stuck");
+
+    // ... is recovered by relabelling the ticket and simply running again.
+    const relabelled = ticket({ number: 7 });
+    const second = scriptedDeps([
+      {
+        world: world([relabelled]),
+        actions: [
+          { type: "claim", ticket: 7 },
+          { type: "spawn", ticket: 7, attempt: 1 },
+        ],
+      },
+      { world: world([ticket({ number: 7, state: "closed" })]), actions: [] },
+    ]);
+    expect(await run(30, second.deps)).toBe("complete");
+    expect(second.ticks).toBe(2);
   });
 });

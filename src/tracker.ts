@@ -53,6 +53,7 @@ function toTicket(issue: GithubIssue): Ticket {
     assignees: (issue.assignees ?? []).map((a) => a.login),
     labels: (issue.labels ?? []).map((l) => l.name),
     openBlockers: issue.issue_dependencies_summary?.blocked_by ?? 0,
+    blockedBy: [],
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],
@@ -96,6 +97,19 @@ async function readClaimHistory(ticket: number, exec: Exec): Promise<ClaimHistor
     }
   }
   return history;
+}
+
+/**
+ * Issue numbers of a ticket's open blockers (the summary only counts them).
+ * Read for open blocked tickets so the Stuck report can name exactly what a
+ * ticket is stuck on; the endpoint lists closed blockers too, dropped here.
+ */
+async function readOpenBlockers(ticket: number, exec: Exec): Promise<number[]> {
+  const blockers = await readPages<{ number: number; state?: string }>(
+    `repos/{owner}/{repo}/issues/${ticket}/dependencies/blocked_by?per_page=100`,
+    exec,
+  );
+  return blockers.filter((b) => b.state === "open").map((b) => b.number);
 }
 
 /** Ticket numbers of open PRs whose head branch carries the agent prefix. */
@@ -150,15 +164,20 @@ export async function readScope(scope: Scope, exec: Exec = realExec): Promise<Wo
 
   // Claim history is read where it can matter: assigned tickets (claim
   // ownership) and unassigned dispatch candidates (the Attempt counter that
-  // picks the retry rung or triggers Escalation).
+  // picks the retry rung or triggers Escalation). Blocker lists are read for
+  // open blocked tickets — the Stuck report names them.
   for (const ticket of tickets) {
+    if (ticket.state !== "open") continue;
     const isDispatchCandidate =
       ticket.labels.includes(READY_FOR_AGENT) && ticket.openBlockers === 0;
-    if (ticket.state === "open" && (ticket.assignees.length > 0 || isDispatchCandidate)) {
+    if (ticket.assignees.length > 0 || isDispatchCandidate) {
       const history = await readClaimHistory(ticket.number, exec);
       ticket.hasAgentClaim = history.hasAgentClaim;
       ticket.agentClaimCount = history.agentClaimCount;
       ticket.attemptFailures = history.attemptFailures;
+    }
+    if (ticket.openBlockers > 0) {
+      ticket.blockedBy = await readOpenBlockers(ticket.number, exec);
     }
   }
 

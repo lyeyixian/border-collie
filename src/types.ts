@@ -110,6 +110,12 @@ export interface Ticket {
   /** Count of open blocking issues (GitHub native issue dependencies). */
   openBlockers: number;
   /**
+   * Issue numbers of the open blockers, fetched for open blocked tickets so
+   * the Stuck report can name exactly what a ticket is stuck on. Empty when
+   * unblocked (and for closed tickets, where the list is never read).
+   */
+  blockedBy: number[];
+  /**
    * True when the ticket's latest border-collie marker comment is a claim
    * marker. An assignee without it is a human claim — hands off (CONTEXT.md
    * "Claim").

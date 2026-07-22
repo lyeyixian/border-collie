@@ -55,6 +55,8 @@ function fakeExec(responses: Record<string, unknown>): { exec: Exec; calls: stri
 const SUB_ISSUES = "repos/{owner}/{repo}/issues/1/sub_issues?per_page=100";
 const ALL_ISSUES = "repos/{owner}/{repo}/issues?labels=ready-for-agent&state=open&per_page=100";
 const comments = (n: number) => `repos/{owner}/{repo}/issues/${n}/comments?per_page=100`;
+const blockedBy = (n: number) =>
+  `repos/{owner}/{repo}/issues/${n}/dependencies/blocked_by?per_page=100`;
 const OPEN_PULLS = "repos/{owner}/{repo}/pulls?state=open&per_page=100";
 const CLOSED_PULLS = "repos/{owner}/{repo}/pulls?state=closed&per_page=100";
 /** Both PR listings answered empty — the common backdrop for open tickets. */
@@ -126,6 +128,7 @@ describe("readScope", () => {
         assignees: ["someone"],
         labels: ["ready-for-agent"],
         openBlockers: 2,
+        blockedBy: [],
         hasAgentClaim: false,
         agentClaimCount: 0,
         attemptFailures: [],
@@ -137,6 +140,7 @@ describe("readScope", () => {
         assignees: [],
         labels: ["ready-for-agent"],
         openBlockers: 0,
+        blockedBy: [],
         hasAgentClaim: false,
         agentClaimCount: 0,
         attemptFailures: [],
@@ -204,13 +208,51 @@ describe("readScope", () => {
           issue({ number: 8, labels: [] }),
         ],
       ],
+      [blockedBy(4)]: [[{ number: 2, state: "open" }]],
       ...NO_PULLS,
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES, OPEN_PULLS, CLOSED_PULLS]);
+    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES, blockedBy(4), OPEN_PULLS, CLOSED_PULLS]);
     expect(world.tickets.map((t) => t.agentClaimCount)).toEqual([0, 0, 0]);
+  });
+
+  it("names the open blockers of an open blocked ticket, dropping closed ones", async () => {
+    const { exec } = fakeExec({
+      [SUB_ISSUES]: [[issue({ number: 4, issue_dependencies_summary: { blocked_by: 2 } })]],
+      [blockedBy(4)]: [
+        [
+          { number: 2, state: "open" },
+          { number: 3, state: "closed" },
+          { number: 9, state: "open" },
+        ],
+      ],
+      ...NO_PULLS,
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]?.blockedBy).toEqual([2, 9]);
+  });
+
+  it("never fetches the blocker list for closed or unblocked tickets", async () => {
+    const { exec, calls } = fakeExec({
+      [SUB_ISSUES]: [
+        [
+          issue({ number: 3, state: "closed", issue_dependencies_summary: { blocked_by: 2 } }),
+          issue({ number: 4 }),
+        ],
+      ],
+      [comments(4)]: [[]],
+      // Dependency endpoints deliberately unmapped: fetching them would throw.
+      ...NO_PULLS,
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES, comments(4), OPEN_PULLS, CLOSED_PULLS]);
+    expect(world.tickets.map((t) => t.blockedBy)).toEqual([[], []]);
   });
 
   it("derives the Attempt counter and failure records from the comment history", async () => {
