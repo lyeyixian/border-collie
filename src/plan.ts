@@ -79,7 +79,8 @@ function isEscalationDue(ticket: Ticket, world: WorldSnapshot): boolean {
  * caller binds attempt ≥ 2 to the stronger retry model. Dispatch is capped
  * by both max_workers and the headroom left under max_open_prs: every spawn
  * becomes an open PR, so claiming only into that headroom throttles the
- * fleet to human review bandwidth, resuming as merges land.
+ * fleet to human review bandwidth, resuming as merges land. While the
+ * circuit breaker is open (dispatchPaused) only closes are planned.
  */
 export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   const openTickets = new Set(
@@ -89,6 +90,13 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
     .filter((pr) => openTickets.has(pr.ticket))
     .sort((a, b) => a.ticket - b.ticket)
     .map((pr) => ({ type: "close", ticket: pr.ticket, prUrl: pr.url }));
+
+  // Circuit breaker open: the environment is failing. Only closure
+  // verification proceeds — releases are suppressed so infrastructure-voided
+  // claims stay held (nothing else may grab those tickets mid-outage), and
+  // escalations wait for a healthy environment rather than judging tickets
+  // during one.
+  if (config.dispatchPaused) return closes;
 
   const releases: Action[] = world.tickets
     .filter((ticket) => isOrphanedClaim(ticket, world))

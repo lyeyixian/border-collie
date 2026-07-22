@@ -27,6 +27,8 @@ function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
     retryModel: "opus",
     timeoutMinutes: 45,
     stallMinutes: 10,
+    maxTurns: 200,
+    maxCostUsd: 20,
     ...overrides,
   };
 }
@@ -158,6 +160,19 @@ describe("renderPlan", () => {
         "Scope: sub-issues of #1 — 3 tickets (2 open)",
         "Dispatchable: #2",
         "Dispatch paused: 5 open agent PRs at max_open_prs (5)",
+        "Plan (max_workers=3, max_open_prs=5): nothing to do",
+      ].join("\n"),
+    );
+  });
+
+  it("notes the open circuit breaker when dispatch is paused for infrastructure failure", () => {
+    const actions = plan(world, { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true });
+
+    expect(renderPlan(config(), world, actions, { dryRun: false, dispatchPaused: true })).toBe(
+      [
+        "Scope: sub-issues of #1 — 3 tickets (2 open)",
+        "Dispatchable: #2",
+        "Dispatch paused: circuit breaker open (infrastructure failure), claims held",
         "Plan (max_workers=3, max_open_prs=5): nothing to do",
       ].join("\n"),
     );

@@ -14,7 +14,7 @@ import { openPrForOutcome } from "./pr.js";
 import { renderPlan } from "./render.js";
 import { run } from "./run.js";
 import { readScope } from "./tracker.js";
-import { dispatchWorker } from "./worker.js";
+import { dispatchWorker, probeEnvironment } from "./worker.js";
 import type { Action, WorldSnapshot } from "./types.js";
 
 const USAGE = `Usage: border-collie <tick|run> [options]
@@ -35,9 +35,14 @@ every path forward runs through a human, exit 1). It keeps polling while
 agent PRs await human merge.
 
 Every way a Worker can die is noticed — non-zero exit, no commits, wall-clock
-timeout, stall — and released with a forensic attempt record. A once-failed
-ticket is retried fresh on the stronger retry model; a twice-failed ticket is
-Escalated to ready-for-human with the evidence.
+timeout, stall, blown budget (turn or cost cap) — and released with a
+forensic attempt record. A once-failed ticket is retried fresh on the
+stronger retry model; a twice-failed ticket is Escalated to ready-for-human
+with the evidence. Environment deaths (usage limit, rate limit, auth,
+network — or several Workers dying the same way in one tick) are
+infrastructure failures instead: the attempt is voided, burning nothing, and
+run's circuit breaker pauses dispatch with claims held, probing the
+environment on a backoff until it recovers.
 
 Options:
   --dry-run            print the dispatch plan without writing anything (tick only)
@@ -53,7 +58,8 @@ Options:
 Config: border-collie.json at the target repo root,
 e.g. {"parent": 1, "max_workers": 3, "max_open_prs": 5, "poll_seconds": 30,
 "worker_model": "sonnet", "retry_model": "opus",
-"worker_timeout_minutes": 45, "worker_stall_minutes": 10}`;
+"worker_timeout_minutes": 45, "worker_stall_minutes": 10,
+"worker_max_turns": 200, "worker_max_cost_usd": 20}`;
 
 function parseIntFlag(value: string | undefined, name: string): number | undefined {
   if (value === undefined) return undefined;
@@ -67,13 +73,19 @@ function parseIntFlag(value: string | undefined, name: string): number | undefin
 async function tickOnce(
   config: ResolvedConfig,
   dryRun: boolean,
-): Promise<{ world: WorldSnapshot; actions: Action[] }> {
+  dispatchPaused = false,
+): Promise<{ world: WorldSnapshot; actions: Action[]; infraFailures: number }> {
   const world = await readScope(config.scope);
-  const actions = plan(world, { maxWorkers: config.maxWorkers, maxOpenPrs: config.maxOpenPrs });
-  console.log(renderPlan(config, world, actions, { dryRun }));
+  const actions = plan(world, {
+    maxWorkers: config.maxWorkers,
+    maxOpenPrs: config.maxOpenPrs,
+    dispatchPaused,
+  });
+  console.log(renderPlan(config, world, actions, { dryRun, dispatchPaused }));
+  let infraFailures = 0;
   if (!dryRun) {
     const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
-    await act(
+    const report = await act(
       actions,
       (ticket, attempt) =>
         dispatchWorker(ticket, {
@@ -81,11 +93,14 @@ async function tickOnce(
           attempt,
           timeoutMs: config.timeoutMinutes * 60_000,
           stallMs: config.stallMinutes * 60_000,
+          maxTurns: config.maxTurns,
+          maxCostUsd: config.maxCostUsd,
         }),
       (outcome) => openPrForOutcome(outcome, titles.get(outcome.ticket) ?? `Ticket #${outcome.ticket}`),
     );
+    infraFailures = report.infraFailures;
   }
-  return { world, actions };
+  return { world, actions, infraFailures };
 }
 
 async function main(argv: string[]): Promise<number> {
@@ -131,7 +146,14 @@ async function main(argv: string[]): Promise<number> {
 
   const dryRun = values["dry-run"];
   if (command === "tick") {
-    await tickOnce(config, dryRun);
+    const { infraFailures } = await tickOnce(config, dryRun);
+    if (infraFailures > 0) {
+      // A standalone tick has no resident breaker to hold open; the voided
+      // claims stay held on the tracker, so the operator just re-ticks later.
+      console.log(
+        "Infrastructure failure detected: attempts voided, claims held. Re-run tick when the environment recovers.",
+      );
+    }
     return 0;
   }
 
@@ -139,7 +161,9 @@ async function main(argv: string[]): Promise<number> {
     throw new ConfigError("--dry-run only applies to tick: a dry run never progresses the loop");
   }
   const outcome = await run(config.pollSeconds, {
-    tick: () => tickOnce(config, false),
+    tick: (dispatchPaused) => tickOnce(config, false, dispatchPaused),
+    probe: () => probeEnvironment(config.model),
+    now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log: console.log,
   });

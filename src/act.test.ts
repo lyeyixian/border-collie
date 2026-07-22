@@ -5,6 +5,7 @@ import {
   attemptMarker,
   CLAIM_MARKER,
   RELEASE_MARKER,
+  VOID_MARKER,
   type AttemptFailure,
 } from "./types.js";
 import type { WorkerOutcome } from "./worker.js";
@@ -43,6 +44,9 @@ function outcome(ticket: number, overrides: Partial<WorkerOutcome> = {}): Worker
     exitCode: 0,
     newCommits: 2,
     failure: undefined,
+    infra: undefined,
+    costUsd: undefined,
+    turns: undefined,
     ok: true,
     ...overrides,
   };
@@ -232,6 +236,69 @@ describe("act", () => {
       ],
     ]);
     expect(lines).toEqual(["escalated #5 to ready-for-human (attempts exhausted)"]);
+  });
+
+  it("voids an infrastructure-classified attempt: comment only, claim held, counted in the report", async () => {
+    const { exec, calls } = recordingExec();
+    const lines: string[] = [];
+    const dispatch: DispatchWorker = async () =>
+      outcome(7, { exitCode: 1, newCommits: 0, infra: "usage-limit", ok: false });
+
+    const report = await act(
+      [{ type: "spawn", ticket: 7, attempt: 1 }],
+      dispatch,
+      recordingOpenPr().openPr,
+      exec,
+      (line) => lines.push(line),
+    );
+
+    expect(calls).toEqual([
+      ["gh", "issue", "comment", "7", "--body", expect.stringContaining(VOID_MARKER)],
+    ]);
+    expect(report).toEqual({ infraFailures: 1 });
+    expect(lines).toContain("voided attempt 1 of #7 (usage-limit); claim held");
+  });
+
+  it("reclassifies several Workers failing the same way in one Tick as correlated infrastructure", async () => {
+    const { exec, calls } = recordingExec();
+    const lines: string[] = [];
+    const dispatch: DispatchWorker = async (ticket) =>
+      outcome(ticket, { exitCode: 1, newCommits: 0, failure: "nonzero-exit", ok: false });
+
+    const report = await act(
+      [
+        { type: "spawn", ticket: 2, attempt: 1 },
+        { type: "spawn", ticket: 4, attempt: 1 },
+      ],
+      dispatch,
+      recordingOpenPr().openPr,
+      exec,
+      (line) => lines.push(line),
+    );
+
+    // Both attempts voided, none released: no assignee ever removed.
+    expect(calls.map((c) => c.slice(0, 3))).toEqual([
+      ["gh", "issue", "comment"],
+      ["gh", "issue", "comment"],
+    ]);
+    expect(calls.every((c) => c[5]?.includes(VOID_MARKER))).toBe(true);
+    expect(report).toEqual({ infraFailures: 2 });
+    expect(lines.join("\n")).toContain("correlated");
+  });
+
+  it("reports zero infrastructure failures for a clean Tick", async () => {
+    const { exec } = recordingExec();
+    const dispatch: DispatchWorker = async (ticket) => outcome(ticket);
+
+    const report = await act(
+      [{ type: "spawn", ticket: 2, attempt: 1 }],
+      dispatch,
+      recordingOpenPr().openPr,
+      exec,
+      () => {},
+    );
+
+    expect(report).toEqual({ infraFailures: 0 });
   });
 
   it("still reports finished Workers when a sibling dispatch throws, then rethrows", async () => {

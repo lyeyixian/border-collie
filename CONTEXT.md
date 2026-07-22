@@ -40,7 +40,7 @@ One Worker session against one ticket. A ticket gets at most two before Escalati
 An attempt that failed because of the ticket or the work — crash, no commits, stall, timeout, blown budget. Counts against the ticket's attempts.
 
 **Infrastructure failure**:
-A failure caused by the environment — usage limit, rate limit, auth, network. Counts as nothing; voids the attempt and trips the circuit breaker (pause dispatch, resume when the environment recovers).
+A failure caused by the environment — usage limit, rate limit, auth, network, or several Workers failing the same way within one Tick (correlated). Counts as nothing; voids the attempt (a marker comment uncounts the claim while keeping it held) and trips the circuit breaker (pause dispatch, resume when the environment recovers).
 
 **Escalation**:
 Handing a ticket to a human after its attempts are exhausted: swap `ready-for-agent` → `ready-for-human`, unassign, leave a forensic comment. An escalated ticket stops being Dispatchable by construction; its dependents stay blocked.

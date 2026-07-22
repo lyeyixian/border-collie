@@ -382,3 +382,54 @@ describe("plan: retry ladder and Escalation", () => {
     ]);
   });
 });
+
+describe("plan: circuit breaker", () => {
+  it("plans only closure verification while dispatch is paused: no claims, no spawns", () => {
+    const actions = plan(
+      world([ticket({ number: 4 }), ticket({ number: 6, state: "closed" })], [], [mergedPr(6)]),
+      { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("still closes a merged-but-open ticket while paused — pure bookkeeping of landed work", () => {
+    const actions = plan(world([ticket({ number: 6 })], [], [mergedPr(6)]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      dispatchPaused: true,
+    });
+
+    expect(actions).toEqual([
+      { type: "close", ticket: 6, prUrl: "https://github.com/o/r/pull/60" },
+    ]);
+  });
+
+  it("keeps claims held while paused: no orphan releases mid-outage", () => {
+    const held = ticket({
+      number: 4,
+      assignees: ["operator"],
+      hasAgentClaim: true,
+      agentClaimCount: 1,
+    });
+
+    expect(plan(world([held]), { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true })).toEqual([]);
+  });
+
+  it("does not escalate while paused: tickets are judged only against a healthy environment", () => {
+    const exhausted = ticket({ number: 7, agentClaimCount: 2, attemptFailures: [failure(1), failure(2)] });
+
+    expect(plan(world([exhausted]), { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true })).toEqual([]);
+  });
+
+  it("does not count a voided attempt: a claim history net of voids re-dispatches at the same rung", () => {
+    // agentClaimCount arrives net of void markers from the tracker read: one
+    // claim voided by an infrastructure failure leaves the counter at 0.
+    const voided = ticket({ number: 4, agentClaimCount: 0 });
+
+    expect(plan(world([voided]), { maxWorkers: 3, maxOpenPrs: 5 })).toEqual([
+      { type: "claim", ticket: 4 },
+      { type: "spawn", ticket: 4, attempt: 1 },
+    ]);
+  });
+});

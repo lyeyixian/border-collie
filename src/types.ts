@@ -18,17 +18,43 @@ export const CLAIM_MARKER = "<!-- border-collie:claim -->";
 export const RELEASE_MARKER = "<!-- border-collie:release -->";
 
 /**
- * The four ticket-failure triggers (CONTEXT.md "Ticket failure"): every way
- * a Worker can die that counts against the ticket's Attempts.
+ * The ticket-failure triggers (CONTEXT.md "Ticket failure"): every way a
+ * Worker can die that counts against the ticket's Attempts.
  */
-export type FailureReason = "nonzero-exit" | "no-commits" | "timeout" | "stall";
+export type FailureReason = "nonzero-exit" | "no-commits" | "timeout" | "stall" | "budget";
 
 export const FAILURE_DESCRIPTIONS: Record<FailureReason, string> = {
   "nonzero-exit": "the Worker process exited non-zero",
   "no-commits": "the Worker exited cleanly but committed nothing",
   timeout: "the Worker hit the wall-clock timeout",
   stall: "the Worker produced no output events for the stall window",
+  budget: "the Worker breached a budget backstop (turn or cost cap)",
 };
+
+/**
+ * The infrastructure-failure classes (CONTEXT.md "Infrastructure failure"):
+ * environment problems that void the Attempt and trip the circuit breaker
+ * instead of burning Attempts. `correlated` is the same-way-same-Tick
+ * heuristic: several Workers dying identically is an environment problem,
+ * not a coincidence of tickets.
+ */
+export type InfraReason = "usage-limit" | "rate-limit" | "auth" | "network" | "correlated";
+
+export const INFRA_DESCRIPTIONS: Record<InfraReason, string> = {
+  "usage-limit": "the account usage limit was reached",
+  "rate-limit": "the API rate-limited requests",
+  auth: "authentication with the API failed",
+  network: "the network was unreachable",
+  correlated: "several Workers failed the same way within one Tick",
+};
+
+/**
+ * Hidden HTML marker on a comment that voids the preceding claim: the
+ * Attempt died to the environment, so it counts as nothing. Unlike a release
+ * marker it does NOT surrender the claim — the ticket stays agent-held while
+ * the circuit breaker waits out the outage.
+ */
+export const VOID_MARKER = "<!-- border-collie:void -->";
 
 /**
  * One failed Attempt's forensics, embedded in its release comment so attempt
@@ -116,8 +142,9 @@ export interface Ticket {
    */
   hasAgentClaim: boolean;
   /**
-   * Count of claim marker comments ever posted — the stateless Attempt
-   * counter: each Attempt is preceded by exactly one claim.
+   * Count of claim marker comments ever posted, minus voided ones — the
+   * stateless Attempt counter: each Attempt is preceded by exactly one claim,
+   * and an infrastructure-voided Attempt counts as nothing.
    */
   agentClaimCount: number;
   /** Attempt records parsed from release comments, in comment order. */
@@ -147,6 +174,13 @@ export interface PlanConfig {
   maxWorkers: number;
   /** Open agent PRs at or above this cap pause dispatch (review bandwidth). */
   maxOpenPrs: number;
+  /**
+   * True while the circuit breaker is open: the environment is failing, so
+   * the plan pauses dispatch and keeps claims held — only closure
+   * verification (pure bookkeeping of already-merged work) still runs.
+   * Omitted means closed (dispatch flows).
+   */
+  dispatchPaused?: boolean;
 }
 
 /**

@@ -7,7 +7,7 @@ export function renderPlan(
   config: ResolvedConfig,
   world: WorldSnapshot,
   actions: Action[],
-  { dryRun }: { dryRun: boolean },
+  { dryRun, dispatchPaused = false }: { dryRun: boolean; dispatchPaused?: boolean },
 ): string {
   const { scope, maxWorkers, maxOpenPrs } = config;
   const lines: string[] = [];
@@ -24,7 +24,9 @@ export function renderPlan(
   } else {
     lines.push(`Dispatchable: ${dispatchable.map((t) => `#${t.number}`).join(", ")}`);
   }
-  if (dispatchable.length > 0 && world.openAgentPrTickets.length >= maxOpenPrs) {
+  if (dispatchPaused) {
+    lines.push("Dispatch paused: circuit breaker open (infrastructure failure), claims held");
+  } else if (dispatchable.length > 0 && world.openAgentPrTickets.length >= maxOpenPrs) {
     lines.push(
       `Dispatch paused: ${world.openAgentPrTickets.length} open agent PRs at max_open_prs (${maxOpenPrs})`,
     );

@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { classifyInfrastructure, lastResultLine, parseResultEvent } from "./classify.js";
 import { realExec, type Exec } from "./tracker.js";
-import { AGENT_BRANCH_PREFIX, type FailureReason } from "./types.js";
+import { AGENT_BRANCH_PREFIX, type FailureReason, type InfraReason } from "./types.js";
 
 /**
  * The WorkerHost seam: everything a dispatched Worker needs around it —
@@ -27,6 +28,10 @@ export interface WorkerConfig {
   timeoutMs: number;
   /** Max quiet time between output events before the Worker counts as stalled. */
   stallMs: number;
+  /** Budget backstop: max agentic turns (`claude --max-turns`); breach is a ticket failure. */
+  maxTurns: number;
+  /** Budget backstop: max spend in USD per Attempt; breach is a ticket failure. */
+  maxCostUsd: number;
 }
 
 /** One finished Attempt, as observed by the Orchestrator. */
@@ -46,11 +51,22 @@ export interface WorkerOutcome {
   /** Commits on the branch beyond the base it was cut from. */
   newCommits: number;
   /**
-   * Which ticket-failure trigger fired, or undefined on success. Exactly the
-   * four triggers: nonzero-exit, no-commits, timeout, stall.
+   * Which ticket-failure trigger fired, or undefined when none did (success,
+   * or an infrastructure failure): nonzero-exit, no-commits, timeout, stall,
+   * budget. Mutually exclusive with `infra`.
    */
   failure: FailureReason | undefined;
-  /** The success predicate: no failure trigger fired. */
+  /**
+   * The infrastructure class a failed Worker's output evidenced, or
+   * undefined. An infra death voids the Attempt instead of burning it
+   * (CONTEXT.md "Infrastructure failure").
+   */
+  infra: InfraReason | undefined;
+  /** Attempt spend in USD, from the transcript's result event when one survived. */
+  costUsd: number | undefined;
+  /** Agentic turns taken, from the transcript's result event when one survived. */
+  turns: number | undefined;
+  /** The success predicate: no failure trigger fired, ticket or infrastructure. */
   ok: boolean;
 }
 
@@ -73,6 +89,24 @@ export interface WorkerProcessRequest {
 export interface WorkerProcessExit {
   exitCode: number | null;
   endedBy: "exit" | "timeout" | "stall";
+  /** Last stretch of stdout, kept in memory for classification (full stream is on disk). */
+  stdoutTail: string;
+  /** Last stretch of stderr, kept in memory for classification. */
+  stderrTail: string;
+}
+
+/** How much of each output stream's tail is kept for classification. */
+export const TAIL_LIMIT = 64 * 1024;
+
+/** Accumulate a stream into a bounded tail: only the last TAIL_LIMIT chars survive. */
+function makeTail(): { push: (chunk: Buffer | string) => void; read: () => string } {
+  let tail = "";
+  return {
+    push: (chunk) => {
+      tail = (tail + String(chunk)).slice(-TAIL_LIMIT);
+    },
+    read: () => tail,
+  };
 }
 
 /** Process seam: run the Worker to completion under both watchdogs. */
@@ -87,8 +121,12 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
       cwd: request.cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const stdoutTail = makeTail();
+    const stderrTail = makeTail();
     child.stdout.pipe(transcript);
     child.stderr.pipe(stderr);
+    child.stdout.on("data", stdoutTail.push);
+    child.stderr.on("data", stderrTail.push);
 
     // SIGKILL, not SIGTERM: a stalled Worker may not be servicing signals.
     let endedBy: WorkerProcessExit["endedBy"] = "exit";
@@ -119,7 +157,12 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
     });
     child.on("close", (code) => {
       end();
-      resolve({ exitCode: code, endedBy });
+      resolve({
+        exitCode: code,
+        endedBy,
+        stdoutTail: stdoutTail.read(),
+        stderrTail: stderrTail.read(),
+      });
     });
   });
 
@@ -218,13 +261,15 @@ export async function dispatchWorker(
     // Headless Workers cannot answer permission prompts; skipping them is
     // what confines the blast radius to the worktree plus the operator's
     // own tracker.
-    const { exitCode, endedBy } = await spawnProcess({
+    const { exitCode, endedBy, stdoutTail, stderrTail } = await spawnProcess({
       cmd: "claude",
       args: [
         "-p",
         workerPrompt(ticket),
         "--model",
         config.model,
+        "--max-turns",
+        String(config.maxTurns),
         "--output-format",
         "stream-json",
         "--verbose",
@@ -241,7 +286,7 @@ export async function dispatchWorker(
     );
     // A killed Worker fails even with commits on the branch: it never got to
     // finish, so the work is unverified and the PR description is missing.
-    const failure: FailureReason | undefined =
+    const trigger: FailureReason | undefined =
       endedBy !== "exit"
         ? endedBy
         : exitCode !== 0
@@ -249,6 +294,28 @@ export async function dispatchWorker(
           : newCommits === 0
             ? "no-commits"
             : undefined;
+    const result = parseResultEvent(stdoutTail);
+    // Classification order: budget trumps infra trumps the raw trigger. A
+    // parsed result event proves the environment carried the Worker to its
+    // end, so a budget breach is the ticket's fault whatever infra-looking
+    // noise the logs hold — and it fails even a Worker that otherwise
+    // finished cleanly: the backstop is what surfaces oversized tickets to a
+    // human. (The cost cap is necessarily post-hoc — mid-flight spend is
+    // invisible until the result event — so a runaway is *stopped* by the
+    // turn cap and wall clock, and the cost cap fails what they let
+    // through.) Infra is only consulted for Workers that already died — a
+    // successful Attempt is never voided — and only against stderr plus the
+    // result line, never the transcript body, where a ticket legitimately
+    // about rate limits would match by content instead of cause.
+    const budgetBreached =
+      result?.subtype === "error_max_turns" ||
+      (result?.totalCostUsd !== undefined && result.totalCostUsd > config.maxCostUsd);
+    const infra =
+      trigger !== undefined && !budgetBreached
+        ? classifyInfrastructure(`${stderrTail}\n${lastResultLine(stdoutTail)}`)
+        : undefined;
+    const failure: FailureReason | undefined =
+      budgetBreached ? "budget" : infra !== undefined ? undefined : trigger;
     return {
       ticket,
       attempt: config.attempt,
@@ -259,9 +326,47 @@ export async function dispatchWorker(
       exitCode,
       newCommits,
       failure,
-      ok: failure === undefined,
+      infra,
+      costUsd: result?.totalCostUsd,
+      turns: result?.numTurns,
+      ok: failure === undefined && infra === undefined,
     };
   } finally {
     await withGitLock(() => removeWorktree(worktree, exec));
   }
+}
+
+/** The probe's own generous window: a healthy environment answers in seconds. */
+export const PROBE_TIMEOUT_MS = 2 * 60_000;
+
+/**
+ * The circuit breaker's recovery probe: one trivial headless prompt, no
+ * tracker writes, no worktree. The environment counts as recovered when the
+ * probe exits cleanly with no infrastructure signature in its output — only
+ * then does dispatch resume.
+ */
+export async function probeEnvironment(
+  model: string,
+  spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
+): Promise<boolean> {
+  const { exitCode, endedBy, stdoutTail, stderrTail } = await spawnProcess({
+    cmd: "claude",
+    args: ["-p", "Reply with only the word ok.", "--model", model],
+    cwd: ".",
+    transcriptPath: join(RUN_DIR, "transcripts", "probe.log"),
+    stderrPath: join(RUN_DIR, "transcripts", "probe.stderr.log"),
+    timeoutMs: PROBE_TIMEOUT_MS,
+    stallMs: PROBE_TIMEOUT_MS,
+  }).catch(() => ({
+    // A probe that cannot even spawn is a failed probe, not a crashed run.
+    exitCode: null,
+    endedBy: "exit" as const,
+    stdoutTail: "",
+    stderrTail: "spawn failed",
+  }));
+  return (
+    endedBy === "exit" &&
+    exitCode === 0 &&
+    classifyInfrastructure(`${stderrTail}\n${stdoutTail}`) === undefined
+  );
 }

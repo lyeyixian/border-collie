@@ -7,12 +7,14 @@ import {
   readScope,
   releaseFailedTicket,
   releaseTicket,
+  voidAttempt,
   type Exec,
 } from "./tracker.js";
 import {
   attemptMarker,
   CLAIM_MARKER,
   RELEASE_MARKER,
+  VOID_MARKER,
   type AttemptFailure,
 } from "./types.js";
 
@@ -238,6 +240,46 @@ describe("readScope", () => {
     });
   });
 
+  it("uncounts a voided claim while keeping it agent-held (infrastructure failures burn nothing)", async () => {
+    const { exec } = fakeExec({
+      [SUB_ISSUES]: [[issue({ number: 5, assignees: [{ login: "operator" }] })]],
+      [comments(5)]: [
+        [
+          { body: `${CLAIM_MARKER}\n🐕 claimed` },
+          { body: `${VOID_MARKER}\n🐕 Attempt 1 voided: the account usage limit was reached` },
+        ],
+      ],
+      ...NO_PULLS,
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]).toMatchObject({
+      hasAgentClaim: true,
+      agentClaimCount: 0,
+      attemptFailures: [],
+    });
+  });
+
+  it("counts a fresh claim after a voided one as the first Attempt again", async () => {
+    const { exec } = fakeExec({
+      [SUB_ISSUES]: [[issue({ number: 5 })]],
+      [comments(5)]: [
+        [
+          { body: `${CLAIM_MARKER}\n🐕 claimed` },
+          { body: `${VOID_MARKER}\n🐕 Attempt 1 voided` },
+          { body: `${RELEASE_MARKER}\n🐕 released (orphaned after the outage)` },
+          { body: `${CLAIM_MARKER}\n🐕 claimed again` },
+        ],
+      ],
+      ...NO_PULLS,
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]).toMatchObject({ hasAgentClaim: true, agentClaimCount: 1 });
+  });
+
   it("reads open PRs when attempts are exhausted even with no live agent claim (the escalation veto)", async () => {
     const { exec } = fakeExec({
       [SUB_ISSUES]: [[issue({ number: 5 })]],
@@ -455,6 +497,32 @@ describe("releaseFailedTicket", () => {
     expect(body).toContain(attemptMarker(FAILURE));
     expect(body).toContain("no output events");
     expect(body).toContain(FAILURE.transcript);
+  });
+});
+
+describe("voidAttempt", () => {
+  it("posts only the void comment: no unassign, no release marker — the claim stays held", async () => {
+    const { exec, calls } = recordingExec();
+
+    await voidAttempt(
+      5,
+      {
+        attempt: 1,
+        reason: "usage-limit",
+        model: "sonnet",
+        transcript: ".border-collie/transcripts/ticket-5-attempt-1.jsonl",
+      },
+      exec,
+    );
+
+    expect(calls).toEqual([
+      ["gh", "issue", "comment", "5", "--body", expect.stringContaining(VOID_MARKER)],
+    ]);
+    const body = calls[0]?.[5] ?? "";
+    expect(body).not.toContain(RELEASE_MARKER);
+    expect(body).toContain("usage limit");
+    expect(body).toContain("burns nothing");
+    expect(body).toContain(".border-collie/transcripts/ticket-5-attempt-1.jsonl");
   });
 });
 

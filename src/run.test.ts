@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { BREAKER_BASE_COOLDOWN_MS } from "./breaker.js";
 import { run, runStatus, type RunDeps } from "./run.js";
 import type { Action, MergedAgentPr, Ticket, WorldSnapshot } from "./types.js";
 
@@ -64,30 +65,58 @@ describe("runStatus", () => {
       open: [humanTicket],
     });
   });
+
+  it("is never stuck while the circuit breaker holds dispatch paused — recovery is the path forward", () => {
+    const held = ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true });
+
+    expect(runStatus(world([held]), [], true)).toEqual({ state: "running" });
+  });
 });
 
-/** Scripted ticks: each call shifts the next {world, actions} off the list. */
-function scriptedDeps(script: { world: WorldSnapshot; actions: Action[] }[]): {
+/**
+ * Scripted ticks: each call shifts the next {world, actions, infraFailures}
+ * off the list, recording the dispatchPaused flag it was called with. The
+ * clock advances one poll interval per sleep, so probe cooldowns are
+ * exercised in fake time; probe answers shift off `probeAnswers`.
+ */
+function scriptedDeps(
+  script: { world: WorldSnapshot; actions: Action[]; infraFailures?: number }[],
+  opts: { probeAnswers?: boolean[]; msPerSleep?: number } = {},
+): {
   deps: RunDeps;
   ticks: number;
+  pausedFlags: boolean[];
+  probes: number;
   sleeps: number[];
   lines: string[];
 } {
   const state = {
     ticks: 0,
+    pausedFlags: [] as boolean[],
+    probes: 0,
     sleeps: [] as number[],
     lines: [] as string[],
     deps: {} as RunDeps,
   };
+  let nowMs = 0;
   state.deps = {
-    tick: async () => {
+    tick: async (dispatchPaused) => {
       const next = script.shift();
       if (next === undefined) throw new Error("tick called past the end of the script");
       state.ticks += 1;
-      return next;
+      state.pausedFlags.push(dispatchPaused);
+      return { infraFailures: 0, ...next };
     },
+    probe: async () => {
+      state.probes += 1;
+      const answer = opts.probeAnswers?.shift();
+      if (answer === undefined) throw new Error("probe called past the end of the script");
+      return answer;
+    },
+    now: () => nowMs,
     sleep: async (ms) => {
       state.sleeps.push(ms);
+      nowMs += opts.msPerSleep ?? ms;
     },
     log: (line) => {
       state.lines.push(line);
@@ -126,6 +155,55 @@ describe("run", () => {
     expect(outcome).toBe("complete");
     expect(state.sleeps).toEqual([]);
     expect(state.lines.some((line) => line.includes("Complete"))).toBe(true);
+  });
+
+  it("trips the breaker on infrastructure failure, ticks paused, and resumes when the probe passes", async () => {
+    const held = world([ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })]);
+    const state = scriptedDeps(
+      [
+        {
+          world: held,
+          actions: [
+            { type: "claim", ticket: 2 },
+            { type: "spawn", ticket: 2, attempt: 1 },
+          ],
+          infraFailures: 1,
+        },
+        { world: held, actions: [] }, // paused: would be stuck without the breaker
+        { world: world([ticket({ number: 2, state: "closed" })]), actions: [] },
+      ],
+      // Each sleep advances half a cooldown: one paused Tick passes before the probe is due.
+      { probeAnswers: [true], msPerSleep: BREAKER_BASE_COOLDOWN_MS / 2 },
+    );
+
+    const outcome = await run(30, state.deps);
+
+    expect(outcome).toBe("complete");
+    expect(state.pausedFlags).toEqual([false, true, false]);
+    expect(state.probes).toBe(1);
+    expect(state.lines.join("\n")).toContain("circuit breaker open");
+    expect(state.lines.join("\n")).toContain("dispatch resumes");
+  });
+
+  it("re-trips on a failed probe and waits the doubled cooldown before probing again", async () => {
+    const held = world([ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })]);
+    const state = scriptedDeps(
+      [
+        { world: held, actions: [], infraFailures: 1 },
+        { world: held, actions: [] },
+        { world: held, actions: [] },
+        { world: world([ticket({ number: 2, state: "closed" })]), actions: [] },
+      ],
+      { probeAnswers: [false, true], msPerSleep: BREAKER_BASE_COOLDOWN_MS },
+    );
+
+    const outcome = await run(30, state.deps);
+
+    expect(outcome).toBe("complete");
+    // Trip at t0; probe fails at t1 (re-trip, cooldown doubled); not due at
+    // t2; passes at t3 — so exactly two probes and three paused ticks.
+    expect(state.probes).toBe(2);
+    expect(state.pausedFlags).toEqual([false, true, true, false]);
   });
 
   it("exits stuck with a report naming the open tickets", async () => {

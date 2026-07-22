@@ -4,13 +4,16 @@ import {
   attemptMarker,
   CLAIM_MARKER,
   FAILURE_DESCRIPTIONS,
+  INFRA_DESCRIPTIONS,
   MAX_ATTEMPTS,
   parseAttemptMarker,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
   RELEASE_MARKER,
   ticketFromAgentBranch,
+  VOID_MARKER,
   type AttemptFailure,
+  type InfraReason,
   type MergedAgentPr,
   type Ticket,
   type WorldSnapshot,
@@ -75,9 +78,11 @@ interface ClaimHistory {
  * One pass over a ticket's comments, oldest first. The latest border-collie
  * marker comment decides claim ownership: a claim marker after any release
  * marker means the assignment is agent-held. The claim markers ever posted
- * count Attempts (each Attempt is preceded by exactly one claim), and release
- * comments carry the failed attempts' forensic records. All append-only, so
- * history stays auditable and attempt state needs no local store.
+ * count Attempts (each Attempt is preceded by exactly one claim), a void
+ * marker uncounts the claim it follows (an infrastructure death burns
+ * nothing) while leaving the claim held, and release comments carry the
+ * failed attempts' forensic records. All append-only, so history stays
+ * auditable and attempt state needs no local store.
  */
 async function readClaimHistory(ticket: number, exec: Exec): Promise<ClaimHistory> {
   const comments = await readPages<{ body?: string }>(
@@ -89,6 +94,8 @@ async function readClaimHistory(ticket: number, exec: Exec): Promise<ClaimHistor
     if (comment.body?.includes(CLAIM_MARKER)) {
       history.hasAgentClaim = true;
       history.agentClaimCount += 1;
+    } else if (comment.body?.includes(VOID_MARKER)) {
+      history.agentClaimCount = Math.max(0, history.agentClaimCount - 1);
     } else if (comment.body?.includes(RELEASE_MARKER)) {
       history.hasAgentClaim = false;
       const failure = parseAttemptMarker(comment.body);
@@ -267,6 +274,35 @@ export async function releaseFailedTicket(
     `Worktree torn down; branch \`${failure.branch}\` abandoned; transcript at \`${failure.transcript}\`.`,
   ].join("\n");
   await release(ticket, "@me", body, exec);
+}
+
+/** What a voided Attempt leaves behind, cited in the void comment for humans. */
+export interface VoidedAttempt {
+  attempt: number;
+  reason: InfraReason;
+  model: string;
+  transcript: string;
+}
+
+/**
+ * Act phase: void an Attempt that died to the environment. A comment only —
+ * no unassign, no release marker: the claim stays held while the circuit
+ * breaker waits out the outage, and the void marker uncounts the claim so
+ * the Attempt burns nothing. (The next dispatch reuses the attempt number,
+ * so the cited branch and transcript may be superseded — voided attempts
+ * need no preserved evidence, they never reach Escalation.)
+ */
+export async function voidAttempt(
+  ticket: number,
+  voided: VoidedAttempt,
+  exec: Exec = realExec,
+): Promise<void> {
+  const body = [
+    VOID_MARKER,
+    `🐕 Attempt ${voided.attempt} voided: ${INFRA_DESCRIPTIONS[voided.reason]} (model ${voided.model}) — an infrastructure failure, not a ticket failure, so it burns nothing.`,
+    `Claim held; dispatch pauses until the environment recovers. Transcript at \`${voided.transcript}\`.`,
+  ].join("\n");
+  await exec("gh", ["issue", "comment", String(ticket), "--body", body]);
 }
 
 /**

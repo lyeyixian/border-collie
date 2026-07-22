@@ -6,6 +6,7 @@ import type { Exec } from "./tracker.js";
 import {
   branchCommitSubjects,
   dispatchWorker,
+  probeEnvironment,
   pushAgentBranch,
   realSpawnWorkerProcess,
   workerPrompt,
@@ -19,7 +20,14 @@ const WORKTREE = ".border-collie/worktrees/ticket-4";
 const BRANCH = "border-collie/ticket-4-attempt-1";
 const TRANSCRIPT = ".border-collie/transcripts/ticket-4-attempt-1.jsonl";
 
-const CONFIG: WorkerConfig = { model: "sonnet", attempt: 1, timeoutMs: 60_000, stallMs: 30_000 };
+const CONFIG: WorkerConfig = {
+  model: "sonnet",
+  attempt: 1,
+  timeoutMs: 60_000,
+  stallMs: 30_000,
+  maxTurns: 200,
+  maxCostUsd: 20,
+};
 
 /**
  * Fake the git side of the subprocess seam: reads are answered from fixtures,
@@ -46,6 +54,7 @@ function fakeExec(opts: { newCommits?: string; removeThrows?: boolean } = {}): {
 function fakeSpawn(
   result: number | null | Error,
   endedBy: WorkerProcessExit["endedBy"] = "exit",
+  tails: { stdoutTail?: string; stderrTail?: string } = {},
 ): {
   spawn: SpawnWorkerProcess;
   requests: WorkerProcessRequest[];
@@ -54,7 +63,12 @@ function fakeSpawn(
   const spawn: SpawnWorkerProcess = async (request) => {
     requests.push(request);
     if (result instanceof Error) throw result;
-    return { exitCode: result, endedBy };
+    return {
+      exitCode: result,
+      endedBy,
+      stdoutTail: tails.stdoutTail ?? "",
+      stderrTail: tails.stderrTail ?? "",
+    };
   };
   return { spawn, requests };
 }
@@ -91,6 +105,8 @@ describe("dispatchWorker", () => {
           workerPrompt(4),
           "--model",
           "sonnet",
+          "--max-turns",
+          "200",
           "--output-format",
           "stream-json",
           "--verbose",
@@ -158,6 +174,9 @@ describe("dispatchWorker", () => {
       exitCode: 0,
       newCommits: 3,
       failure: undefined,
+      infra: undefined,
+      costUsd: undefined,
+      turns: undefined,
       ok: true,
     });
   });
@@ -225,6 +244,107 @@ describe("dispatchWorker", () => {
     expect(requests[0]?.args).toContain("opus");
   });
 
+  it("fails the attempt as a budget breach when the Worker hit the turn cap", async () => {
+    const { exec } = fakeExec({ newCommits: "2" });
+    const { spawn } = fakeSpawn(1, "exit", {
+      stdoutTail: '{"type":"result","subtype":"error_max_turns","total_cost_usd":3.2,"num_turns":200}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      failure: "budget",
+      infra: undefined,
+      costUsd: 3.2,
+      turns: 200,
+    });
+  });
+
+  it("fails the attempt as a budget breach when the cost cap is exceeded, even on a clean finish", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0, "exit", {
+      stdoutTail: '{"type":"result","subtype":"success","total_cost_usd":25.5,"num_turns":80}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: "budget", costUsd: 25.5 });
+  });
+
+  it("succeeds under the cost cap, reporting the spend and turns", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0, "exit", {
+      stdoutTail: '{"type":"result","subtype":"success","total_cost_usd":4.1,"num_turns":52}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: true, failure: undefined, costUsd: 4.1, turns: 52 });
+  });
+
+  it("classifies a failed Worker with a rate-limit signature as an infrastructure failure", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(1, "exit", {
+      stderrTail: 'API Error: 429 {"type":"rate_limit_error"}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: undefined, infra: "rate-limit" });
+  });
+
+  it("classifies a stalled Worker with a network signature as infrastructure, not a stall", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(null, "stall", {
+      stderrTail: "TypeError: fetch failed\n  cause: Error: getaddrinfo ENOTFOUND api.anthropic.com",
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: undefined, infra: "network" });
+  });
+
+  it("never voids on infra-looking text in the transcript body: classification is by cause, not content", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    // A ticket legitimately about rate limiting: the Worker's prose and tool
+    // output mention the signatures, but neither stderr nor the result line do.
+    const { spawn } = fakeSpawn(1, "exit", {
+      stdoutTail: [
+        '{"type":"assistant","message":{"content":"Implementing the rate limit retry after ECONNRESET"}}',
+        '{"type":"result","subtype":"error_during_execution","total_cost_usd":1.1,"num_turns":12}',
+      ].join("\n"),
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: "nonzero-exit", infra: undefined });
+  });
+
+  it("lets a budget breach trump an infra signature: the result event proves the environment was up", async () => {
+    const { exec } = fakeExec({ newCommits: "2" });
+    const { spawn } = fakeSpawn(1, "exit", {
+      stdoutTail: '{"type":"result","subtype":"error_max_turns","total_cost_usd":9,"num_turns":200}',
+      stderrTail: "retrying after rate_limit_error",
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: "budget", infra: undefined });
+  });
+
+  it("never voids a successful Worker, whatever transient noise its logs carry", async () => {
+    const { exec } = fakeExec({ newCommits: "2" });
+    const { spawn } = fakeSpawn(0, "exit", {
+      stdoutTail: '{"type":"result","subtype":"success","total_cost_usd":2,"num_turns":30}',
+      stderrTail: "retrying after ECONNRESET",
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: true, failure: undefined, infra: undefined });
+  });
+
   it("namespaces branch and transcript per attempt, so a retry never clobbers prior evidence", async () => {
     const { exec } = fakeExec({ newCommits: "0" });
     const { spawn } = fakeSpawn(1);
@@ -233,6 +353,34 @@ describe("dispatchWorker", () => {
 
     expect(outcome.branch).toBe("border-collie/ticket-7-attempt-2");
     expect(outcome.transcript).toBe(".border-collie/transcripts/ticket-7-attempt-2.jsonl");
+  });
+});
+
+describe("probeEnvironment", () => {
+  it("answers true when a trivial prompt exits cleanly with no infrastructure signature", async () => {
+    const { spawn, requests } = fakeSpawn(0, "exit", { stdoutTail: "ok" });
+
+    await expect(probeEnvironment("sonnet", spawn)).resolves.toBe(true);
+    expect(requests[0]?.cmd).toBe("claude");
+    expect(requests[0]?.args).toContain("sonnet");
+  });
+
+  it("answers false on a non-zero exit", async () => {
+    const { spawn } = fakeSpawn(1);
+
+    await expect(probeEnvironment("sonnet", spawn)).resolves.toBe(false);
+  });
+
+  it("answers false on a clean exit that still carries an infrastructure signature", async () => {
+    const { spawn } = fakeSpawn(0, "exit", { stdoutTail: "Claude AI usage limit reached|123" });
+
+    await expect(probeEnvironment("sonnet", spawn)).resolves.toBe(false);
+  });
+
+  it("answers false when the probe cannot even spawn — a failed probe, not a crashed run", async () => {
+    const { spawn } = fakeSpawn(new Error("spawn claude ENOENT"));
+
+    await expect(probeEnvironment("sonnet", spawn)).resolves.toBe(false);
   });
 });
 
@@ -275,12 +423,20 @@ describe("realSpawnWorkerProcess", () => {
     };
   }
 
-  it("lets a clean exit through, streaming stdout to the transcript", async () => {
-    const req = request(`console.log("event")`, { timeoutMs: 5_000, stallMs: 5_000 });
+  it("lets a clean exit through, streaming stdout to the transcript and keeping the tails", async () => {
+    const req = request(`console.log("event"); console.error("warned")`, {
+      timeoutMs: 5_000,
+      stallMs: 5_000,
+    });
 
     const exit = await realSpawnWorkerProcess(req);
 
-    expect(exit).toEqual({ exitCode: 0, endedBy: "exit" });
+    expect(exit).toEqual({
+      exitCode: 0,
+      endedBy: "exit",
+      stdoutTail: "event\n",
+      stderrTail: "warned\n",
+    });
     expect(readFileSync(req.transcriptPath, "utf8")).toContain("event");
   });
 
