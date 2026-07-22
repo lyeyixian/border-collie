@@ -56,7 +56,7 @@ export async function run(pollSeconds: number, deps: RunDeps): Promise<RunOutcom
       return "complete";
     }
     if (status.state === "stuck") {
-      deps.log(renderStuck(status.open, world));
+      deps.log(renderStuck(world));
       return "stuck";
     }
     deps.log(`Next Tick in ${pollSeconds}s.`);

@@ -182,7 +182,7 @@ describe("renderStuck", () => {
       ticket({ number: 9, title: "A colleague's work", assignees: ["some-human"] }),
     ];
 
-    expect(renderStuck(open, stuckWorld(open))).toBe(
+    expect(renderStuck(stuckWorld(open))).toBe(
       [
         "Run Stuck: open tickets remain, but every path forward runs through a human.",
         "  #7 — Escalated (labelled ready-for-human)",
@@ -195,7 +195,7 @@ describe("renderStuck", () => {
   it("falls back to the blocker count when the blocker list is missing", () => {
     const open = [ticket({ number: 8, title: "Blocked blind", openBlockers: 2 })];
 
-    expect(renderStuck(open, stuckWorld(open))).toBe(
+    expect(renderStuck(stuckWorld(open))).toBe(
       [
         "Run Stuck: open tickets remain, but every path forward runs through a human.",
         "  #8 — Blocked blind (2 open blockers)",
@@ -206,7 +206,7 @@ describe("renderStuck", () => {
   it("notes a missing agent label distinctly from an escalation", () => {
     const open = [ticket({ number: 4, title: "Untriaged", labels: ["needs-triage"] })];
 
-    expect(renderStuck(open, stuckWorld(open))).toBe(
+    expect(renderStuck(stuckWorld(open))).toBe(
       [
         "Run Stuck: open tickets remain, but every path forward runs through a human.",
         "  #4 — Untriaged (not labelled ready-for-agent)",

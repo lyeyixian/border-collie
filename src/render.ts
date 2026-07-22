@@ -104,11 +104,11 @@ function stuckReason(ticket: Ticket, inScope: Set<number>): string {
 }
 
 /** Render the Stuck exit report: each remaining open ticket and exactly what it is stuck on. Pure. */
-export function renderStuck(open: Ticket[], world: WorldSnapshot): string {
+export function renderStuck(world: WorldSnapshot): string {
   const inScope = new Set(world.tickets.map((t) => t.number));
   return [
     "Run Stuck: open tickets remain, but every path forward runs through a human.",
-    ...open.map(
+    ...world.tickets.filter((ticket) => ticket.state === "open").map(
       (ticket) => `  #${ticket.number} — ${ticket.title} (${stuckReason(ticket, inScope)})`,
     ),
   ].join("\n");
