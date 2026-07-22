@@ -45,6 +45,14 @@ A failure caused by the environment — usage limit, rate limit, auth, network, 
 **Escalation**:
 Handing a ticket to a human after its attempts are exhausted: swap `ready-for-agent` → `ready-for-human`, unassign, leave a forensic comment. An escalated ticket stops being Dispatchable by construction; its dependents stay blocked.
 
+**PR upkeep**:
+Keeping the open agent PRs a merge left behind current, each Tick: a cleanly-mergeable PR that fell behind the base gets a mechanical branch update; a green (or CI-less) draft flips to ready-for-review; a conflicted PR gets a Conflict Worker.
+_Avoid_: rebase (the update is a merge, not a rebase)
+
+**Conflict Worker**:
+The one Worker variant dispatched against a PR rather than a Ticket: a fresh-context session, isolated in a worktree on the conflicted PR's own branch, that completes an in-progress merge of the base into it. One per conflict — on failure the PR gets a marker comment asking for a human (the PR-level analogue of Escalation), which vetoes any further session. It is not an Attempt and counts toward no ticket's cap.
+_Avoid_: conflict attempt (Attempts are ticket-scoped; this is not one)
+
 **Complete**:
 Terminal state of a run: every ticket in Scope merged and closed.
 

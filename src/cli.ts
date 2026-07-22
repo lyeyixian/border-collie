@@ -14,20 +14,23 @@ import { openPrForOutcome } from "./pr.js";
 import { renderPlan } from "./render.js";
 import { run } from "./run.js";
 import { readScope } from "./tracker.js";
-import { dispatchWorker, probeEnvironment } from "./worker.js";
+import { dispatchConflictWorker, dispatchWorker, probeEnvironment } from "./worker.js";
 import type { Action, WorldSnapshot } from "./types.js";
 
 const USAGE = `Usage: border-collie <tick|run> [options]
 
 tick runs one idempotent pass against the target repo in the current working
-directory: close tickets whose agent PR merged without closing them, release
-orphaned agent claims, claim dispatchable tickets (assign + marker comment),
-then dispatch one Worker per claim — an isolated worktree on an agent branch,
-running headless claude against exactly that ticket — and report each
-Worker's outcome. A successful Worker's branch is pushed and opened as a
-draft PR that closes its ticket on merge, its body taken from the Worker's
-final message (mechanical fallback: ticket + commit subjects). Dispatch
-pauses while open agent PRs sit at max_open_prs and resumes as merges land.
+directory: close tickets whose agent PR merged without closing them, keep the
+remaining open agent PRs current (mechanical branch update for clean ones that
+fell behind, a one-shot conflict-resolution Worker for conflicted ones, and a
+draft→ready flip once CI is green), release orphaned agent claims, claim
+dispatchable tickets (assign + marker comment), then dispatch one Worker per
+claim — an isolated worktree on an agent branch, running headless claude
+against exactly that ticket — and report each Worker's outcome. A successful
+Worker's branch is pushed and opened as a draft PR that closes its ticket on
+merge, its body taken from the Worker's final message (mechanical fallback:
+ticket + commit subjects). Dispatch pauses while open agent PRs sit at
+max_open_prs and resumes as merges land.
 
 run repeats ticks at the poll interval until a terminal state: Complete
 (every ticket in Scope closed, exit 0) or Stuck (open tickets remain but
@@ -98,6 +101,13 @@ async function tickOnce(
           maxCostUsd: config.maxCostUsd,
         }),
       (outcome) => openPrForOutcome(outcome, titles.get(outcome.ticket) ?? `Ticket #${outcome.ticket}`),
+      (pr, ticket, headRef) =>
+        dispatchConflictWorker(pr, ticket, headRef, {
+          model: config.model,
+          timeoutMs: config.timeoutMinutes * 60_000,
+          stallMs: config.stallMinutes * 60_000,
+          maxTurns: config.maxTurns,
+        }),
     );
     infraFailures = report.infraFailures;
   }
