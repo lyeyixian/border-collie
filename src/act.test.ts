@@ -1,14 +1,15 @@
 import { describe, expect, it } from "vitest";
-import { act, type DispatchWorker, type OpenPr } from "./act.js";
+import { act, type DispatchConflictWorker, type DispatchWorker, type OpenPr } from "./act.js";
 import type { Exec } from "./tracker.js";
 import {
   attemptMarker,
   CLAIM_MARKER,
+  CONFLICT_UNRESOLVED_MARKER,
   RELEASE_MARKER,
   VOID_MARKER,
   type AttemptFailure,
 } from "./types.js";
-import type { WorkerOutcome } from "./worker.js";
+import type { ConflictOutcome, WorkerOutcome } from "./worker.js";
 
 function recordingExec(): { exec: Exec; calls: string[][] } {
   const calls: string[][] = [];
@@ -21,6 +22,10 @@ function recordingExec(): { exec: Exec; calls: string[][] } {
 
 const noDispatch: DispatchWorker = async (ticket) => {
   throw new Error(`unexpected dispatch of #${ticket}`);
+};
+
+const noConflict: DispatchConflictWorker = async (pr) => {
+  throw new Error(`unexpected conflict dispatch of PR #${pr}`);
 };
 
 /** Records which outcomes reach PR opening; answers with a predictable URL. */
@@ -53,6 +58,18 @@ function outcome(ticket: number, overrides: Partial<WorkerOutcome> = {}): Worker
   };
 }
 
+function conflictOutcome(pr: number, overrides: Partial<ConflictOutcome> = {}): ConflictOutcome {
+  return {
+    pr,
+    ticket: pr,
+    headRef: `border-collie/ticket-${pr}-attempt-1`,
+    transcript: `.border-collie/transcripts/pr-${pr}-conflict.jsonl`,
+    exitCode: 0,
+    resolved: true,
+    ...overrides,
+  };
+}
+
 describe("act", () => {
   it("executes releases and claims in plan order via the tracker", async () => {
     const { exec, calls } = recordingExec();
@@ -66,6 +83,7 @@ describe("act", () => {
       ],
       noDispatch,
       openPr,
+      noConflict,
       exec,
       (line) => lines.push(line),
     );
@@ -88,6 +106,7 @@ describe("act", () => {
       [{ type: "close", ticket: 6, prUrl: "https://github.com/o/r/pull/60" }],
       noDispatch,
       openPr,
+      noConflict,
       exec,
       (line) => lines.push(line),
     );
@@ -109,7 +128,7 @@ describe("act", () => {
     const { exec, calls } = recordingExec();
     const { openPr } = recordingOpenPr();
 
-    await act([], noDispatch, openPr, exec, () => {});
+    await act([], noDispatch, openPr, noConflict, exec, () => {});
 
     expect(calls).toEqual([]);
   });
@@ -142,6 +161,7 @@ describe("act", () => {
       ],
       dispatch,
       openPr,
+      noConflict,
       exec,
       (line) => lines.push(line),
     );
@@ -168,7 +188,14 @@ describe("act", () => {
       return outcome(ticket);
     };
 
-    await act([{ type: "spawn", ticket: 7, attempt: 2 }], dispatch, recordingOpenPr().openPr, exec, () => {});
+    await act(
+      [{ type: "spawn", ticket: 7, attempt: 2 }],
+      dispatch,
+      recordingOpenPr().openPr,
+      noConflict,
+      exec,
+      () => {},
+    );
 
     expect(attempts).toEqual([[7, 2]]);
   });
@@ -178,7 +205,14 @@ describe("act", () => {
     const dispatch: DispatchWorker = async () =>
       outcome(7, { attempt: 2, exitCode: null, failure: "stall", ok: false });
 
-    await act([{ type: "spawn", ticket: 7, attempt: 2 }], dispatch, recordingOpenPr().openPr, exec, () => {});
+    await act(
+      [{ type: "spawn", ticket: 7, attempt: 2 }],
+      dispatch,
+      recordingOpenPr().openPr,
+      noConflict,
+      exec,
+      () => {},
+    );
 
     const record: AttemptFailure = {
       attempt: 2,
@@ -197,7 +231,14 @@ describe("act", () => {
     const { exec, calls } = recordingExec();
     const dispatch: DispatchWorker = async () => outcome(7);
 
-    await act([{ type: "spawn", ticket: 7, attempt: 1 }], dispatch, recordingOpenPr().openPr, exec, () => {});
+    await act(
+      [{ type: "spawn", ticket: 7, attempt: 1 }],
+      dispatch,
+      recordingOpenPr().openPr,
+      noConflict,
+      exec,
+      () => {},
+    );
 
     expect(calls).toEqual([]);
   });
@@ -219,6 +260,7 @@ describe("act", () => {
       [{ type: "escalate", ticket: 5, failures }],
       noDispatch,
       recordingOpenPr().openPr,
+      noConflict,
       exec,
       (line) => lines.push(line),
     );
@@ -246,7 +288,7 @@ describe("act", () => {
     const dispatch: DispatchWorker = async () =>
       outcome(7, { costUsd: 25.5, turns: 80, costOverrun: true });
 
-    await act([{ type: "spawn", ticket: 7, attempt: 1 }], dispatch, openPr, exec, (line) =>
+    await act([{ type: "spawn", ticket: 7, attempt: 1 }], dispatch, openPr, noConflict, exec, (line) =>
       lines.push(line),
     );
 
@@ -267,6 +309,7 @@ describe("act", () => {
       [{ type: "spawn", ticket: 7, attempt: 1 }],
       dispatch,
       recordingOpenPr().openPr,
+      noConflict,
       exec,
       (line) => lines.push(line),
     );
@@ -291,6 +334,7 @@ describe("act", () => {
       ],
       dispatch,
       recordingOpenPr().openPr,
+      noConflict,
       exec,
       (line) => lines.push(line),
     );
@@ -313,6 +357,7 @@ describe("act", () => {
       [{ type: "spawn", ticket: 2, attempt: 1 }],
       dispatch,
       recordingOpenPr().openPr,
+      noConflict,
       exec,
       () => {},
     );
@@ -337,6 +382,7 @@ describe("act", () => {
         ],
         dispatch,
         openPr,
+        noConflict,
         exec,
         (line) => lines.push(line),
       ),
@@ -356,8 +402,170 @@ describe("act", () => {
     };
 
     await expect(
-      act([{ type: "spawn", ticket: 2, attempt: 1 }], dispatch, openPr, exec, (line) => lines.push(line)),
+      act(
+        [{ type: "spawn", ticket: 2, attempt: 1 }],
+        dispatch,
+        openPr,
+        noConflict,
+        exec,
+        (line) => lines.push(line),
+      ),
     ).rejects.toThrow("gh pr create exploded");
+
+    expect(lines).toContain(
+      "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+    );
+  });
+});
+
+describe("act: PR upkeep", () => {
+  it("mechanically updates a behind PR's branch via the tracker", async () => {
+    const { exec, calls } = recordingExec();
+    const lines: string[] = [];
+
+    await act(
+      [{ type: "update-branch", pr: 30, ticket: 3 }],
+      noDispatch,
+      recordingOpenPr().openPr,
+      noConflict,
+      exec,
+      (line) => lines.push(line),
+    );
+
+    expect(calls).toEqual([
+      ["gh", "api", "--method", "PUT", "repos/{owner}/{repo}/pulls/30/update-branch"],
+    ]);
+    expect(lines).toEqual(["updated PR #30 branch (mechanical merge of the base)"]);
+  });
+
+  it("flips a green draft PR to ready for review via the tracker", async () => {
+    const { exec, calls } = recordingExec();
+    const lines: string[] = [];
+
+    await act(
+      [{ type: "mark-ready", pr: 30, ticket: 3 }],
+      noDispatch,
+      recordingOpenPr().openPr,
+      noConflict,
+      exec,
+      (line) => lines.push(line),
+    );
+
+    expect(calls).toEqual([["gh", "pr", "ready", "30"]]);
+    expect(lines).toEqual(["marked PR #30 ready for review"]);
+  });
+
+  it("pushes the branch when the conflict Worker resolves the merge", async () => {
+    const { exec, calls } = recordingExec();
+    const lines: string[] = [];
+    const dispatchConflict: DispatchConflictWorker = async (pr, ticket, headRef) =>
+      conflictOutcome(pr, { ticket, headRef, resolved: true });
+
+    await act(
+      [{ type: "conflict-worker", pr: 30, ticket: 3, headRef: "border-collie/ticket-3-attempt-1" }],
+      noDispatch,
+      recordingOpenPr().openPr,
+      dispatchConflict,
+      exec,
+      (line) => lines.push(line),
+    );
+
+    expect(calls).toEqual([
+      ["git", "push", "--force", "origin", "border-collie/ticket-3-attempt-1"],
+    ]);
+    expect(lines).toEqual([
+      "dispatched conflict Worker for PR #30 (ticket #3)",
+      "Conflict Worker for PR #30 resolved the merge on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
+      "pushed the resolved merge for PR #30",
+    ]);
+  });
+
+  it("asks for human resolution when the conflict Worker gives up (no push)", async () => {
+    const { exec, calls } = recordingExec();
+    const lines: string[] = [];
+    const dispatchConflict: DispatchConflictWorker = async (pr, ticket, headRef) =>
+      conflictOutcome(pr, { ticket, headRef, exitCode: 1, resolved: false });
+
+    await act(
+      [{ type: "conflict-worker", pr: 30, ticket: 3, headRef: "border-collie/ticket-3-attempt-1" }],
+      noDispatch,
+      recordingOpenPr().openPr,
+      dispatchConflict,
+      exec,
+      (line) => lines.push(line),
+    );
+
+    expect(calls).toEqual([
+      ["gh", "pr", "comment", "30", "--body", expect.stringContaining(CONFLICT_UNRESOLVED_MARKER)],
+    ]);
+    expect(lines).toEqual([
+      "dispatched conflict Worker for PR #30 (ticket #3)",
+      "Conflict Worker for PR #30 could not resolve the merge (exit 1) on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
+      "asked for human resolution on PR #30",
+    ]);
+  });
+
+  it("runs conflict Workers concurrently with dispatch Workers and reports both", async () => {
+    const { exec } = recordingExec();
+    const lines: string[] = [];
+    const inFlight: string[] = [];
+    let bothInFlight!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      bothInFlight = resolve;
+    });
+    const dispatch: DispatchWorker = async (ticket) => {
+      inFlight.push(`worker-${ticket}`);
+      if (inFlight.length === 2) bothInFlight();
+      await gate;
+      return outcome(ticket);
+    };
+    const dispatchConflict: DispatchConflictWorker = async (pr, ticket, headRef) => {
+      inFlight.push(`conflict-${pr}`);
+      if (inFlight.length === 2) bothInFlight();
+      await gate;
+      return conflictOutcome(pr, { ticket, headRef, resolved: true });
+    };
+
+    await act(
+      [
+        { type: "conflict-worker", pr: 40, ticket: 4, headRef: "border-collie/ticket-4-attempt-1" },
+        { type: "spawn", ticket: 2, attempt: 1 },
+      ],
+      dispatch,
+      recordingOpenPr().openPr,
+      dispatchConflict,
+      exec,
+      (line) => lines.push(line),
+    );
+
+    expect(inFlight.sort()).toEqual(["conflict-40", "worker-2"]);
+    expect(lines).toContain("pushed the resolved merge for PR #40");
+    expect(lines).toContain(
+      "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+    );
+  });
+
+  it("reports settled Workers before rethrowing a conflict Worker's infrastructure failure", async () => {
+    const { exec } = recordingExec();
+    const lines: string[] = [];
+    const dispatch: DispatchWorker = async (ticket) => outcome(ticket);
+    const dispatchConflict: DispatchConflictWorker = async () => {
+      throw new Error("claude ENOENT");
+    };
+
+    await expect(
+      act(
+        [
+          { type: "conflict-worker", pr: 40, ticket: 4, headRef: "border-collie/ticket-4-attempt-1" },
+          { type: "spawn", ticket: 2, attempt: 1 },
+        ],
+        dispatch,
+        recordingOpenPr().openPr,
+        dispatchConflict,
+        exec,
+        (line) => lines.push(line),
+      ),
+    ).rejects.toThrow("claude ENOENT");
 
     expect(lines).toContain(
       "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",

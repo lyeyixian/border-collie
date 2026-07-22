@@ -26,9 +26,9 @@ export function renderPlan(
   }
   if (dispatchPaused) {
     lines.push("Dispatch paused: circuit breaker open (infrastructure failure), claims held");
-  } else if (dispatchable.length > 0 && world.openAgentPrTickets.length >= maxOpenPrs) {
+  } else if (dispatchable.length > 0 && world.openAgentPrs.length >= maxOpenPrs) {
     lines.push(
-      `Dispatch paused: ${world.openAgentPrTickets.length} open agent PRs at max_open_prs (${maxOpenPrs})`,
+      `Dispatch paused: ${world.openAgentPrs.length} open agent PRs at max_open_prs (${maxOpenPrs})`,
     );
   }
 
@@ -61,6 +61,15 @@ export function renderPlan(
           break;
         case "close":
           lines.push(`  close #${action.ticket} — ${title} (merged: ${action.prUrl})`);
+          break;
+        case "update-branch":
+          lines.push(`  update PR #${action.pr} — ${title} (behind base, mechanical merge)`);
+          break;
+        case "conflict-worker":
+          lines.push(`  conflict Worker for PR #${action.pr} — ${title} (resolve merge conflicts)`);
+          break;
+        case "mark-ready":
+          lines.push(`  mark PR #${action.pr} ready — ${title} (CI green)`);
           break;
       }
     }

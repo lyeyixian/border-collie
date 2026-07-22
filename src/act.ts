@@ -2,15 +2,18 @@ import { reclassifyCorrelatedFailures } from "./classify.js";
 import {
   claimTicket,
   closeTicket,
+  commentConflictUnresolved,
   escalateTicket,
+  markPrReady,
   realExec,
   releaseFailedTicket,
   releaseTicket,
+  updatePrBranch,
   voidAttempt,
   type Exec,
 } from "./tracker.js";
 import type { Action } from "./types.js";
-import type { WorkerOutcome } from "./worker.js";
+import { pushAgentBranch, type ConflictOutcome, type WorkerOutcome } from "./worker.js";
 
 /**
  * Dispatch one Worker against one claimed ticket; the caller binds the
@@ -20,6 +23,13 @@ export type DispatchWorker = (ticket: number, attempt: number) => Promise<Worker
 
 /** Open the draft PR for a successful Attempt; resolves with the PR URL. */
 export type OpenPr = (outcome: WorkerOutcome) => Promise<string>;
+
+/** Dispatch one conflict-resolution Worker against one conflicted agent PR. */
+export type DispatchConflictWorker = (
+  pr: number,
+  ticket: number,
+  headRef: string,
+) => Promise<ConflictOutcome>;
 
 /** What one spawn action came to: the Attempt, and its PR when one was opened. */
 interface SpawnResult {
@@ -45,6 +55,13 @@ export interface ActReport {
   infraFailures: number;
 }
 
+function describeConflict(outcome: ConflictOutcome): string {
+  const where = `on ${outcome.headRef} (transcript: ${outcome.transcript})`;
+  return outcome.resolved
+    ? `Conflict Worker for PR #${outcome.pr} resolved the merge ${where}`
+    : `Conflict Worker for PR #${outcome.pr} could not resolve the merge (exit ${outcome.exitCode}) ${where}`;
+}
+
 /**
  * Act phase: perform the planned writes in plan order (releases first), one
  * at a time, narrating each as it lands. Spawns are the exception: each
@@ -59,16 +76,21 @@ export interface ActReport {
  * deaths once every Worker has settled. The report's infra count is what
  * trips the caller's circuit breaker. A tracker failure mid-way throws — the
  * stateless recovery story is re-running the Tick, which recomputes the
- * world and re-plans whatever is still due.
+ * world and re-plans whatever is still due. PR upkeep runs alongside dispatch:
+ * the mechanical branch update and draft→ready flip are immediate tracker
+ * writes; a conflict Worker runs concurrently like a spawn, its resolved merge
+ * pushed (or the PR handed to a human) once it settles.
  */
 export async function act(
   actions: Action[],
   dispatch: DispatchWorker,
   openPr: OpenPr,
+  dispatchConflict: DispatchConflictWorker,
   exec: Exec = realExec,
   log: (line: string) => void = console.log,
 ): Promise<ActReport> {
   const workers: Promise<SpawnResult>[] = [];
+  const conflicts: Promise<ConflictOutcome>[] = [];
   for (const action of actions) {
     switch (action.type) {
       case "claim":
@@ -86,6 +108,18 @@ export async function act(
       case "close":
         await closeTicket(action.ticket, action.prUrl, exec);
         log(`closed #${action.ticket} (merged: ${action.prUrl})`);
+        break;
+      case "update-branch":
+        await updatePrBranch(action.pr, exec);
+        log(`updated PR #${action.pr} branch (mechanical merge of the base)`);
+        break;
+      case "mark-ready":
+        await markPrReady(action.pr, exec);
+        log(`marked PR #${action.pr} ready for review`);
+        break;
+      case "conflict-worker":
+        conflicts.push(dispatchConflict(action.pr, action.ticket, action.headRef));
+        log(`dispatched conflict Worker for PR #${action.pr} (ticket #${action.ticket})`);
         break;
       case "spawn":
         workers.push(
@@ -151,8 +185,28 @@ export async function act(
       );
     }
   }
+  // Conflict Workers settle alongside the dispatch Workers: a resolved merge is
+  // pushed to the PR's branch, an unresolved one handed to a human with the
+  // marker that vetoes a second Worker. Both writes are reported before any
+  // infrastructure failure on either fleet rethrows.
+  const settledConflicts = await Promise.allSettled(conflicts);
+  for (const result of settledConflicts) {
+    if (result.status !== "fulfilled") continue;
+    const outcome = result.value;
+    log(describeConflict(outcome));
+    if (outcome.resolved) {
+      await pushAgentBranch(outcome.headRef, exec);
+      log(`pushed the resolved merge for PR #${outcome.pr}`);
+    } else {
+      await commentConflictUnresolved(outcome.pr, exec);
+      log(`asked for human resolution on PR #${outcome.pr}`);
+    }
+  }
+
   const rejected = settled.find((result) => result.status === "rejected");
   if (rejected) throw rejected.reason;
+  const rejectedConflict = settledConflicts.find((result) => result.status === "rejected");
+  if (rejectedConflict) throw rejectedConflict.reason;
   for (const result of settled) {
     if (result.status === "fulfilled" && result.value.prFailure !== undefined) {
       throw result.value.prFailure;

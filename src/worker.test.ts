@@ -5,11 +5,14 @@ import { describe, expect, it } from "vitest";
 import type { Exec } from "./tracker.js";
 import {
   branchCommitSubjects,
+  conflictWorkerPrompt,
+  dispatchConflictWorker,
   dispatchWorker,
   probeEnvironment,
   pushAgentBranch,
   realSpawnWorkerProcess,
   workerPrompt,
+  type ConflictWorkerConfig,
   type SpawnWorkerProcess,
   type WorkerConfig,
   type WorkerProcessExit,
@@ -408,6 +411,162 @@ describe("pushAgentBranch", () => {
     await pushAgentBranch(BRANCH, exec);
 
     expect(calls).toEqual([["git", "push", "--force", "origin", BRANCH]]);
+  });
+});
+
+const CONFLICT_WT = ".border-collie/conflict-worktrees/pr-30";
+const HEAD_REF = "border-collie/ticket-3-attempt-1";
+const CONFLICT_TRANSCRIPT = ".border-collie/transcripts/pr-30-conflict.jsonl";
+const CONFLICT_CONFIG: ConflictWorkerConfig = {
+  model: "sonnet",
+  timeoutMs: 60_000,
+  stallMs: 30_000,
+  maxTurns: 200,
+};
+
+/**
+ * Fake the git side for a conflict Worker: the two `rev-parse HEAD` reads
+ * return the head before and after the merge (distinct by default, so the
+ * merge is judged to have advanced the branch); `diff` reports the unmerged
+ * paths; `rev-parse MERGE_HEAD` resolves only while a merge is in progress
+ * (git exits non-zero otherwise, which the code reads as "no merge in progress").
+ */
+function fakeConflictExec(
+  opts: { unmerged?: string; mergeInProgress?: boolean; headBefore?: string; headAfter?: string } = {},
+): { exec: Exec; calls: string[][] } {
+  const calls: string[][] = [];
+  let headReads = 0;
+  const exec: Exec = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args.includes("rev-parse") && args.includes("HEAD")) {
+      headReads += 1;
+      const sha = headReads === 1 ? (opts.headBefore ?? "head-before") : (opts.headAfter ?? "head-after");
+      return `${sha}\n`;
+    }
+    if (args.includes("rev-parse") && args.includes("MERGE_HEAD")) {
+      if (opts.mergeInProgress) return "merge-head-sha\n";
+      throw new Error("fatal: needed a single revision");
+    }
+    if (args.includes("diff")) return opts.unmerged ?? "";
+    return "";
+  };
+  return { exec, calls };
+}
+
+describe("conflictWorkerPrompt", () => {
+  it("runs the merge-conflict skill and pins the commit-but-do-not-push contract", () => {
+    const prompt = conflictWorkerPrompt();
+
+    expect(prompt).toContain("/resolving-merge-conflicts");
+    expect(prompt).toContain("do not push");
+  });
+});
+
+describe("dispatchConflictWorker", () => {
+  it("checks out the PR's head branch, starts the base merge, runs claude, and cleans up", async () => {
+    const { exec, calls } = fakeConflictExec();
+    const { spawn, requests } = fakeSpawn(0);
+
+    await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(calls).toEqual([
+      ["git", "worktree", "remove", "--force", CONFLICT_WT],
+      ["git", "worktree", "prune"],
+      ["git", "fetch", "origin"],
+      ["git", "worktree", "add", CONFLICT_WT, "-B", HEAD_REF, `origin/${HEAD_REF}`],
+      ["git", "-C", CONFLICT_WT, "rev-parse", "HEAD"],
+      ["git", "-C", CONFLICT_WT, "merge", "--no-edit", "origin/HEAD"],
+      ["git", "-C", CONFLICT_WT, "rev-parse", "HEAD"],
+      ["git", "-C", CONFLICT_WT, "diff", "--name-only", "--diff-filter=U"],
+      ["git", "-C", CONFLICT_WT, "rev-parse", "-q", "--verify", "MERGE_HEAD"],
+      ["git", "-C", CONFLICT_WT, "merge", "--abort"],
+      ["git", "worktree", "remove", "--force", CONFLICT_WT],
+    ]);
+    expect(requests[0]).toMatchObject({
+      cmd: "claude",
+      cwd: CONFLICT_WT,
+      transcriptPath: CONFLICT_TRANSCRIPT,
+    });
+    expect(requests[0]?.args).toContain(conflictWorkerPrompt());
+    expect(requests[0]?.args).toContain("sonnet");
+  });
+
+  it("resolves when the Worker exits cleanly leaving no unmerged paths and no merge in progress", async () => {
+    const { exec } = fakeConflictExec({ unmerged: "", mergeInProgress: false });
+    const { spawn } = fakeSpawn(0);
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome).toEqual({
+      pr: 30,
+      ticket: 3,
+      headRef: HEAD_REF,
+      transcript: CONFLICT_TRANSCRIPT,
+      exitCode: 0,
+      resolved: true,
+    });
+  });
+
+  it("fails to resolve when the head did not advance (the merge never started)", async () => {
+    // A merge that never began (e.g. the base ref could not be read) leaves a
+    // clean tree and no MERGE_HEAD — the head is unchanged, so it is NOT resolved.
+    const { exec } = fakeConflictExec({ headBefore: "same-sha", headAfter: "same-sha" });
+    const { spawn } = fakeSpawn(0);
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome.resolved).toBe(false);
+  });
+
+  it("fails to resolve when unmerged paths remain", async () => {
+    const { exec } = fakeConflictExec({ unmerged: "src/app.ts\n" });
+    const { spawn } = fakeSpawn(0);
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome.resolved).toBe(false);
+  });
+
+  it("fails to resolve when the merge is left in progress (uncommitted)", async () => {
+    const { exec } = fakeConflictExec({ mergeInProgress: true });
+    const { spawn } = fakeSpawn(0);
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome.resolved).toBe(false);
+  });
+
+  it("fails to resolve on a non-zero exit even with a clean tree", async () => {
+    const { exec } = fakeConflictExec();
+    const { spawn } = fakeSpawn(1);
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome.resolved).toBe(false);
+    expect(outcome.exitCode).toBe(1);
+  });
+
+  it("fails to resolve when the Worker was killed at a watchdog, even with a clean tree", async () => {
+    const { exec } = fakeConflictExec();
+    const { spawn } = fakeSpawn(null, "timeout");
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome.resolved).toBe(false);
+  });
+
+  it("still aborts the merge and removes the worktree when spawning throws, then rethrows", async () => {
+    const { exec, calls } = fakeConflictExec();
+    const { spawn } = fakeSpawn(new Error("spawn claude ENOENT"));
+
+    await expect(
+      dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn),
+    ).rejects.toThrow("ENOENT");
+
+    expect(calls.slice(-2)).toEqual([
+      ["git", "-C", CONFLICT_WT, "merge", "--abort"],
+      ["git", "worktree", "remove", "--force", CONFLICT_WT],
+    ]);
   });
 });
 

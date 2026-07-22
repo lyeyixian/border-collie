@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { BREAKER_BASE_COOLDOWN_MS } from "./breaker.js";
 import { run, runStatus, type RunDeps } from "./run.js";
-import type { Action, MergedAgentPr, Ticket, WorldSnapshot } from "./types.js";
+import type { Action, MergedAgentPr, OpenAgentPr, Ticket, WorldSnapshot } from "./types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
   return {
@@ -17,12 +17,25 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
   };
 }
 
+function openPr(ticket: number): OpenAgentPr {
+  return {
+    number: ticket * 10,
+    ticket,
+    headRef: `border-collie/ticket-${ticket}-attempt-1`,
+    draft: false,
+    mergeable: "mergeable",
+    behind: false,
+    ci: "passing",
+    conflictWorkerAsked: false,
+  };
+}
+
 function world(
   tickets: Ticket[],
   openAgentPrTickets: number[] = [],
   mergedAgentPrs: MergedAgentPr[] = [],
 ): WorldSnapshot {
-  return { tickets, openAgentPrTickets, mergedAgentPrs };
+  return { tickets, openAgentPrs: openAgentPrTickets.map(openPr), mergedAgentPrs };
 }
 
 describe("runStatus", () => {

@@ -15,21 +15,25 @@ import { AGENT_BRANCH_PREFIX, type FailureReason, type InfraReason } from "./typ
 /** Orchestrator-owned scratch space at the target repo root (gitignored). */
 export const RUN_DIR = ".border-collie";
 
-export interface WorkerConfig {
+/** The headless-claude run limits shared by dispatch and conflict Workers. */
+export interface ClaudeRunConfig {
   /** Model the Worker runs on (`claude --model`). */
   model: string;
-  /**
-   * Which Attempt this dispatch is (1-based). Namespaces the branch and
-   * transcript so a retry never clobbers the prior attempt's evidence — an
-   * Escalation must be able to cite every attempt's forensics.
-   */
-  attempt: number;
   /** Wall-clock ceiling for the whole Worker process. */
   timeoutMs: number;
   /** Max quiet time between output events before the Worker counts as stalled. */
   stallMs: number;
   /** Budget backstop: max agentic turns (`claude --max-turns`); breach is a ticket failure. */
   maxTurns: number;
+}
+
+export interface WorkerConfig extends ClaudeRunConfig {
+  /**
+   * Which Attempt this dispatch is (1-based). Namespaces the branch and
+   * transcript so a retry never clobbers the prior attempt's evidence — an
+   * Escalation must be able to cite every attempt's forensics.
+   */
+  attempt: number;
   /**
    * Budget alarm: spend in USD above which an Attempt is flagged as a cost
    * overrun. Cost is only knowable post-hoc, so a finished Attempt's work is
@@ -37,6 +41,22 @@ export interface WorkerConfig {
    * turn cap and wall clock are the stoppers, this is the meter.
    */
   maxCostUsd: number;
+}
+
+/** The headless-claude argv every Worker shares: prompt, model, turn cap, stream-json, skip-permissions. */
+function claudeArgs(prompt: string, model: string, maxTurns: number): string[] {
+  return [
+    "-p",
+    prompt,
+    "--model",
+    model,
+    "--max-turns",
+    String(maxTurns),
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--dangerously-skip-permissions",
+  ];
 }
 
 /** One finished Attempt, as observed by the Orchestrator. */
@@ -191,6 +211,21 @@ export function workerPrompt(ticket: number): string {
   ].join("\n");
 }
 
+/**
+ * The entire conflict-resolution Worker prompt: run the merge-conflict skill
+ * against a merge the Orchestrator has already started, then stop. The
+ * plain-English half stands in when the slash command is unavailable, and
+ * pins the contract the Orchestrator relies on — commit the merge, touch
+ * nothing else, do not push.
+ */
+export function conflictWorkerPrompt(): string {
+  return [
+    "/resolving-merge-conflicts",
+    "",
+    "A merge of the base branch into this pull request's branch is already in progress and has conflicts. Resolve every conflict and complete the merge with a commit. Change nothing beyond what resolving the conflicts requires, and do not push — leave the committed merge on the current branch.",
+  ].join("\n");
+}
+
 /** Best-effort worktree removal: absent or stale worktrees are fine. */
 async function removeWorktree(worktree: string, exec: Exec): Promise<void> {
   await exec("git", ["worktree", "remove", "--force", worktree]).catch(() => {});
@@ -274,18 +309,7 @@ export async function dispatchWorker(
     // own tracker.
     const { exitCode, endedBy, stdoutTail, stderrTail } = await spawnProcess({
       cmd: "claude",
-      args: [
-        "-p",
-        workerPrompt(ticket),
-        "--model",
-        config.model,
-        "--max-turns",
-        String(config.maxTurns),
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--dangerously-skip-permissions",
-      ],
+      args: claudeArgs(workerPrompt(ticket), config.model, config.maxTurns),
       cwd: worktree,
       transcriptPath: transcript,
       stderrPath: stderrLog,
@@ -381,4 +405,104 @@ export async function probeEnvironment(
     exitCode === 0 &&
     classifyInfrastructure(`${stderrTail}\n${stdoutTail}`) === undefined
   );
+}
+
+/** What a conflict-resolution Worker runs with; no attempt ladder — one shot. */
+export type ConflictWorkerConfig = ClaudeRunConfig;
+
+/** One finished conflict-resolution session, as observed by the Orchestrator. */
+export interface ConflictOutcome {
+  pr: number;
+  ticket: number;
+  /** Head branch the Worker resolved in; pushed back on success. */
+  headRef: string;
+  /** Transcript file path, for post-mortems. */
+  transcript: string;
+  exitCode: number | null;
+  /**
+   * True when the base merged into the head and the merge is committed: the
+   * Worker exited on its own, the head advanced past the PR's original tip,
+   * no unmerged paths remain, and no merge is still in progress. The
+   * head-advanced check is load-bearing — a merge that never started (e.g. the
+   * base ref could not be read) leaves a clean tree and no MERGE_HEAD, which
+   * would otherwise read as a false success and loop Workers forever.
+   */
+  resolved: boolean;
+}
+
+/**
+ * Dispatch one conflict-resolution Worker against one conflicted agent PR: cut
+ * a worktree on the PR's own head branch, start the merge of the base into it
+ * so the merge-conflict skill has an in-progress conflict to resolve, run
+ * headless claude, then judge whether the merge landed. The branch is the PR's
+ * existing head (checked out from origin), never a fresh one — the resolution
+ * has to push back to the same branch the PR is opened from. `-B` and the
+ * up-front removal reset any leftover of a crashed run on the same branch. On
+ * success the caller pushes the branch; on failure the merge is aborted so the
+ * retained branch stays at the PR's committed head — a broken merge is never
+ * published — and the caller asks a human to take over.
+ */
+export async function dispatchConflictWorker(
+  pr: number,
+  ticket: number,
+  headRef: string,
+  config: ConflictWorkerConfig,
+  exec: Exec = realExec,
+  spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
+): Promise<ConflictOutcome> {
+  const worktree = join(RUN_DIR, "conflict-worktrees", `pr-${pr}`);
+  const transcript = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.jsonl`);
+  const stderrLog = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.stderr.log`);
+
+  let beforeSha = "";
+  await withGitLock(async () => {
+    await removeWorktree(worktree, exec);
+    await exec("git", ["worktree", "prune"]);
+    await exec("git", ["fetch", "origin"]);
+    await exec("git", ["worktree", "add", worktree, "-B", headRef, `origin/${headRef}`]);
+    beforeSha = (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).trim();
+    // A conflicting merge exits non-zero and leaves the merge in progress for
+    // the Worker; swallow that so setting up the conflict never throws.
+    await exec("git", ["-C", worktree, "merge", "--no-edit", "origin/HEAD"]).catch(() => {});
+  });
+
+  try {
+    const { exitCode, endedBy } = await spawnProcess({
+      cmd: "claude",
+      args: claudeArgs(conflictWorkerPrompt(), config.model, config.maxTurns),
+      cwd: worktree,
+      transcriptPath: transcript,
+      stderrPath: stderrLog,
+      timeoutMs: config.timeoutMs,
+      stallMs: config.stallMs,
+    });
+    const afterSha = (
+      await withGitLock(() => exec("git", ["-C", worktree, "rev-parse", "HEAD"]))
+    ).trim();
+    const unmerged = (
+      await withGitLock(() =>
+        exec("git", ["-C", worktree, "diff", "--name-only", "--diff-filter=U"]),
+      )
+    ).trim();
+    const mergeInProgress = await withGitLock(() =>
+      exec("git", ["-C", worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(
+        () => true,
+        () => false,
+      ),
+    );
+    const resolved =
+      endedBy === "exit" &&
+      exitCode === 0 &&
+      afterSha !== beforeSha &&
+      unmerged === "" &&
+      !mergeInProgress;
+    return { pr, ticket, headRef, transcript, exitCode, resolved };
+  } finally {
+    // Abort any half-finished merge before dropping the worktree; a no-op when
+    // the Worker already committed the merge cleanly.
+    await withGitLock(async () => {
+      await exec("git", ["-C", worktree, "merge", "--abort"]).catch(() => {});
+      await removeWorktree(worktree, exec);
+    });
+  }
 }

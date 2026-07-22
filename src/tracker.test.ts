@@ -2,17 +2,21 @@ import { describe, expect, it } from "vitest";
 import {
   claimTicket,
   closeTicket,
+  commentConflictUnresolved,
   createDraftPr,
   escalateTicket,
+  markPrReady,
   readScope,
   releaseFailedTicket,
   releaseTicket,
+  updatePrBranch,
   voidAttempt,
   type Exec,
 } from "./tracker.js";
 import {
   attemptMarker,
   CLAIM_MARKER,
+  CONFLICT_UNRESOLVED_MARKER,
   RELEASE_MARKER,
   VOID_MARKER,
   type AttemptFailure,
@@ -36,20 +40,44 @@ const issue = (overrides: Record<string, unknown>) => ({
   ...overrides,
 });
 
+/** A clean `gh pr list` item for an agent branch — the shape the upkeep read parses. */
+const prItem = (overrides: Record<string, unknown> = {}) => ({
+  number: 50,
+  headRefName: "border-collie/ticket-5-attempt-1",
+  isDraft: false,
+  mergeable: "MERGEABLE",
+  statusCheckRollup: [] as unknown[],
+  ...overrides,
+});
+
 /**
- * Fake the subprocess seam: `gh api <endpoint> --paginate --slurp` calls are
- * answered from a map keyed by endpoint. An un-mapped endpoint throws, so a
- * test also asserts which reads do NOT happen.
+ * Fake the subprocess seam. `gh api <endpoint> --paginate --slurp` calls are
+ * answered from `api` keyed by endpoint; `gh pr list` from `prList`. An
+ * un-mapped gh api endpoint throws, so a test also asserts which reads do NOT
+ * happen.
  */
-function fakeExec(responses: Record<string, unknown>): { exec: Exec; calls: string[][] } {
+function fakeExec(opts: { api?: Record<string, unknown>; prList?: unknown[] }): {
+  exec: Exec;
+  calls: string[][];
+} {
   const calls: string[][] = [];
+  const api = opts.api ?? {};
   const exec: Exec = async (cmd, args) => {
     calls.push([cmd, ...args]);
-    const endpoint = args[1] ?? "";
-    if (!(endpoint in responses)) {
-      throw new Error(`unexpected gh call: ${[cmd, ...args].join(" ")}`);
+    if (args[0] === "pr" && args[1] === "list") {
+      if (opts.prList === undefined) {
+        throw new Error(`unexpected gh pr list: ${[cmd, ...args].join(" ")}`);
+      }
+      return JSON.stringify(opts.prList);
     }
-    return JSON.stringify(responses[endpoint]);
+    if (args[0] === "api") {
+      const endpoint = args[1] ?? "";
+      if (!(endpoint in api)) {
+        throw new Error(`unexpected gh api call: ${[cmd, ...args].join(" ")}`);
+      }
+      return JSON.stringify(api[endpoint]);
+    }
+    throw new Error(`unexpected gh call: ${[cmd, ...args].join(" ")}`);
   };
   return { exec, calls };
 }
@@ -57,65 +85,78 @@ function fakeExec(responses: Record<string, unknown>): { exec: Exec; calls: stri
 const SUB_ISSUES = "repos/{owner}/{repo}/issues/1/sub_issues?per_page=100";
 const ALL_ISSUES = "repos/{owner}/{repo}/issues?labels=ready-for-agent&state=open&per_page=100";
 const comments = (n: number) => `repos/{owner}/{repo}/issues/${n}/comments?per_page=100`;
-const OPEN_PULLS = "repos/{owner}/{repo}/pulls?state=open&per_page=100";
 const CLOSED_PULLS = "repos/{owner}/{repo}/pulls?state=closed&per_page=100";
-/** Both PR listings answered empty — the common backdrop for open tickets. */
-const NO_PULLS = { [OPEN_PULLS]: [[]], [CLOSED_PULLS]: [[]] };
+const compare = (base: string, head: string) => `repos/{owner}/{repo}/compare/${base}...${head}`;
+
+/** The gh operation a recorded call performed, for asserting read order. */
+const op = (call: string[]) => (call[1] === "pr" && call[2] === "list" ? "pr-list" : call[2]);
 
 describe("readScope", () => {
-  it("reads a parent's sub-issues via gh api with pagination, then comments and both PR listings", async () => {
+  it("reads a parent's sub-issues, then comments, then the open and closed PR listings", async () => {
     const { exec, calls } = fakeExec({
-      [SUB_ISSUES]: [[issue({})]],
-      [comments(2)]: [[]],
-      ...NO_PULLS,
+      api: { [SUB_ISSUES]: [[issue({})]], [comments(2)]: [[]], [CLOSED_PULLS]: [[]] },
+      prList: [],
     });
 
     await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES, comments(2), OPEN_PULLS, CLOSED_PULLS]);
+    expect(calls.map(op)).toEqual([SUB_ISSUES, comments(2), "pr-list", CLOSED_PULLS]);
     expect(calls[0]).toEqual(["gh", "api", SUB_ISSUES, "--paginate", "--slurp"]);
+    expect(calls.find((c) => c[1] === "pr")).toEqual([
+      "gh",
+      "pr",
+      "list",
+      "--state",
+      "open",
+      "--limit",
+      "100",
+      "--json",
+      "number,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup",
+    ]);
   });
 
   it("reads repo-wide agent-ready issues when scope is all", async () => {
     const { exec, calls } = fakeExec({
-      [ALL_ISSUES]: [[issue({})]],
-      [comments(2)]: [[]],
-      ...NO_PULLS,
+      api: { [ALL_ISSUES]: [[issue({})]], [comments(2)]: [[]], [CLOSED_PULLS]: [[]] },
+      prList: [],
     });
 
     await readScope({ kind: "all" }, exec);
 
-    expect(calls.map((c) => c[2])).toEqual([ALL_ISSUES, comments(2), OPEN_PULLS, CLOSED_PULLS]);
+    expect(calls.map(op)).toEqual([ALL_ISSUES, comments(2), "pr-list", CLOSED_PULLS]);
   });
 
   it("skips both PR reads when no ticket in Scope is open", async () => {
     const { exec, calls } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 3, state: "closed" })]],
-      // Pull endpoints deliberately unmapped: fetching them would throw.
+      api: { [SUB_ISSUES]: [[issue({ number: 3, state: "closed" })]] },
+      // Neither PR read is mapped: performing them would throw.
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES]);
-    expect(world.openAgentPrTickets).toEqual([]);
+    expect(calls.map(op)).toEqual([SUB_ISSUES]);
+    expect(world.openAgentPrs).toEqual([]);
     expect(world.mergedAgentPrs).toEqual([]);
   });
 
   it("maps issues to Tickets and flattens pages", async () => {
     const { exec } = fakeExec({
-      [SUB_ISSUES]: [
-        [
-          issue({
-            number: 3,
-            state: "closed",
-            assignees: [{ login: "someone" }],
-            issue_dependencies_summary: { blocked_by: 2 },
-          }),
+      api: {
+        [SUB_ISSUES]: [
+          [
+            issue({
+              number: 3,
+              state: "closed",
+              assignees: [{ login: "someone" }],
+              issue_dependencies_summary: { blocked_by: 2 },
+            }),
+          ],
+          [issue({ number: 4, title: "Second page" })],
         ],
-        [issue({ number: 4, title: "Second page" })],
-      ],
-      [comments(4)]: [[]],
-      ...NO_PULLS,
+        [comments(4)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -148,11 +189,12 @@ describe("readScope", () => {
 
   it("drops pull requests from a repo-wide listing", async () => {
     const { exec } = fakeExec({
-      [ALL_ISSUES]: [
-        [issue({ number: 5 }), issue({ number: 6, pull_request: { url: "x" } })],
-      ],
-      [comments(5)]: [[]],
-      ...NO_PULLS,
+      api: {
+        [ALL_ISSUES]: [[issue({ number: 5 }), issue({ number: 6, pull_request: { url: "x" } })]],
+        [comments(5)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "all" }, exec);
@@ -162,9 +204,12 @@ describe("readScope", () => {
 
   it("treats a missing dependency summary as zero open blockers", async () => {
     const { exec } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 7, issue_dependencies_summary: undefined })]],
-      [comments(7)]: [[]],
-      ...NO_PULLS,
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 7, issue_dependencies_summary: undefined })]],
+        [comments(7)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -174,17 +219,15 @@ describe("readScope", () => {
 
   it("reads comments for assigned tickets and unassigned dispatch candidates, detecting the claim marker", async () => {
     const { exec, calls } = fakeExec({
-      [SUB_ISSUES]: [
-        [
-          issue({ number: 5, assignees: [{ login: "operator" }] }),
-          issue({ number: 6 }),
+      api: {
+        [SUB_ISSUES]: [
+          [issue({ number: 5, assignees: [{ login: "operator" }] }), issue({ number: 6 })],
         ],
-      ],
-      [comments(5)]: [
-        [{ body: "human chatter" }, { body: `${CLAIM_MARKER}\n🐕 claimed` }],
-      ],
-      [comments(6)]: [[]],
-      ...NO_PULLS,
+        [comments(5)]: [[{ body: "human chatter" }, { body: `${CLAIM_MARKER}\n🐕 claimed` }]],
+        [comments(6)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -193,42 +236,48 @@ describe("readScope", () => {
       [5, true],
       [6, false],
     ]);
-    expect(calls.map((c) => c[2])).toContain(comments(5));
-    expect(calls.map((c) => c[2])).toContain(comments(6));
+    expect(calls.map(op)).toContain(comments(5));
+    expect(calls.map(op)).toContain(comments(6));
   });
 
   it("skips comment reads for closed, blocked, and non-agent unassigned tickets", async () => {
     const { exec, calls } = fakeExec({
-      [SUB_ISSUES]: [
-        [
-          issue({ number: 3, state: "closed" }),
-          issue({ number: 4, issue_dependencies_summary: { blocked_by: 1 } }),
-          issue({ number: 8, labels: [] }),
+      api: {
+        [SUB_ISSUES]: [
+          [
+            issue({ number: 3, state: "closed" }),
+            issue({ number: 4, issue_dependencies_summary: { blocked_by: 1 } }),
+            issue({ number: 8, labels: [] }),
+          ],
         ],
-      ],
-      ...NO_PULLS,
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(calls.map((c) => c[2])).toEqual([SUB_ISSUES, OPEN_PULLS, CLOSED_PULLS]);
+    expect(calls.map(op)).toEqual([SUB_ISSUES, "pr-list", CLOSED_PULLS]);
     expect(world.tickets.map((t) => t.agentClaimCount)).toEqual([0, 0, 0]);
   });
 
   it("derives the Attempt counter and failure records from the comment history", async () => {
     const { exec } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 5 })]],
-      [comments(5)]: [
-        [
-          { body: `${CLAIM_MARKER}\n🐕 claimed` },
-          { body: `${RELEASE_MARKER}\n${attemptMarker(FAILURE)}\n🐕 Attempt 1 failed` },
-          { body: `${CLAIM_MARKER}\n🐕 claimed again` },
-          {
-            body: `${RELEASE_MARKER}\n${attemptMarker({ ...FAILURE, attempt: 2, model: "opus" })}\n🐕 Attempt 2 failed`,
-          },
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [
+          [
+            { body: `${CLAIM_MARKER}\n🐕 claimed` },
+            { body: `${RELEASE_MARKER}\n${attemptMarker(FAILURE)}\n🐕 Attempt 1 failed` },
+            { body: `${CLAIM_MARKER}\n🐕 claimed again` },
+            {
+              body: `${RELEASE_MARKER}\n${attemptMarker({ ...FAILURE, attempt: 2, model: "opus" })}\n🐕 Attempt 2 failed`,
+            },
+          ],
         ],
-      ],
-      ...NO_PULLS,
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -242,14 +291,17 @@ describe("readScope", () => {
 
   it("uncounts a voided claim while keeping it agent-held (infrastructure failures burn nothing)", async () => {
     const { exec } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 5, assignees: [{ login: "operator" }] })]],
-      [comments(5)]: [
-        [
-          { body: `${CLAIM_MARKER}\n🐕 claimed` },
-          { body: `${VOID_MARKER}\n🐕 Attempt 1 voided: the account usage limit was reached` },
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5, assignees: [{ login: "operator" }] })]],
+        [comments(5)]: [
+          [
+            { body: `${CLAIM_MARKER}\n🐕 claimed` },
+            { body: `${VOID_MARKER}\n🐕 Attempt 1 voided: the account usage limit was reached` },
+          ],
         ],
-      ],
-      ...NO_PULLS,
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -263,16 +315,19 @@ describe("readScope", () => {
 
   it("counts a fresh claim after a voided one as the first Attempt again", async () => {
     const { exec } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 5 })]],
-      [comments(5)]: [
-        [
-          { body: `${CLAIM_MARKER}\n🐕 claimed` },
-          { body: `${VOID_MARKER}\n🐕 Attempt 1 voided` },
-          { body: `${RELEASE_MARKER}\n🐕 released (orphaned after the outage)` },
-          { body: `${CLAIM_MARKER}\n🐕 claimed again` },
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [
+          [
+            { body: `${CLAIM_MARKER}\n🐕 claimed` },
+            { body: `${VOID_MARKER}\n🐕 Attempt 1 voided` },
+            { body: `${RELEASE_MARKER}\n🐕 released (orphaned after the outage)` },
+            { body: `${CLAIM_MARKER}\n🐕 claimed again` },
+          ],
         ],
-      ],
-      ...NO_PULLS,
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -280,120 +335,236 @@ describe("readScope", () => {
     expect(world.tickets[0]).toMatchObject({ hasAgentClaim: true, agentClaimCount: 1 });
   });
 
-  it("reads open PRs when attempts are exhausted even with no live agent claim (the escalation veto)", async () => {
+  it("maps open agent-branch PRs with their upkeep signals, ignoring other branches", async () => {
     const { exec } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 5 })]],
-      [comments(5)]: [
-        [
-          { body: `${CLAIM_MARKER}\nclaimed` },
-          { body: `${RELEASE_MARKER}\nreleased` },
-          { body: `${CLAIM_MARKER}\nclaimed` },
-          { body: `${RELEASE_MARKER}\nreleased` },
-        ],
+      api: { [SUB_ISSUES]: [[issue({ number: 5 })]], [comments(5)]: [[]], [CLOSED_PULLS]: [[]] },
+      prList: [
+        prItem({ number: 50, headRefName: "border-collie/ticket-5-attempt-1" }),
+        prItem({ number: 99, headRefName: "feature/unrelated" }),
       ],
-      [OPEN_PULLS]: [[{ head: { ref: "border-collie/ticket-5" } }]],
-      [CLOSED_PULLS]: [[]],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(world.openAgentPrTickets).toEqual([5]);
+    expect(world.openAgentPrs).toEqual([
+      {
+        number: 50,
+        ticket: 5,
+        headRef: "border-collie/ticket-5-attempt-1",
+        draft: false,
+        mergeable: "mergeable",
+        behind: false,
+        ci: "none",
+        conflictWorkerAsked: false,
+      },
+    ]);
   });
 
-  it("treats a release marker after the claim as no agent claim", async () => {
-    const { exec } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 5, assignees: [{ login: "a-human" }] })]],
-      [comments(5)]: [
-        [{ body: `${CLAIM_MARKER}\nclaimed` }, { body: `${RELEASE_MARKER}\nreleased` }],
+  it("reads the upkeep signals: behind (from the compare API), draft, mergeability, and CI", async () => {
+    const head = "border-collie/ticket-5-attempt-1";
+    const { exec, calls } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [CLOSED_PULLS]: [[]],
+        // The head is two commits behind its base.
+        [compare("main", head)]: { behind_by: 2 },
+      },
+      prList: [
+        prItem({
+          number: 50,
+          baseRefName: "main",
+          isDraft: true,
+          statusCheckRollup: [{ status: "COMPLETED", conclusion: "SUCCESS" }],
+        }),
       ],
-      ...NO_PULLS,
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(world.tickets[0]?.hasAgentClaim).toBe(false);
-    expect(world.openAgentPrTickets).toEqual([]);
+    expect(world.openAgentPrs[0]).toMatchObject({
+      draft: true,
+      mergeable: "mergeable",
+      behind: true,
+      ci: "passing",
+    });
+    expect(calls.map(op)).toContain(compare("main", head));
   });
 
-  it("maps open agent-branch PRs to ticket numbers, ignoring other branches", async () => {
-    const { exec } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 8, assignees: [{ login: "operator" }] })]],
-      [comments(8)]: [[{ body: `${CLAIM_MARKER}\nclaimed` }]],
-      [OPEN_PULLS]: [
-        [
-          { head: { ref: "border-collie/ticket-8" } },
-          { head: { ref: "feature/unrelated" } },
-        ],
+  it("does not read the compare API for a conflicted or still-computing PR", async () => {
+    const { exec, calls } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 }), issue({ number: 6 })]],
+        [comments(5)]: [[]],
+        [comments(6)]: [[]],
+        [comments(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [
+        prItem({ number: 50, baseRefName: "main", mergeable: "CONFLICTING" }),
+        prItem({
+          number: 60,
+          baseRefName: "main",
+          headRefName: "border-collie/ticket-6-attempt-1",
+          mergeable: "UNKNOWN",
+        }),
       ],
-      [CLOSED_PULLS]: [[]],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(world.openAgentPrTickets).toEqual([8]);
+    expect(world.openAgentPrs.map((pr) => pr.behind)).toEqual([false, false]);
+    expect(calls.some((c) => c[2]?.startsWith("repos/{owner}/{repo}/compare/"))).toBe(false);
+  });
+
+  it("reads a conflicted PR's comments for the unresolved marker, and skips that read otherwise", async () => {
+    const { exec, calls } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        // Comments for the conflicted PR #50 carry the unresolved marker.
+        [comments(50)]: [[{ body: `${CONFLICT_UNRESOLVED_MARKER}\n🐕 human, please` }]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [
+        prItem({ number: 50, mergeable: "CONFLICTING" }),
+        prItem({ number: 60, headRefName: "border-collie/ticket-6-attempt-1" }),
+      ],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs).toEqual([
+      {
+        number: 50,
+        ticket: 5,
+        headRef: "border-collie/ticket-5-attempt-1",
+        draft: false,
+        mergeable: "conflicted",
+        behind: false,
+        ci: "none",
+        conflictWorkerAsked: true,
+      },
+      {
+        number: 60,
+        ticket: 6,
+        headRef: "border-collie/ticket-6-attempt-1",
+        draft: false,
+        mergeable: "mergeable",
+        behind: false,
+        ci: "none",
+        conflictWorkerAsked: false,
+      },
+    ]);
+    // The clean PR #60's comments are never read.
+    expect(calls.map(op)).toContain(comments(50));
+    expect(calls.map(op)).not.toContain(comments(60));
+  });
+
+  it("classifies a pending check rollup as pending and a failing one as failing", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 }), issue({ number: 6 })]],
+        [comments(5)]: [[]],
+        [comments(6)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [
+        prItem({
+          number: 50,
+          statusCheckRollup: [
+            { status: "COMPLETED", conclusion: "SUCCESS" },
+            { status: "IN_PROGRESS" },
+          ],
+        }),
+        prItem({
+          number: 60,
+          headRefName: "border-collie/ticket-6-attempt-1",
+          statusCheckRollup: [{ status: "COMPLETED", conclusion: "FAILURE" }],
+        }),
+      ],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs.map((pr) => [pr.number, pr.ci])).toEqual([
+      [50, "pending"],
+      [60, "failing"],
+    ]);
+  });
+
+  it("treats an UNKNOWN mergeability as unknown (GitHub still computing)", async () => {
+    const { exec } = fakeExec({
+      api: { [SUB_ISSUES]: [[issue({ number: 5 })]], [comments(5)]: [[]], [CLOSED_PULLS]: [[]] },
+      prList: [prItem({ number: 50, mergeable: "UNKNOWN" })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.mergeable).toBe("unknown");
   });
 
   it("surfaces merged agent PRs for tickets in Scope, ignoring closed-unmerged and foreign ones", async () => {
     const { exec } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 5 }), issue({ number: 6 })]],
-      [comments(5)]: [[]],
-      [comments(6)]: [[]],
-      [OPEN_PULLS]: [[]],
-      [CLOSED_PULLS]: [
-        [
-          {
-            head: { ref: "border-collie/ticket-5" },
-            merged_at: "2026-07-20T10:00:00Z",
-            html_url: "https://github.com/o/r/pull/50",
-          },
-          { head: { ref: "border-collie/ticket-6" }, merged_at: null },
-          {
-            head: { ref: "border-collie/ticket-99" },
-            merged_at: "2026-07-19T10:00:00Z",
-            html_url: "https://github.com/o/r/pull/99",
-          },
-          {
-            head: { ref: "feature/unrelated" },
-            merged_at: "2026-07-18T10:00:00Z",
-            html_url: "https://github.com/o/r/pull/40",
-          },
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 }), issue({ number: 6 })]],
+        [comments(5)]: [[]],
+        [comments(6)]: [[]],
+        [CLOSED_PULLS]: [
+          [
+            {
+              head: { ref: "border-collie/ticket-5" },
+              merged_at: "2026-07-20T10:00:00Z",
+              html_url: "https://github.com/o/r/pull/50",
+            },
+            { head: { ref: "border-collie/ticket-6" }, merged_at: null },
+            {
+              head: { ref: "border-collie/ticket-99" },
+              merged_at: "2026-07-19T10:00:00Z",
+              html_url: "https://github.com/o/r/pull/99",
+            },
+            {
+              head: { ref: "feature/unrelated" },
+              merged_at: "2026-07-18T10:00:00Z",
+              html_url: "https://github.com/o/r/pull/40",
+            },
+          ],
         ],
-      ],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(world.mergedAgentPrs).toEqual([
-      { ticket: 5, url: "https://github.com/o/r/pull/50" },
-    ]);
+    expect(world.mergedAgentPrs).toEqual([{ ticket: 5, url: "https://github.com/o/r/pull/50" }]);
   });
 
   it("keeps one merged PR per ticket: the first in the newest-created-first listing", async () => {
     const { exec } = fakeExec({
-      [SUB_ISSUES]: [[issue({ number: 5 })]],
-      [comments(5)]: [[]],
-      [OPEN_PULLS]: [[]],
-      [CLOSED_PULLS]: [
-        [
-          {
-            head: { ref: "border-collie/ticket-5" },
-            merged_at: "2026-07-20T10:00:00Z",
-            html_url: "https://github.com/o/r/pull/52",
-          },
-          {
-            head: { ref: "border-collie/ticket-5" },
-            merged_at: "2026-07-10T10:00:00Z",
-            html_url: "https://github.com/o/r/pull/51",
-          },
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [CLOSED_PULLS]: [
+          [
+            {
+              head: { ref: "border-collie/ticket-5" },
+              merged_at: "2026-07-20T10:00:00Z",
+              html_url: "https://github.com/o/r/pull/52",
+            },
+            {
+              head: { ref: "border-collie/ticket-5" },
+              merged_at: "2026-07-10T10:00:00Z",
+              html_url: "https://github.com/o/r/pull/51",
+            },
+          ],
         ],
-      ],
+      },
+      prList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(world.mergedAgentPrs).toEqual([
-      { ticket: 5, url: "https://github.com/o/r/pull/52" },
-    ]);
+    expect(world.mergedAgentPrs).toEqual([{ ticket: 5, url: "https://github.com/o/r/pull/52" }]);
   });
 });
 
@@ -569,5 +740,39 @@ describe("escalateTicket", () => {
 
     const body = calls[0]?.[5] ?? "";
     expect(body).toContain("no attempt records");
+  });
+});
+
+describe("updatePrBranch", () => {
+  it("mechanically merges the base into the PR via the update-branch API", async () => {
+    const { exec, calls } = recordingExec();
+
+    await updatePrBranch(30, exec);
+
+    expect(calls).toEqual([
+      ["gh", "api", "--method", "PUT", "repos/{owner}/{repo}/pulls/30/update-branch"],
+    ]);
+  });
+});
+
+describe("markPrReady", () => {
+  it("flips a draft PR to ready for review", async () => {
+    const { exec, calls } = recordingExec();
+
+    await markPrReady(30, exec);
+
+    expect(calls).toEqual([["gh", "pr", "ready", "30"]]);
+  });
+});
+
+describe("commentConflictUnresolved", () => {
+  it("comments the human-resolution ask carrying the unresolved marker", async () => {
+    const { exec, calls } = recordingExec();
+
+    await commentConflictUnresolved(30, exec);
+
+    expect(calls).toEqual([
+      ["gh", "pr", "comment", "30", "--body", expect.stringContaining(CONFLICT_UNRESOLVED_MARKER)],
+    ]);
   });
 });

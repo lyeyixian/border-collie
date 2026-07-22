@@ -33,7 +33,7 @@ export function runStatus(
 ): RunStatus {
   const open = world.tickets.filter((ticket) => ticket.state === "open");
   if (open.length === 0) return { state: "complete" };
-  if (actions.length === 0 && world.openAgentPrTickets.length === 0 && !dispatchPaused) {
+  if (actions.length === 0 && world.openAgentPrs.length === 0 && !dispatchPaused) {
     return { state: "stuck", open };
   }
   return { state: "running" };
