@@ -117,6 +117,11 @@ export async function act(
   for (const { outcome, prUrl } of outcomes) {
     log(describeOutcome(outcome));
     if (prUrl !== undefined) log(`opened draft PR for #${outcome.ticket}: ${prUrl}`);
+    if (outcome.costOverrun && outcome.costUsd !== undefined) {
+      log(
+        `cost overrun on #${outcome.ticket}: attempt ${outcome.attempt} spent $${outcome.costUsd.toFixed(2)} — the ticket may be cut too big for one Worker`,
+      );
+    }
     if (outcome.infra !== undefined) {
       await voidAttempt(
         outcome.ticket,

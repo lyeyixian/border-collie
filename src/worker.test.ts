@@ -177,6 +177,7 @@ describe("dispatchWorker", () => {
       infra: undefined,
       costUsd: undefined,
       turns: undefined,
+      costOverrun: false,
       ok: true,
     });
   });
@@ -261,7 +262,7 @@ describe("dispatchWorker", () => {
     });
   });
 
-  it("fails the attempt as a budget breach when the cost cap is exceeded, even on a clean finish", async () => {
+  it("keeps a finished attempt that spent past the cost cap, flagging the overrun instead of failing", async () => {
     const { exec } = fakeExec({ newCommits: "3" });
     const { spawn } = fakeSpawn(0, "exit", {
       stdoutTail: '{"type":"result","subtype":"success","total_cost_usd":25.5,"num_turns":80}',
@@ -269,7 +270,23 @@ describe("dispatchWorker", () => {
 
     const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
 
-    expect(outcome).toMatchObject({ ok: false, failure: "budget", costUsd: 25.5 });
+    expect(outcome).toMatchObject({
+      ok: true,
+      failure: undefined,
+      costUsd: 25.5,
+      costOverrun: true,
+    });
+  });
+
+  it("keeps the underlying failure reason when a failed attempt also overran the cost cap", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(1, "exit", {
+      stdoutTail: '{"type":"result","subtype":"error_during_execution","total_cost_usd":25.5,"num_turns":80}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: "nonzero-exit", costOverrun: true });
   });
 
   it("succeeds under the cost cap, reporting the spend and turns", async () => {

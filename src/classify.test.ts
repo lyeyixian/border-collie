@@ -111,6 +111,7 @@ function outcome(ticket: number, overrides: Partial<WorkerOutcome> = {}): Worker
     infra: undefined,
     costUsd: undefined,
     turns: undefined,
+    costOverrun: false,
     ok: true,
     ...overrides,
   };

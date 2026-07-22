@@ -28,7 +28,7 @@ export const FAILURE_DESCRIPTIONS: Record<FailureReason, string> = {
   "no-commits": "the Worker exited cleanly but committed nothing",
   timeout: "the Worker hit the wall-clock timeout",
   stall: "the Worker produced no output events for the stall window",
-  budget: "the Worker breached a budget backstop (turn or cost cap)",
+  budget: "the Worker hit the turn-cap budget backstop and was halted mid-flight",
 };
 
 /**

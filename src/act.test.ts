@@ -47,6 +47,7 @@ function outcome(ticket: number, overrides: Partial<WorkerOutcome> = {}): Worker
     infra: undefined,
     costUsd: undefined,
     turns: undefined,
+    costOverrun: false,
     ok: true,
     ...overrides,
   };
@@ -236,6 +237,24 @@ describe("act", () => {
       ],
     ]);
     expect(lines).toEqual(["escalated #5 to ready-for-human (attempts exhausted)"]);
+  });
+
+  it("flags a cost overrun on a finished attempt while still opening its PR", async () => {
+    const { exec, calls } = recordingExec();
+    const { openPr, opened } = recordingOpenPr();
+    const lines: string[] = [];
+    const dispatch: DispatchWorker = async () =>
+      outcome(7, { costUsd: 25.5, turns: 80, costOverrun: true });
+
+    await act([{ type: "spawn", ticket: 7, attempt: 1 }], dispatch, openPr, exec, (line) =>
+      lines.push(line),
+    );
+
+    expect(opened).toEqual([7]); // the work is kept — discarding refunds nothing
+    expect(calls).toEqual([]); // no tracker writes: not a failure
+    expect(lines).toContain(
+      "cost overrun on #7: attempt 1 spent $25.50 — the ticket may be cut too big for one Worker",
+    );
   });
 
   it("voids an infrastructure-classified attempt: comment only, claim held, counted in the report", async () => {

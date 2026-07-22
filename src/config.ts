@@ -48,7 +48,7 @@ export interface ResolvedConfig {
   stallMinutes: number;
   /** Budget backstop: max agentic turns per Worker; breach is a ticket failure. */
   maxTurns: number;
-  /** Budget backstop: max spend in USD per Worker; breach is a ticket failure. */
+  /** Budget alarm: spend in USD above which a finished Attempt is flagged, not failed. */
   maxCostUsd: number;
 }
 

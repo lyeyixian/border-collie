@@ -118,6 +118,7 @@ const OUTCOME: WorkerOutcome = {
   infra: undefined,
   costUsd: undefined,
   turns: undefined,
+  costOverrun: false,
   ok: true,
 };
 

@@ -30,7 +30,12 @@ export interface WorkerConfig {
   stallMs: number;
   /** Budget backstop: max agentic turns (`claude --max-turns`); breach is a ticket failure. */
   maxTurns: number;
-  /** Budget backstop: max spend in USD per Attempt; breach is a ticket failure. */
+  /**
+   * Budget alarm: spend in USD above which an Attempt is flagged as a cost
+   * overrun. Cost is only knowable post-hoc, so a finished Attempt's work is
+   * kept (discarding it refunds nothing and the retry would cost more) — the
+   * turn cap and wall clock are the stoppers, this is the meter.
+   */
   maxCostUsd: number;
 }
 
@@ -66,6 +71,12 @@ export interface WorkerOutcome {
   costUsd: number | undefined;
   /** Agentic turns taken, from the transcript's result event when one survived. */
   turns: number | undefined;
+  /**
+   * The Attempt spent past the cost cap. An alarm, not a failure: a finished
+   * Attempt keeps its work and its PR — the overrun is surfaced so an
+   * oversized ticket reaches the operator's eye, not the bin.
+   */
+  costOverrun: boolean;
   /** The success predicate: no failure trigger fired, ticket or infrastructure. */
   ok: boolean;
 }
@@ -295,27 +306,26 @@ export async function dispatchWorker(
             ? "no-commits"
             : undefined;
     const result = parseResultEvent(stdoutTail);
-    // Classification order: budget trumps infra trumps the raw trigger. A
+    // Classification order: turn cap trumps infra trumps the raw trigger. A
     // parsed result event proves the environment carried the Worker to its
-    // end, so a budget breach is the ticket's fault whatever infra-looking
-    // noise the logs hold — and it fails even a Worker that otherwise
-    // finished cleanly: the backstop is what surfaces oversized tickets to a
-    // human. (The cost cap is necessarily post-hoc — mid-flight spend is
-    // invisible until the result event — so a runaway is *stopped* by the
-    // turn cap and wall clock, and the cost cap fails what they let
-    // through.) Infra is only consulted for Workers that already died — a
-    // successful Attempt is never voided — and only against stderr plus the
-    // result line, never the transcript body, where a ticket legitimately
-    // about rate limits would match by content instead of cause.
-    const budgetBreached =
-      result?.subtype === "error_max_turns" ||
-      (result?.totalCostUsd !== undefined && result.totalCostUsd > config.maxCostUsd);
+    // end, so a turn-cap halt is the ticket's fault whatever infra-looking
+    // noise the logs hold — and it fails even on a clean exit with commits:
+    // a halted Worker never finished, so the work is unverified. The cost
+    // cap is different in kind: cost is only knowable post-hoc from the
+    // result event, so it cannot stop anything — a finished Attempt's work
+    // is kept (discarding it refunds nothing and the retry would cost more)
+    // and the overrun is flagged instead. Infra is only consulted for
+    // Workers that already died — a successful Attempt is never voided —
+    // and only against stderr plus the result line, never the transcript
+    // body, where a ticket legitimately about rate limits would match by
+    // content instead of cause.
+    const turnCapHit = result?.subtype === "error_max_turns";
     const infra =
-      trigger !== undefined && !budgetBreached
+      trigger !== undefined && !turnCapHit
         ? classifyInfrastructure(`${stderrTail}\n${lastResultLine(stdoutTail)}`)
         : undefined;
     const failure: FailureReason | undefined =
-      budgetBreached ? "budget" : infra !== undefined ? undefined : trigger;
+      turnCapHit ? "budget" : infra !== undefined ? undefined : trigger;
     return {
       ticket,
       attempt: config.attempt,
@@ -329,6 +339,8 @@ export async function dispatchWorker(
       infra,
       costUsd: result?.totalCostUsd,
       turns: result?.numTurns,
+      costOverrun:
+        result?.totalCostUsd !== undefined && result.totalCostUsd > config.maxCostUsd,
       ok: failure === undefined && infra === undefined,
     };
   } finally {
