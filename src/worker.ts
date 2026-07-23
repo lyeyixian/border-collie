@@ -421,13 +421,14 @@ export interface ConflictOutcome {
   transcript: string;
   exitCode: number | null;
   /**
-   * True when the head is fully rebased onto the base: the Worker exited on
-   * its own, the head moved off the PR's original tip (rebasing onto a new
-   * base always rewrites it), no unmerged paths remain, and no rebase is
-   * still in progress. The head-moved check is load-bearing — a rebase that
-   * never started (e.g. the base ref could not be read) leaves a clean tree
-   * and no REBASE_HEAD, which would otherwise read as a false success and
-   * loop Workers forever.
+   * True when the branch is fully rebased onto the base: the Worker exited on
+   * its own and the branch ref now contains origin/HEAD. Containment is the
+   * whole test — git moves the branch ref only when a rebase runs to
+   * completion, so a rebase left mid-flight (or never started, e.g. the base
+   * ref could not be read) leaves the branch at its conflicted old tip, which
+   * predates the base. Deliberately NOT probed via REBASE_HEAD: git leaves
+   * that ref behind after a successful `rebase --continue`, which read a
+   * finished rebase as still-in-progress (a false failure).
    */
   resolved: boolean;
 }
@@ -460,13 +461,11 @@ export async function dispatchConflictWorker(
   const transcript = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.jsonl`);
   const stderrLog = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.stderr.log`);
 
-  let beforeSha = "";
   await withGitLock(async () => {
     await removeWorktree(worktree, exec);
     await exec("git", ["worktree", "prune"]);
     await exec("git", ["fetch", "origin"]);
     await exec("git", ["worktree", "add", worktree, "-B", headRef, `origin/${headRef}`]);
-    beforeSha = (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).trim();
     // A conflicting rebase exits non-zero and stops in progress for the
     // Worker; swallow that so setting up the conflict never throws.
     await exec("git", ["-C", worktree, "rebase", "origin/HEAD"]).catch(() => {});
@@ -482,26 +481,15 @@ export async function dispatchConflictWorker(
       timeoutMs: config.timeoutMs,
       stallMs: config.stallMs,
     });
-    const afterSha = (
-      await withGitLock(() => exec("git", ["-C", worktree, "rev-parse", "HEAD"]))
-    ).trim();
-    const unmerged = (
-      await withGitLock(() =>
-        exec("git", ["-C", worktree, "diff", "--name-only", "--diff-filter=U"]),
-      )
-    ).trim();
-    const rebaseInProgress = await withGitLock(() =>
-      exec("git", ["-C", worktree, "rev-parse", "-q", "--verify", "REBASE_HEAD"]).then(
+    // The branch ref, not HEAD: mid-rebase HEAD is detached on the commit
+    // being replayed, while the branch only moves on completion.
+    const rebased = await withGitLock(() =>
+      exec("git", ["-C", worktree, "merge-base", "--is-ancestor", "origin/HEAD", headRef]).then(
         () => true,
         () => false,
       ),
     );
-    const resolved =
-      endedBy === "exit" &&
-      exitCode === 0 &&
-      afterSha !== beforeSha &&
-      unmerged === "" &&
-      !rebaseInProgress;
+    const resolved = endedBy === "exit" && exitCode === 0 && rebased;
     return { pr, ticket, headRef, transcript, exitCode, resolved };
   } finally {
     // Abort any half-finished rebase before dropping the worktree; a no-op
