@@ -182,7 +182,7 @@ describe("renderPlan", () => {
         "Scope: sub-issues of #1 — 3 tickets (3 open)",
         "Dispatchable: none",
         "Plan (max_workers=3, max_open_prs=5):",
-        "  update PR #50 — Behind base (behind base, mechanical merge)",
+        "  update PR #50 — Behind base (behind base, mechanical rebase)",
         "  conflict Worker for PR #60 — Conflicted (resolve merge conflicts)",
         "  mark PR #70 ready — Green draft (CI green)",
         "Dry run: no writes performed.",

@@ -63,7 +63,7 @@ export function renderPlan(
           lines.push(`  close #${action.ticket} — ${title} (merged: ${action.prUrl})`);
           break;
         case "update-branch":
-          lines.push(`  update PR #${action.pr} — ${title} (behind base, mechanical merge)`);
+          lines.push(`  update PR #${action.pr} — ${title} (behind base, mechanical rebase)`);
           break;
         case "conflict-worker":
           lines.push(`  conflict Worker for PR #${action.pr} — ${title} (resolve merge conflicts)`);

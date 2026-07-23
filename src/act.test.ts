@@ -433,9 +433,9 @@ describe("act: PR upkeep", () => {
     );
 
     expect(calls).toEqual([
-      ["gh", "api", "--method", "PUT", "repos/{owner}/{repo}/pulls/30/update-branch"],
+      ["gh", "pr", "update-branch", "30", "--rebase"],
     ]);
-    expect(lines).toEqual(["updated PR #30 branch (mechanical merge of the base)"]);
+    expect(lines).toEqual(["updated PR #30 branch (mechanical rebase onto the base)"]);
   });
 
   it("flips a green draft PR to ready for review via the tracker", async () => {
@@ -475,8 +475,8 @@ describe("act: PR upkeep", () => {
     ]);
     expect(lines).toEqual([
       "dispatched conflict Worker for PR #30 (ticket #3)",
-      "Conflict Worker for PR #30 resolved the merge on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
-      "pushed the resolved merge for PR #30",
+      "Conflict Worker for PR #30 resolved the conflicts on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
+      "pushed the resolved rebase for PR #30",
     ]);
   });
 
@@ -500,7 +500,7 @@ describe("act: PR upkeep", () => {
     ]);
     expect(lines).toEqual([
       "dispatched conflict Worker for PR #30 (ticket #3)",
-      "Conflict Worker for PR #30 could not resolve the merge (exit 1) on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
+      "Conflict Worker for PR #30 could not resolve the conflicts (exit 1) on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
       "asked for human resolution on PR #30",
     ]);
   });
@@ -539,7 +539,7 @@ describe("act: PR upkeep", () => {
     );
 
     expect(inFlight.sort()).toEqual(["conflict-40", "worker-2"]);
-    expect(lines).toContain("pushed the resolved merge for PR #40");
+    expect(lines).toContain("pushed the resolved rebase for PR #40");
     expect(lines).toContain(
       "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
     );

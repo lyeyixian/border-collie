@@ -213,16 +213,17 @@ export function workerPrompt(ticket: number): string {
 
 /**
  * The entire conflict-resolution Worker prompt: run the merge-conflict skill
- * against a merge the Orchestrator has already started, then stop. The
+ * against a rebase the Orchestrator has already started, then stop. The
  * plain-English half stands in when the slash command is unavailable, and
- * pins the contract the Orchestrator relies on — commit the merge, touch
- * nothing else, do not push.
+ * pins the contract the Orchestrator relies on — finish the rebase, touch
+ * nothing else, do not push. A rebase, not a merge, so the agent branch stays
+ * linear and the operator's "Rebase and merge" strategy keeps working.
  */
 export function conflictWorkerPrompt(): string {
   return [
     "/resolving-merge-conflicts",
     "",
-    "A merge of the base branch into this pull request's branch is already in progress and has conflicts. Resolve every conflict and complete the merge with a commit. Change nothing beyond what resolving the conflicts requires, and do not push — leave the committed merge on the current branch.",
+    "A rebase of this pull request's branch onto the base branch is already in progress and has conflicts. Resolve every conflict and continue the rebase until every commit is applied. Change nothing beyond what resolving the conflicts requires, and do not push — leave the completed rebase on the current branch.",
   ].join("\n");
 }
 
@@ -420,27 +421,32 @@ export interface ConflictOutcome {
   transcript: string;
   exitCode: number | null;
   /**
-   * True when the base merged into the head and the merge is committed: the
-   * Worker exited on its own, the head advanced past the PR's original tip,
-   * no unmerged paths remain, and no merge is still in progress. The
-   * head-advanced check is load-bearing — a merge that never started (e.g. the
-   * base ref could not be read) leaves a clean tree and no MERGE_HEAD, which
-   * would otherwise read as a false success and loop Workers forever.
+   * True when the head is fully rebased onto the base: the Worker exited on
+   * its own, the head moved off the PR's original tip (rebasing onto a new
+   * base always rewrites it), no unmerged paths remain, and no rebase is
+   * still in progress. The head-moved check is load-bearing — a rebase that
+   * never started (e.g. the base ref could not be read) leaves a clean tree
+   * and no REBASE_HEAD, which would otherwise read as a false success and
+   * loop Workers forever.
    */
   resolved: boolean;
 }
 
 /**
  * Dispatch one conflict-resolution Worker against one conflicted agent PR: cut
- * a worktree on the PR's own head branch, start the merge of the base into it
- * so the merge-conflict skill has an in-progress conflict to resolve, run
- * headless claude, then judge whether the merge landed. The branch is the PR's
- * existing head (checked out from origin), never a fresh one — the resolution
- * has to push back to the same branch the PR is opened from. `-B` and the
- * up-front removal reset any leftover of a crashed run on the same branch. On
- * success the caller pushes the branch; on failure the merge is aborted so the
- * retained branch stays at the PR's committed head — a broken merge is never
- * published — and the caller asks a human to take over.
+ * a worktree on the PR's own head branch, start the rebase onto the base so
+ * the merge-conflict skill has an in-progress conflict to resolve, run
+ * headless claude, then judge whether the rebase completed. A rebase, never a
+ * merge commit: the branch stays linear, so the operator's "Rebase and merge"
+ * strategy keeps working (a resolution recorded in a merge commit is dropped
+ * when that strategy replays the branch's commits, re-conflicting them). The
+ * branch is the PR's existing head (checked out from origin), never a fresh
+ * one — the resolution has to force-push back to the same branch the PR is
+ * opened from. `-B` and the up-front removal reset any leftover of a crashed
+ * run on the same branch. On success the caller pushes the branch; on failure
+ * the rebase is aborted so the retained branch stays at the PR's committed
+ * head — a broken rebase is never published — and the caller asks a human to
+ * take over.
  */
 export async function dispatchConflictWorker(
   pr: number,
@@ -461,9 +467,9 @@ export async function dispatchConflictWorker(
     await exec("git", ["fetch", "origin"]);
     await exec("git", ["worktree", "add", worktree, "-B", headRef, `origin/${headRef}`]);
     beforeSha = (await exec("git", ["-C", worktree, "rev-parse", "HEAD"])).trim();
-    // A conflicting merge exits non-zero and leaves the merge in progress for
-    // the Worker; swallow that so setting up the conflict never throws.
-    await exec("git", ["-C", worktree, "merge", "--no-edit", "origin/HEAD"]).catch(() => {});
+    // A conflicting rebase exits non-zero and stops in progress for the
+    // Worker; swallow that so setting up the conflict never throws.
+    await exec("git", ["-C", worktree, "rebase", "origin/HEAD"]).catch(() => {});
   });
 
   try {
@@ -484,8 +490,8 @@ export async function dispatchConflictWorker(
         exec("git", ["-C", worktree, "diff", "--name-only", "--diff-filter=U"]),
       )
     ).trim();
-    const mergeInProgress = await withGitLock(() =>
-      exec("git", ["-C", worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"]).then(
+    const rebaseInProgress = await withGitLock(() =>
+      exec("git", ["-C", worktree, "rev-parse", "-q", "--verify", "REBASE_HEAD"]).then(
         () => true,
         () => false,
       ),
@@ -495,13 +501,13 @@ export async function dispatchConflictWorker(
       exitCode === 0 &&
       afterSha !== beforeSha &&
       unmerged === "" &&
-      !mergeInProgress;
+      !rebaseInProgress;
     return { pr, ticket, headRef, transcript, exitCode, resolved };
   } finally {
-    // Abort any half-finished merge before dropping the worktree; a no-op when
-    // the Worker already committed the merge cleanly.
+    // Abort any half-finished rebase before dropping the worktree; a no-op
+    // when the Worker already completed the rebase.
     await withGitLock(async () => {
-      await exec("git", ["-C", worktree, "merge", "--abort"]).catch(() => {});
+      await exec("git", ["-C", worktree, "rebase", "--abort"]).catch(() => {});
       await removeWorktree(worktree, exec);
     });
   }
