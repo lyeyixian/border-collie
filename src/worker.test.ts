@@ -425,29 +425,18 @@ const CONFLICT_CONFIG: ConflictWorkerConfig = {
 };
 
 /**
- * Fake the git side for a conflict Worker: the two `rev-parse HEAD` reads
- * return the head before and after the merge (distinct by default, so the
- * merge is judged to have advanced the branch); `diff` reports the unmerged
- * paths; `rev-parse REBASE_HEAD` resolves only while a rebase is in progress
- * (git exits non-zero otherwise, which the code reads as "no rebase in progress").
+ * Fake the git side for a conflict Worker: `merge-base --is-ancestor` exits
+ * cleanly when the branch was rebased onto the base (the default) and throws
+ * otherwise — git's exit-1 for "not an ancestor", which the code reads as an
+ * incomplete or never-started rebase.
  */
-function fakeConflictExec(
-  opts: { unmerged?: string; rebaseInProgress?: boolean; headBefore?: string; headAfter?: string } = {},
-): { exec: Exec; calls: string[][] } {
+function fakeConflictExec(opts: { rebased?: boolean } = {}): { exec: Exec; calls: string[][] } {
   const calls: string[][] = [];
-  let headReads = 0;
   const exec: Exec = async (cmd, args) => {
     calls.push([cmd, ...args]);
-    if (args.includes("rev-parse") && args.includes("HEAD")) {
-      headReads += 1;
-      const sha = headReads === 1 ? (opts.headBefore ?? "head-before") : (opts.headAfter ?? "head-after");
-      return `${sha}\n`;
+    if (args.includes("merge-base") && opts.rebased === false) {
+      throw new Error("exit 1: origin/HEAD is not an ancestor");
     }
-    if (args.includes("rev-parse") && args.includes("REBASE_HEAD")) {
-      if (opts.rebaseInProgress) return "rebase-head-sha\n";
-      throw new Error("fatal: needed a single revision");
-    }
-    if (args.includes("diff")) return opts.unmerged ?? "";
     return "";
   };
   return { exec, calls };
@@ -475,11 +464,8 @@ describe("dispatchConflictWorker", () => {
       ["git", "worktree", "prune"],
       ["git", "fetch", "origin"],
       ["git", "worktree", "add", CONFLICT_WT, "-B", HEAD_REF, `origin/${HEAD_REF}`],
-      ["git", "-C", CONFLICT_WT, "rev-parse", "HEAD"],
       ["git", "-C", CONFLICT_WT, "rebase", "origin/HEAD"],
-      ["git", "-C", CONFLICT_WT, "rev-parse", "HEAD"],
-      ["git", "-C", CONFLICT_WT, "diff", "--name-only", "--diff-filter=U"],
-      ["git", "-C", CONFLICT_WT, "rev-parse", "-q", "--verify", "REBASE_HEAD"],
+      ["git", "-C", CONFLICT_WT, "merge-base", "--is-ancestor", "origin/HEAD", HEAD_REF],
       ["git", "-C", CONFLICT_WT, "rebase", "--abort"],
       ["git", "worktree", "remove", "--force", CONFLICT_WT],
     ]);
@@ -492,8 +478,8 @@ describe("dispatchConflictWorker", () => {
     expect(requests[0]?.args).toContain("sonnet");
   });
 
-  it("resolves when the Worker exits cleanly leaving no unmerged paths and no rebase in progress", async () => {
-    const { exec } = fakeConflictExec({ unmerged: "", rebaseInProgress: false });
+  it("resolves when the Worker exits cleanly and the branch now sits atop the base", async () => {
+    const { exec } = fakeConflictExec({ rebased: true });
     const { spawn } = fakeSpawn(0);
 
     const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
@@ -508,10 +494,11 @@ describe("dispatchConflictWorker", () => {
     });
   });
 
-  it("fails to resolve when the head did not advance (the merge never started)", async () => {
-    // A merge that never began (e.g. the base ref could not be read) leaves a
-    // clean tree and no REBASE_HEAD — the head is unchanged, so it is NOT resolved.
-    const { exec } = fakeConflictExec({ headBefore: "same-sha", headAfter: "same-sha" });
+  it("fails to resolve when the branch never made it onto the base (mid-flight or never-started rebase)", async () => {
+    // Both a rebase left mid-conflict and one that never began (e.g. the base
+    // ref could not be read) leave the branch at its old tip, which does not
+    // contain the base — the one signal the containment check reads.
+    const { exec } = fakeConflictExec({ rebased: false });
     const { spawn } = fakeSpawn(0);
 
     const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
@@ -519,25 +506,7 @@ describe("dispatchConflictWorker", () => {
     expect(outcome.resolved).toBe(false);
   });
 
-  it("fails to resolve when unmerged paths remain", async () => {
-    const { exec } = fakeConflictExec({ unmerged: "src/app.ts\n" });
-    const { spawn } = fakeSpawn(0);
-
-    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
-
-    expect(outcome.resolved).toBe(false);
-  });
-
-  it("fails to resolve when the rebase is left in progress (mid-conflict)", async () => {
-    const { exec } = fakeConflictExec({ rebaseInProgress: true });
-    const { spawn } = fakeSpawn(0);
-
-    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
-
-    expect(outcome.resolved).toBe(false);
-  });
-
-  it("fails to resolve on a non-zero exit even with a clean tree", async () => {
+  it("fails to resolve on a non-zero exit even when the branch was rebased", async () => {
     const { exec } = fakeConflictExec();
     const { spawn } = fakeSpawn(1);
 
@@ -547,7 +516,7 @@ describe("dispatchConflictWorker", () => {
     expect(outcome.exitCode).toBe(1);
   });
 
-  it("fails to resolve when the Worker was killed at a watchdog, even with a clean tree", async () => {
+  it("fails to resolve when the Worker was killed at a watchdog, even when the branch was rebased", async () => {
     const { exec } = fakeConflictExec();
     const { spawn } = fakeSpawn(null, "timeout");
 
