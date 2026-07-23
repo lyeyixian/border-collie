@@ -462,12 +462,16 @@ export async function escalateTicket(
 }
 
 /**
- * Act phase: mechanically merge the base into a cleanly-mergeable PR that has
- * fallen behind. The GitHub update-branch API does the merge server-side — no
- * worktree, no judgment — so a sibling stays current after every merge.
+ * Act phase: mechanically rebase a cleanly-mergeable PR that has fallen behind
+ * onto its base. GitHub does the rebase server-side — no worktree, no judgment
+ * — so a sibling stays current after every merge. Rebase, never a merge
+ * commit: agent branches stay linear so the operator's "Rebase and merge"
+ * strategy stays available (a merge-commit update would make GitHub refuse it
+ * — replaying the branch's commits drops the merge commit and its resolutions,
+ * so the original commits re-conflict).
  */
 export async function updatePrBranch(pr: number, exec: Exec = realExec): Promise<void> {
-  await exec("gh", ["api", "--method", "PUT", `repos/{owner}/{repo}/pulls/${pr}/update-branch`]);
+  await exec("gh", ["pr", "update-branch", String(pr), "--rebase"]);
 }
 
 /** Act phase: flip a draft PR to ready-for-review, surfacing it to the reviewer. */
@@ -475,7 +479,7 @@ export async function markPrReady(pr: number, exec: Exec = realExec): Promise<vo
   await exec("gh", ["pr", "ready", String(pr)]);
 }
 
-const CONFLICT_UNRESOLVED_COMMENT = `${CONFLICT_UNRESOLVED_MARKER}\n🐕 border-collie ran a conflict-resolution Worker here, but it could not complete the merge. This PR needs a human to resolve the conflicts — border-collie will not dispatch another Worker for it.`;
+const CONFLICT_UNRESOLVED_COMMENT = `${CONFLICT_UNRESOLVED_MARKER}\n🐕 border-collie ran a conflict-resolution Worker here, but it could not complete the rebase onto the base branch. This PR needs a human to resolve the conflicts — border-collie will not dispatch another Worker for it.`;
 
 /**
  * Act phase: mark a PR's conflict as human-owned after the conflict Worker

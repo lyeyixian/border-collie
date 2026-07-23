@@ -744,13 +744,13 @@ describe("escalateTicket", () => {
 });
 
 describe("updatePrBranch", () => {
-  it("mechanically merges the base into the PR via the update-branch API", async () => {
+  it("mechanically rebases the PR onto its base via gh pr update-branch", async () => {
     const { exec, calls } = recordingExec();
 
     await updatePrBranch(30, exec);
 
     expect(calls).toEqual([
-      ["gh", "api", "--method", "PUT", "repos/{owner}/{repo}/pulls/30/update-branch"],
+      ["gh", "pr", "update-branch", "30", "--rebase"],
     ]);
   });
 });

@@ -58,8 +58,8 @@ export interface ActReport {
 function describeConflict(outcome: ConflictOutcome): string {
   const where = `on ${outcome.headRef} (transcript: ${outcome.transcript})`;
   return outcome.resolved
-    ? `Conflict Worker for PR #${outcome.pr} resolved the merge ${where}`
-    : `Conflict Worker for PR #${outcome.pr} could not resolve the merge (exit ${outcome.exitCode}) ${where}`;
+    ? `Conflict Worker for PR #${outcome.pr} resolved the conflicts ${where}`
+    : `Conflict Worker for PR #${outcome.pr} could not resolve the conflicts (exit ${outcome.exitCode}) ${where}`;
 }
 
 /**
@@ -78,8 +78,8 @@ function describeConflict(outcome: ConflictOutcome): string {
  * stateless recovery story is re-running the Tick, which recomputes the
  * world and re-plans whatever is still due. PR upkeep runs alongside dispatch:
  * the mechanical branch update and draft→ready flip are immediate tracker
- * writes; a conflict Worker runs concurrently like a spawn, its resolved merge
- * pushed (or the PR handed to a human) once it settles.
+ * writes; a conflict Worker runs concurrently like a spawn, its resolved
+ * rebase pushed (or the PR handed to a human) once it settles.
  */
 export async function act(
   actions: Action[],
@@ -111,7 +111,7 @@ export async function act(
         break;
       case "update-branch":
         await updatePrBranch(action.pr, exec);
-        log(`updated PR #${action.pr} branch (mechanical merge of the base)`);
+        log(`updated PR #${action.pr} branch (mechanical rebase onto the base)`);
         break;
       case "mark-ready":
         await markPrReady(action.pr, exec);
@@ -196,7 +196,7 @@ export async function act(
     log(describeConflict(outcome));
     if (outcome.resolved) {
       await pushAgentBranch(outcome.headRef, exec);
-      log(`pushed the resolved merge for PR #${outcome.pr}`);
+      log(`pushed the resolved rebase for PR #${outcome.pr}`);
     } else {
       await commentConflictUnresolved(outcome.pr, exec);
       log(`asked for human resolution on PR #${outcome.pr}`);
