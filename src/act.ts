@@ -3,6 +3,7 @@ import {
   claimTicket,
   closeTicket,
   commentConflictUnresolved,
+  type Exec,
   escalateTicket,
   markPrReady,
   realExec,
@@ -10,16 +11,22 @@ import {
   releaseTicket,
   updatePrBranch,
   voidAttempt,
-  type Exec,
 } from "./tracker.js";
 import type { Action } from "./types.js";
-import { pushAgentBranch, type ConflictOutcome, type WorkerOutcome } from "./worker.js";
+import {
+  type ConflictOutcome,
+  pushAgentBranch,
+  type WorkerOutcome,
+} from "./worker.js";
 
 /**
  * Dispatch one Worker against one claimed ticket; the caller binds the
  * attempt number to a model (the retry ladder).
  */
-export type DispatchWorker = (ticket: number, attempt: number) => Promise<WorkerOutcome>;
+export type DispatchWorker = (
+  ticket: number,
+  attempt: number,
+) => Promise<WorkerOutcome>;
 
 /** Open the draft PR for a successful Attempt; resolves with the PR URL. */
 export type OpenPr = (outcome: WorkerOutcome) => Promise<string>;
@@ -42,7 +49,8 @@ interface SpawnResult {
 function describeOutcome(outcome: WorkerOutcome): string {
   const commits = `${outcome.newCommits} new commit${outcome.newCommits === 1 ? "" : "s"}`;
   const where = `on ${outcome.branch} (transcript: ${outcome.transcript})`;
-  if (outcome.ok) return `Worker for #${outcome.ticket} succeeded: ${commits} ${where}`;
+  if (outcome.ok)
+    return `Worker for #${outcome.ticket} succeeded: ${commits} ${where}`;
   if (outcome.infra !== undefined) {
     return `Worker for #${outcome.ticket} hit an infrastructure failure (${outcome.infra}): attempt ${outcome.attempt} voided, exit ${outcome.exitCode} ${where}`;
   }
@@ -103,7 +111,9 @@ export async function act(
         break;
       case "escalate":
         await escalateTicket(action.ticket, action.failures, exec);
-        log(`escalated #${action.ticket} to ready-for-human (attempts exhausted)`);
+        log(
+          `escalated #${action.ticket} to ready-for-human (attempts exhausted)`,
+        );
         break;
       case "close":
         await closeTicket(action.ticket, action.prUrl, exec);
@@ -111,26 +121,34 @@ export async function act(
         break;
       case "update-branch":
         await updatePrBranch(action.pr, exec);
-        log(`updated PR #${action.pr} branch (mechanical rebase onto the base)`);
+        log(
+          `updated PR #${action.pr} branch (mechanical rebase onto the base)`,
+        );
         break;
       case "mark-ready":
         await markPrReady(action.pr, exec);
         log(`marked PR #${action.pr} ready for review`);
         break;
       case "conflict-worker":
-        conflicts.push(dispatchConflict(action.pr, action.ticket, action.headRef));
-        log(`dispatched conflict Worker for PR #${action.pr} (ticket #${action.ticket})`);
+        conflicts.push(
+          dispatchConflict(action.pr, action.ticket, action.headRef),
+        );
+        log(
+          `dispatched conflict Worker for PR #${action.pr} (ticket #${action.ticket})`,
+        );
         break;
       case "spawn":
         workers.push(
-          dispatch(action.ticket, action.attempt).then(async (outcome): Promise<SpawnResult> => {
-            if (!outcome.ok) return { outcome };
-            try {
-              return { outcome, prUrl: await openPr(outcome) };
-            } catch (error) {
-              return { outcome, prFailure: error };
-            }
-          }),
+          dispatch(action.ticket, action.attempt).then(
+            async (outcome): Promise<SpawnResult> => {
+              if (!outcome.ok) return { outcome };
+              try {
+                return { outcome, prUrl: await openPr(outcome) };
+              } catch (error) {
+                return { outcome, prFailure: error };
+              }
+            },
+          ),
         );
         log(`spawned Worker for #${action.ticket} (attempt ${action.attempt})`);
         break;
@@ -139,18 +157,22 @@ export async function act(
 
   const settled = await Promise.allSettled(workers);
   const fulfilled = settled
-    .filter((result): result is PromiseFulfilledResult<SpawnResult> => result.status === "fulfilled")
+    .filter(
+      (result): result is PromiseFulfilledResult<SpawnResult> =>
+        result.status === "fulfilled",
+    )
     .map((result) => result.value);
   // Reclassify once every Worker has settled: only the full Tick's outcomes
   // can show several Workers dying the same way (an environment problem,
   // not a coincidence of tickets). Zipped straight back onto the spawn
   // results so each outcome keeps its own PR.
-  const outcomes = reclassifyCorrelatedFailures(fulfilled.map((spawn) => spawn.outcome)).map(
-    (outcome, i) => ({ outcome, prUrl: fulfilled[i]?.prUrl }),
-  );
+  const outcomes = reclassifyCorrelatedFailures(
+    fulfilled.map((spawn) => spawn.outcome),
+  ).map((outcome, i) => ({ outcome, prUrl: fulfilled[i]?.prUrl }));
   for (const { outcome, prUrl } of outcomes) {
     log(describeOutcome(outcome));
-    if (prUrl !== undefined) log(`opened draft PR for #${outcome.ticket}: ${prUrl}`);
+    if (prUrl !== undefined)
+      log(`opened draft PR for #${outcome.ticket}: ${prUrl}`);
     if (outcome.costOverrun && outcome.costUsd !== undefined) {
       log(
         `cost overrun on #${outcome.ticket}: attempt ${outcome.attempt} spent $${outcome.costUsd.toFixed(2)} — the ticket may be cut too big for one Worker`,
@@ -167,7 +189,9 @@ export async function act(
         },
         exec,
       );
-      log(`voided attempt ${outcome.attempt} of #${outcome.ticket} (${outcome.infra}); claim held`);
+      log(
+        `voided attempt ${outcome.attempt} of #${outcome.ticket} (${outcome.infra}); claim held`,
+      );
     } else if (outcome.failure) {
       await releaseFailedTicket(
         outcome.ticket,
@@ -205,12 +229,17 @@ export async function act(
 
   const rejected = settled.find((result) => result.status === "rejected");
   if (rejected) throw rejected.reason;
-  const rejectedConflict = settledConflicts.find((result) => result.status === "rejected");
+  const rejectedConflict = settledConflicts.find(
+    (result) => result.status === "rejected",
+  );
   if (rejectedConflict) throw rejectedConflict.reason;
   for (const result of settled) {
     if (result.status === "fulfilled" && result.value.prFailure !== undefined) {
       throw result.value.prFailure;
     }
   }
-  return { infraFailures: outcomes.filter(({ outcome }) => outcome.infra !== undefined).length };
+  return {
+    infraFailures: outcomes.filter(({ outcome }) => outcome.infra !== undefined)
+      .length,
+  };
 }

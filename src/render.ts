@@ -1,9 +1,9 @@
 import { modelForAttempt, type ResolvedConfig } from "./config.js";
 import { dispatchableSet } from "./plan.js";
 import {
+  type Action,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
-  type Action,
   type Ticket,
   type WorldSnapshot,
 } from "./types.js";
@@ -13,7 +13,10 @@ export function renderPlan(
   config: ResolvedConfig,
   world: WorldSnapshot,
   actions: Action[],
-  { dryRun, dispatchPaused = false }: { dryRun: boolean; dispatchPaused?: boolean },
+  {
+    dryRun,
+    dispatchPaused = false,
+  }: { dryRun: boolean; dispatchPaused?: boolean },
 ): string {
   const { scope, maxWorkers, maxOpenPrs } = config;
   const lines: string[] = [];
@@ -22,17 +25,26 @@ export function renderPlan(
     scope.kind === "parent"
       ? `sub-issues of #${scope.parent}`
       : "repo-wide (--all)";
-  lines.push(`Scope: ${scopeLabel} — ${world.tickets.length} tickets (${open} open)`);
+  lines.push(
+    `Scope: ${scopeLabel} — ${world.tickets.length} tickets (${open} open)`,
+  );
 
   const dispatchable = dispatchableSet(world);
   if (dispatchable.length === 0) {
     lines.push("Dispatchable: none");
   } else {
-    lines.push(`Dispatchable: ${dispatchable.map((t) => `#${t.number}`).join(", ")}`);
+    lines.push(
+      `Dispatchable: ${dispatchable.map((t) => `#${t.number}`).join(", ")}`,
+    );
   }
   if (dispatchPaused) {
-    lines.push("Dispatch paused: circuit breaker open (infrastructure failure), claims held");
-  } else if (dispatchable.length > 0 && world.openAgentPrs.length >= maxOpenPrs) {
+    lines.push(
+      "Dispatch paused: circuit breaker open (infrastructure failure), claims held",
+    );
+  } else if (
+    dispatchable.length > 0 &&
+    world.openAgentPrs.length >= maxOpenPrs
+  ) {
     lines.push(
       `Dispatch paused: ${world.openAgentPrs.length} open agent PRs at max_open_prs (${maxOpenPrs})`,
     );
@@ -40,7 +52,9 @@ export function renderPlan(
 
   const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
   if (actions.length === 0) {
-    lines.push(`Plan (max_workers=${maxWorkers}, max_open_prs=${maxOpenPrs}): nothing to do`);
+    lines.push(
+      `Plan (max_workers=${maxWorkers}, max_open_prs=${maxOpenPrs}): nothing to do`,
+    );
   } else {
     lines.push(`Plan (max_workers=${maxWorkers}, max_open_prs=${maxOpenPrs}):`);
     for (const action of actions) {
@@ -50,7 +64,9 @@ export function renderPlan(
           lines.push(`  claim #${action.ticket} — ${title}`);
           break;
         case "release":
-          lines.push(`  release #${action.ticket} — ${title} (orphaned agent claim)`);
+          lines.push(
+            `  release #${action.ticket} — ${title} (orphaned agent claim)`,
+          );
           break;
         case "spawn":
           lines.push(
@@ -66,13 +82,19 @@ export function renderPlan(
           );
           break;
         case "close":
-          lines.push(`  close #${action.ticket} — ${title} (merged: ${action.prUrl})`);
+          lines.push(
+            `  close #${action.ticket} — ${title} (merged: ${action.prUrl})`,
+          );
           break;
         case "update-branch":
-          lines.push(`  update PR #${action.pr} — ${title} (behind base, mechanical rebase)`);
+          lines.push(
+            `  update PR #${action.pr} — ${title} (behind base, mechanical rebase)`,
+          );
           break;
         case "conflict-worker":
-          lines.push(`  conflict Worker for PR #${action.pr} — ${title} (resolve merge conflicts)`);
+          lines.push(
+            `  conflict Worker for PR #${action.pr} — ${title} (resolve merge conflicts)`,
+          );
           break;
         case "mark-ready":
           lines.push(`  mark PR #${action.pr} ready — ${title} (CI green)`);
@@ -93,7 +115,9 @@ export function renderPlan(
 function stuckReason(ticket: Ticket, inScope: Set<number>): string {
   const reasons: string[] = [];
   if (ticket.assignees.length > 0) {
-    reasons.push(`claimed by ${ticket.assignees.join(", ")} — a human claim, hands off`);
+    reasons.push(
+      `claimed by ${ticket.assignees.join(", ")} — a human claim, hands off`,
+    );
   }
   if (ticket.labels.includes(READY_FOR_HUMAN)) {
     reasons.push(`labelled ${READY_FOR_HUMAN}`);
@@ -119,9 +143,12 @@ export function renderStuck(world: WorldSnapshot): string {
   const inScope = new Set(world.tickets.map((t) => t.number));
   return [
     "Run Stuck: open tickets remain, but every path forward runs through a human.",
-    ...world.tickets.filter((ticket) => ticket.state === "open").map(
-      (ticket) => `  #${ticket.number} — ${ticket.title} (${stuckReason(ticket, inScope)})`,
-    ),
+    ...world.tickets
+      .filter((ticket) => ticket.state === "open")
+      .map(
+        (ticket) =>
+          `  #${ticket.number} — ${ticket.title} (${stuckReason(ticket, inScope)})`,
+      ),
   ].join("\n");
 }
 

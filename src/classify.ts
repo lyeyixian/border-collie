@@ -15,12 +15,18 @@ import type { WorkerOutcome } from "./worker.js";
  * classifies as the rate limit that caused it.
  */
 const INFRA_SIGNATURES: [InfraReason, RegExp][] = [
-  ["usage-limit", /usage[ _]limit|usage_limit_reached|out of extra usage|limit reached\|\d/i],
+  [
+    "usage-limit",
+    /usage[ _]limit|usage_limit_reached|out of extra usage|limit reached\|\d/i,
+  ],
   [
     "auth",
     /authentication_error|invalid api key|api key not found|please run \/login|oauth.{0,20}(expired|revoked|invalid)|401 unauthorized|credit balance is too low/i,
   ],
-  ["rate-limit", /rate[ _-]?limit|overloaded_error|too many requests|"status"\s*:\s*429|http 429/i],
+  [
+    "rate-limit",
+    /rate[ _-]?limit|overloaded_error|too many requests|"status"\s*:\s*429|http 429/i,
+  ],
   [
     "network",
     /ENOTFOUND|ECONNREFUSED|ECONNRESET|ETIMEDOUT|EAI_AGAIN|EHOSTUNREACH|ENETUNREACH|fetch failed|network error|connection (error|refused|reset|timed out)/i,
@@ -46,7 +52,9 @@ export function classifyInfrastructure(text: string): InfraReason | undefined {
  * CLI's own error text, not the Worker's prose or tool output.
  */
 export function lastResultLine(tail: string): string {
-  return tail.split("\n").findLast((line) => line.includes('"type":"result"')) ?? "";
+  return (
+    tail.split("\n").findLast((line) => line.includes('"type":"result"')) ?? ""
+  );
 }
 
 /** The budget-relevant fields of the transcript's final stream-json result event. */
@@ -67,18 +75,21 @@ export function parseResultEvent(tail: string): ResultEvent | undefined {
     if (!line.includes('"type":"result"')) continue;
     try {
       const event = JSON.parse(line) as unknown;
-      if (typeof event === "object" && event !== null && !Array.isArray(event)) {
+      if (
+        typeof event === "object" &&
+        event !== null &&
+        !Array.isArray(event)
+      ) {
         const record = event as Record<string, unknown>;
         if (record.type === "result") last = record;
       }
-    } catch {
-      continue;
-    }
+    } catch {}
   }
   if (last === undefined) return undefined;
   return {
     subtype: typeof last.subtype === "string" ? last.subtype : undefined,
-    totalCostUsd: typeof last.total_cost_usd === "number" ? last.total_cost_usd : undefined,
+    totalCostUsd:
+      typeof last.total_cost_usd === "number" ? last.total_cost_usd : undefined,
     numTurns: typeof last.num_turns === "number" ? last.num_turns : undefined,
   };
 }
@@ -90,7 +101,11 @@ export function parseResultEvent(tail: string): ResultEvent | undefined {
  * same evidence: both are measured from a Worker that ran to completion,
  * which proves the environment was up.
  */
-const CORRELATABLE: ReadonlySet<string> = new Set(["nonzero-exit", "timeout", "stall"]);
+const CORRELATABLE: ReadonlySet<string> = new Set([
+  "nonzero-exit",
+  "timeout",
+  "stall",
+]);
 
 /**
  * The same-way-same-Tick heuristic: two or more Workers dying with the same
@@ -100,7 +115,9 @@ const CORRELATABLE: ReadonlySet<string> = new Set(["nonzero-exit", "timeout", "s
  * false positive costs a delay while a false negative burns Attempts across
  * the whole DAG.
  */
-export function reclassifyCorrelatedFailures(outcomes: WorkerOutcome[]): WorkerOutcome[] {
+export function reclassifyCorrelatedFailures(
+  outcomes: WorkerOutcome[],
+): WorkerOutcome[] {
   const counts = new Map<string, number>();
   for (const outcome of outcomes) {
     if (outcome.failure !== undefined && CORRELATABLE.has(outcome.failure)) {

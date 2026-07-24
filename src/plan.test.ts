@@ -34,7 +34,10 @@ function failure(attempt: number): AttemptFailure {
 }
 
 /** A clean, current, non-draft open agent PR — the backdrop that triggers no upkeep. */
-function openPr(ticket: number, overrides: Partial<OpenAgentPr> = {}): OpenAgentPr {
+function openPr(
+  ticket: number,
+  overrides: Partial<OpenAgentPr> = {},
+): OpenAgentPr {
   return {
     number: ticket * 10,
     ticket,
@@ -53,11 +56,18 @@ function world(
   openAgentPrTickets: number[] = [],
   mergedAgentPrs: MergedAgentPr[] = [],
 ): WorldSnapshot {
-  return { tickets, openAgentPrs: openAgentPrTickets.map((t) => openPr(t)), mergedAgentPrs };
+  return {
+    tickets,
+    openAgentPrs: openAgentPrTickets.map((t) => openPr(t)),
+    mergedAgentPrs,
+  };
 }
 
 /** A world whose open agent PRs are given in full — for the PR-upkeep cases. */
-function worldWithPrs(tickets: Ticket[], openAgentPrs: OpenAgentPr[]): WorldSnapshot {
+function worldWithPrs(
+  tickets: Ticket[],
+  openAgentPrs: OpenAgentPr[],
+): WorldSnapshot {
   return { tickets, openAgentPrs, mergedAgentPrs: [] };
 }
 
@@ -67,7 +77,10 @@ function mergedPr(ticket: number): MergedAgentPr {
 
 describe("plan", () => {
   it("claims a dispatchable ticket and spawns a Worker for it", () => {
-    const actions = plan(world([ticket({ number: 7 })]), { maxWorkers: 3, maxOpenPrs: 5 });
+    const actions = plan(world([ticket({ number: 7 })]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+    });
 
     expect(actions).toEqual([
       { type: "claim", ticket: 7 },
@@ -80,10 +93,10 @@ describe("plan", () => {
   });
 
   it("excludes closed tickets", () => {
-    const actions = plan(
-      world([ticket({ number: 1, state: "closed" })]),
-      { maxWorkers: 3, maxOpenPrs: 5 },
-    );
+    const actions = plan(world([ticket({ number: 1, state: "closed" })]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+    });
 
     expect(actions).toEqual([]);
   });
@@ -110,21 +123,25 @@ describe("plan", () => {
   });
 
   it("excludes tickets with open blockers", () => {
-    const actions = plan(
-      world([ticket({ number: 1, openBlockers: 2 })]),
-      { maxWorkers: 3, maxOpenPrs: 5 },
-    );
+    const actions = plan(world([ticket({ number: 1, openBlockers: 2 })]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+    });
 
     expect(actions).toEqual([]);
   });
 
   it("releases an orphaned agent claim: assigned with marker, no open agent PR", () => {
     const actions = plan(
-      world([ticket({ number: 5, assignees: ["operator"], hasAgentClaim: true })]),
+      world([
+        ticket({ number: 5, assignees: ["operator"], hasAgentClaim: true }),
+      ]),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
-    expect(actions).toEqual([{ type: "release", ticket: 5, assignees: ["operator"] }]);
+    expect(actions).toEqual([
+      { type: "release", ticket: 5, assignees: ["operator"] },
+    ]);
   });
 
   it("keeps an agent claim whose ticket has an open agent PR", () => {
@@ -151,7 +168,12 @@ describe("plan", () => {
   it("does not release a closed ticket that still carries the marker", () => {
     const actions = plan(
       world([
-        ticket({ number: 5, state: "closed", assignees: ["operator"], hasAgentClaim: true }),
+        ticket({
+          number: 5,
+          state: "closed",
+          assignees: ["operator"],
+          hasAgentClaim: true,
+        }),
       ]),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
@@ -219,7 +241,13 @@ describe("plan", () => {
 describe("plan: retry ladder and Escalation", () => {
   it("re-claims a once-failed ticket as attempt 2 (the retry ladder)", () => {
     const actions = plan(
-      world([ticket({ number: 7, agentClaimCount: 1, attemptFailures: [failure(1)] })]),
+      world([
+        ticket({
+          number: 7,
+          agentClaimCount: 1,
+          attemptFailures: [failure(1)],
+        }),
+      ]),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
@@ -232,7 +260,9 @@ describe("plan: retry ladder and Escalation", () => {
   it("escalates instead of dispatching once attempts are exhausted, citing the failure records", () => {
     const failures = [failure(1), failure(2)];
     const actions = plan(
-      world([ticket({ number: 7, agentClaimCount: 2, attemptFailures: failures })]),
+      world([
+        ticket({ number: 7, agentClaimCount: 2, attemptFailures: failures }),
+      ]),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
@@ -241,11 +271,19 @@ describe("plan: retry ladder and Escalation", () => {
 
   it("escalates a ticket with more claims than failure records (orphan-released attempts)", () => {
     const actions = plan(
-      world([ticket({ number: 7, agentClaimCount: 3, attemptFailures: [failure(2)] })]),
+      world([
+        ticket({
+          number: 7,
+          agentClaimCount: 3,
+          attemptFailures: [failure(2)],
+        }),
+      ]),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
-    expect(actions).toEqual([{ type: "escalate", ticket: 7, failures: [failure(2)] }]);
+    expect(actions).toEqual([
+      { type: "escalate", ticket: 7, failures: [failure(2)] },
+    ]);
   });
 
   it("never escalates an already-escalated ticket (label swap removed ready-for-agent)", () => {
@@ -282,19 +320,30 @@ describe("plan: retry ladder and Escalation", () => {
   it("does not escalate an assigned ticket this tick: the orphan release goes first", () => {
     const actions = plan(
       world([
-        ticket({ number: 7, assignees: ["operator"], hasAgentClaim: true, agentClaimCount: 2 }),
+        ticket({
+          number: 7,
+          assignees: ["operator"],
+          hasAgentClaim: true,
+          agentClaimCount: 2,
+        }),
       ]),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
-    expect(actions).toEqual([{ type: "release", ticket: 7, assignees: ["operator"] }]);
+    expect(actions).toEqual([
+      { type: "release", ticket: 7, assignees: ["operator"] },
+    ]);
   });
 
   it("orders escalations after releases and before dispatches, without consuming Worker slots", () => {
     const actions = plan(
       world([
         ticket({ number: 3 }),
-        ticket({ number: 5, agentClaimCount: 2, attemptFailures: [failure(1), failure(2)] }),
+        ticket({
+          number: 5,
+          agentClaimCount: 2,
+          attemptFailures: [failure(1), failure(2)],
+        }),
         ticket({ number: 6, assignees: ["operator"], hasAgentClaim: true }),
       ]),
       { maxWorkers: 1, maxOpenPrs: 5 },
@@ -310,7 +359,11 @@ describe("plan: retry ladder and Escalation", () => {
 
   it("closes an open ticket whose agent PR merged, with the PR linked", () => {
     const actions = plan(
-      world([ticket({ number: 6, assignees: ["operator"], hasAgentClaim: true })], [], [mergedPr(6)]),
+      world(
+        [ticket({ number: 6, assignees: ["operator"], hasAgentClaim: true })],
+        [],
+        [mergedPr(6)],
+      ),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
@@ -331,10 +384,10 @@ describe("plan: retry ladder and Escalation", () => {
   it("does not release or re-dispatch a merged ticket awaiting closure", () => {
     // Unassigned, labelled, unblocked — but its PR already merged. Claiming it
     // again would dispatch duplicate work in the same tick as the close.
-    const actions = plan(
-      world([ticket({ number: 6 })], [], [mergedPr(6)]),
-      { maxWorkers: 3, maxOpenPrs: 5 },
-    );
+    const actions = plan(world([ticket({ number: 6 })], [], [mergedPr(6)]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+    });
 
     expect(actions).toEqual([
       { type: "close", ticket: 6, prUrl: "https://github.com/o/r/pull/60" },
@@ -381,10 +434,10 @@ describe("plan: retry ladder and Escalation", () => {
   });
 
   it("pauses dispatch entirely while open agent PRs are at max_open_prs", () => {
-    const actions = plan(
-      world([ticket({ number: 6 })], [1, 2, 3, 4, 5]),
-      { maxWorkers: 3, maxOpenPrs: 5 },
-    );
+    const actions = plan(world([ticket({ number: 6 })], [1, 2, 3, 4, 5]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+    });
 
     expect(actions).toEqual([]);
   });
@@ -413,7 +466,11 @@ describe("plan: retry ladder and Escalation", () => {
 describe("plan: circuit breaker", () => {
   it("plans only closure verification while dispatch is paused: no claims, no spawns", () => {
     const actions = plan(
-      world([ticket({ number: 4 }), ticket({ number: 6, state: "closed" })], [], [mergedPr(6)]),
+      world(
+        [ticket({ number: 4 }), ticket({ number: 6, state: "closed" })],
+        [],
+        [mergedPr(6)],
+      ),
       { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true },
     );
 
@@ -440,13 +497,29 @@ describe("plan: circuit breaker", () => {
       agentClaimCount: 1,
     });
 
-    expect(plan(world([held]), { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true })).toEqual([]);
+    expect(
+      plan(world([held]), {
+        maxWorkers: 3,
+        maxOpenPrs: 5,
+        dispatchPaused: true,
+      }),
+    ).toEqual([]);
   });
 
   it("does not escalate while paused: tickets are judged only against a healthy environment", () => {
-    const exhausted = ticket({ number: 7, agentClaimCount: 2, attemptFailures: [failure(1), failure(2)] });
+    const exhausted = ticket({
+      number: 7,
+      agentClaimCount: 2,
+      attemptFailures: [failure(1), failure(2)],
+    });
 
-    expect(plan(world([exhausted]), { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true })).toEqual([]);
+    expect(
+      plan(world([exhausted]), {
+        maxWorkers: 3,
+        maxOpenPrs: 5,
+        dispatchPaused: true,
+      }),
+    ).toEqual([]);
   });
 
   it("does not count a voided attempt: a claim history net of voids re-dispatches at the same rung", () => {
@@ -464,7 +537,10 @@ describe("plan: circuit breaker", () => {
 describe("plan: PR upkeep", () => {
   it("plans no upkeep for a clean, current, non-draft PR", () => {
     const actions = plan(
-      worldWithPrs([ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })], [openPr(3)]),
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3)],
+      ),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
@@ -493,7 +569,12 @@ describe("plan: PR upkeep", () => {
     );
 
     expect(actions).toEqual([
-      { type: "conflict-worker", pr: 30, ticket: 3, headRef: "border-collie/ticket-3-attempt-1" },
+      {
+        type: "conflict-worker",
+        pr: 30,
+        ticket: 3,
+        headRef: "border-collie/ticket-3-attempt-1",
+      },
     ]);
   });
 
@@ -501,7 +582,13 @@ describe("plan: PR upkeep", () => {
     const actions = plan(
       worldWithPrs(
         [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
-        [openPr(3, { number: 30, mergeable: "conflicted", conflictWorkerAsked: true })],
+        [
+          openPr(3, {
+            number: 30,
+            mergeable: "conflicted",
+            conflictWorkerAsked: true,
+          }),
+        ],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
@@ -513,7 +600,15 @@ describe("plan: PR upkeep", () => {
     const actions = plan(
       worldWithPrs(
         [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
-        [openPr(3, { number: 30, mergeable: "conflicted", behind: true, draft: true, conflictWorkerAsked: true })],
+        [
+          openPr(3, {
+            number: 30,
+            mergeable: "conflicted",
+            behind: true,
+            draft: true,
+            conflictWorkerAsked: true,
+          }),
+        ],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
@@ -541,7 +636,14 @@ describe("plan: PR upkeep", () => {
     const actions = plan(
       worldWithPrs(
         [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
-        [openPr(3, { number: 30, mergeable: "unknown", draft: true, ci: "none" })],
+        [
+          openPr(3, {
+            number: 30,
+            mergeable: "unknown",
+            draft: true,
+            ci: "none",
+          }),
+        ],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );

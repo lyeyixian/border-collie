@@ -1,8 +1,8 @@
 import {
-  MAX_ATTEMPTS,
-  READY_FOR_AGENT,
   type Action,
+  MAX_ATTEMPTS,
   type PlanConfig,
+  READY_FOR_AGENT,
   type Ticket,
   type WorldSnapshot,
 } from "./types.js";
@@ -93,10 +93,17 @@ function isEscalationDue(ticket: Ticket, world: WorldSnapshot): boolean {
  */
 function prUpkeep(world: WorldSnapshot): Action[] {
   const actions: Action[] = [];
-  for (const pr of [...world.openAgentPrs].sort((a, b) => a.number - b.number)) {
+  for (const pr of [...world.openAgentPrs].sort(
+    (a, b) => a.number - b.number,
+  )) {
     if (pr.mergeable === "conflicted") {
       if (!pr.conflictWorkerAsked) {
-        actions.push({ type: "conflict-worker", pr: pr.number, ticket: pr.ticket, headRef: pr.headRef });
+        actions.push({
+          type: "conflict-worker",
+          pr: pr.number,
+          ticket: pr.ticket,
+          headRef: pr.headRef,
+        });
       }
       continue;
     }
@@ -145,7 +152,11 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   const releases: Action[] = world.tickets
     .filter((ticket) => isOrphanedClaim(ticket, world))
     .sort((a, b) => a.number - b.number)
-    .map((ticket) => ({ type: "release", ticket: ticket.number, assignees: ticket.assignees }));
+    .map((ticket) => ({
+      type: "release",
+      ticket: ticket.number,
+      assignees: ticket.assignees,
+    }));
 
   const escalations: Action[] = world.tickets
     .filter((ticket) => isEscalationDue(ticket, world))
@@ -165,8 +176,18 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
     .slice(0, Math.max(0, Math.min(config.maxWorkers, headroom)))
     .flatMap((ticket) => [
       { type: "claim", ticket: ticket.number },
-      { type: "spawn", ticket: ticket.number, attempt: ticket.agentClaimCount + 1 },
+      {
+        type: "spawn",
+        ticket: ticket.number,
+        attempt: ticket.agentClaimCount + 1,
+      },
     ]);
 
-  return [...closes, ...prUpkeep(world), ...releases, ...escalations, ...dispatches];
+  return [
+    ...closes,
+    ...prUpkeep(world),
+    ...releases,
+    ...escalations,
+    ...dispatches,
+  ];
 }

@@ -1,9 +1,17 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { classifyInfrastructure, lastResultLine, parseResultEvent } from "./classify.js";
-import { realExec, type Exec } from "./tracker.js";
-import { AGENT_BRANCH_PREFIX, type FailureReason, type InfraReason } from "./types.js";
+import {
+  classifyInfrastructure,
+  lastResultLine,
+  parseResultEvent,
+} from "./classify.js";
+import { type Exec, realExec } from "./tracker.js";
+import {
+  AGENT_BRANCH_PREFIX,
+  type FailureReason,
+  type InfraReason,
+} from "./types.js";
 
 /**
  * The WorkerHost seam: everything a dispatched Worker needs around it —
@@ -130,7 +138,10 @@ export interface WorkerProcessExit {
 export const TAIL_LIMIT = 64 * 1024;
 
 /** Accumulate a stream into a bounded tail: only the last TAIL_LIMIT chars survive. */
-function makeTail(): { push: (chunk: Buffer | string) => void; read: () => string } {
+function makeTail(): {
+  push: (chunk: Buffer | string) => void;
+  read: () => string;
+} {
   let tail = "";
   return {
     push: (chunk) => {
@@ -141,7 +152,9 @@ function makeTail(): { push: (chunk: Buffer | string) => void; read: () => strin
 }
 
 /** Process seam: run the Worker to completion under both watchdogs. */
-export type SpawnWorkerProcess = (request: WorkerProcessRequest) => Promise<WorkerProcessExit>;
+export type SpawnWorkerProcess = (
+  request: WorkerProcessRequest,
+) => Promise<WorkerProcessExit>;
 
 export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
   new Promise((resolve, reject) => {
@@ -207,7 +220,7 @@ export function workerPrompt(ticket: number): string {
   return [
     `/implement issue #${ticket}`,
     "",
-    "When the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like \"Here's the PR description:\", no status narration, no text before or after it.",
+    'When the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like "Here\'s the PR description:", no status narration, no text before or after it.',
   ].join("\n");
 }
 
@@ -229,7 +242,9 @@ export function conflictWorkerPrompt(): string {
 
 /** Best-effort worktree removal: absent or stale worktrees are fine. */
 async function removeWorktree(worktree: string, exec: Exec): Promise<void> {
-  await exec("git", ["worktree", "remove", "--force", worktree]).catch(() => {});
+  await exec("git", ["worktree", "remove", "--force", worktree]).catch(
+    () => {},
+  );
 }
 
 /**
@@ -250,7 +265,10 @@ function withGitLock<T>(operation: () => Promise<T>): Promise<T> {
  * remote is superseded, never recorded progress (ADR 0001). Only ever called
  * on agent-prefixed branches.
  */
-export async function pushAgentBranch(branch: string, exec: Exec = realExec): Promise<void> {
+export async function pushAgentBranch(
+  branch: string,
+  exec: Exec = realExec,
+): Promise<void> {
   await withGitLock(() => exec("git", ["push", "--force", "origin", branch]));
 }
 
@@ -289,7 +307,11 @@ export async function dispatchWorker(
 ): Promise<WorkerOutcome> {
   const branch = `${AGENT_BRANCH_PREFIX}${ticket}-attempt-${config.attempt}`;
   const worktree = join(RUN_DIR, "worktrees", `ticket-${ticket}`);
-  const transcript = join(RUN_DIR, "transcripts", `ticket-${ticket}-attempt-${config.attempt}.jsonl`);
+  const transcript = join(
+    RUN_DIR,
+    "transcripts",
+    `ticket-${ticket}-attempt-${config.attempt}.jsonl`,
+  );
   const stderrLog = join(
     RUN_DIR,
     "transcripts",
@@ -300,7 +322,14 @@ export async function dispatchWorker(
     await removeWorktree(worktree, exec);
     await exec("git", ["worktree", "prune"]);
     await exec("git", ["fetch", "origin"]);
-    await exec("git", ["worktree", "add", worktree, "-B", branch, "origin/HEAD"]);
+    await exec("git", [
+      "worktree",
+      "add",
+      worktree,
+      "-B",
+      branch,
+      "origin/HEAD",
+    ]);
     return (await exec("git", ["rev-parse", branch])).trim();
   });
 
@@ -318,7 +347,11 @@ export async function dispatchWorker(
       stallMs: config.stallMs,
     });
     const newCommits = Number(
-      (await withGitLock(() => exec("git", ["rev-list", "--count", `${base}..${branch}`]))).trim(),
+      (
+        await withGitLock(() =>
+          exec("git", ["rev-list", "--count", `${base}..${branch}`]),
+        )
+      ).trim(),
     );
     // A killed Worker fails even with commits on the branch: it never got to
     // finish, so the work is unverified and the PR description is missing.
@@ -349,8 +382,11 @@ export async function dispatchWorker(
       trigger !== undefined && !turnCapHit
         ? classifyInfrastructure(`${stderrTail}\n${lastResultLine(stdoutTail)}`)
         : undefined;
-    const failure: FailureReason | undefined =
-      turnCapHit ? "budget" : infra !== undefined ? undefined : trigger;
+    const failure: FailureReason | undefined = turnCapHit
+      ? "budget"
+      : infra !== undefined
+        ? undefined
+        : trigger;
     return {
       ticket,
       attempt: config.attempt,
@@ -365,7 +401,8 @@ export async function dispatchWorker(
       costUsd: result?.totalCostUsd,
       turns: result?.numTurns,
       costOverrun:
-        result?.totalCostUsd !== undefined && result.totalCostUsd > config.maxCostUsd,
+        result?.totalCostUsd !== undefined &&
+        result.totalCostUsd > config.maxCostUsd,
       ok: failure === undefined && infra === undefined,
     };
   } finally {
@@ -459,16 +496,29 @@ export async function dispatchConflictWorker(
 ): Promise<ConflictOutcome> {
   const worktree = join(RUN_DIR, "conflict-worktrees", `pr-${pr}`);
   const transcript = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.jsonl`);
-  const stderrLog = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.stderr.log`);
+  const stderrLog = join(
+    RUN_DIR,
+    "transcripts",
+    `pr-${pr}-conflict.stderr.log`,
+  );
 
   await withGitLock(async () => {
     await removeWorktree(worktree, exec);
     await exec("git", ["worktree", "prune"]);
     await exec("git", ["fetch", "origin"]);
-    await exec("git", ["worktree", "add", worktree, "-B", headRef, `origin/${headRef}`]);
+    await exec("git", [
+      "worktree",
+      "add",
+      worktree,
+      "-B",
+      headRef,
+      `origin/${headRef}`,
+    ]);
     // A conflicting rebase exits non-zero and stops in progress for the
     // Worker; swallow that so setting up the conflict never throws.
-    await exec("git", ["-C", worktree, "rebase", "origin/HEAD"]).catch(() => {});
+    await exec("git", ["-C", worktree, "rebase", "origin/HEAD"]).catch(
+      () => {},
+    );
   });
 
   try {
@@ -484,7 +534,14 @@ export async function dispatchConflictWorker(
     // The branch ref, not HEAD: mid-rebase HEAD is detached on the commit
     // being replayed, while the branch only moves on completion.
     const rebased = await withGitLock(() =>
-      exec("git", ["-C", worktree, "merge-base", "--is-ancestor", "origin/HEAD", headRef]).then(
+      exec("git", [
+        "-C",
+        worktree,
+        "merge-base",
+        "--is-ancestor",
+        "origin/HEAD",
+        headRef,
+      ]).then(
         () => true,
         () => false,
       ),

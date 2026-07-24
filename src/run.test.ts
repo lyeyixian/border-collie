@@ -1,7 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { BREAKER_BASE_COOLDOWN_MS } from "./breaker.js";
-import { run, runStatus, type RunDeps } from "./run.js";
-import type { Action, MergedAgentPr, OpenAgentPr, Ticket, WorldSnapshot } from "./types.js";
+import { type RunDeps, run, runStatus } from "./run.js";
+import type {
+  Action,
+  MergedAgentPr,
+  OpenAgentPr,
+  Ticket,
+  WorldSnapshot,
+} from "./types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
   return {
@@ -36,13 +42,20 @@ function world(
   openAgentPrTickets: number[] = [],
   mergedAgentPrs: MergedAgentPr[] = [],
 ): WorldSnapshot {
-  return { tickets, openAgentPrs: openAgentPrTickets.map(openPr), mergedAgentPrs };
+  return {
+    tickets,
+    openAgentPrs: openAgentPrTickets.map(openPr),
+    mergedAgentPrs,
+  };
 }
 
 describe("runStatus", () => {
   it("is complete when every ticket in Scope is closed", () => {
     const status = runStatus(
-      world([ticket({ number: 2, state: "closed" }), ticket({ number: 3, state: "closed" })]),
+      world([
+        ticket({ number: 2, state: "closed" }),
+        ticket({ number: 3, state: "closed" }),
+      ]),
       [],
     );
 
@@ -59,7 +72,9 @@ describe("runStatus", () => {
       { type: "spawn", ticket: 2, attempt: 1 },
     ];
 
-    expect(runStatus(world([ticket({ number: 2 })]), actions)).toEqual({ state: "running" });
+    expect(runStatus(world([ticket({ number: 2 })]), actions)).toEqual({
+      state: "running",
+    });
   });
 
   it("keeps running while agent PRs await human merge, even with nothing planned", () => {
@@ -92,11 +107,17 @@ describe("runStatus", () => {
   it("keeps running while a dispatchable ticket waits on headroom held by out-of-scope PRs", () => {
     // Dispatch was throttled to nothing (actions empty), but the ticket
     // becomes claimable the moment the foreign PRs merge — not stuck.
-    expect(runStatus(world([ticket({ number: 2 })], [99]), [])).toEqual({ state: "running" });
+    expect(runStatus(world([ticket({ number: 2 })], [99]), [])).toEqual({
+      state: "running",
+    });
   });
 
   it("is never stuck while the circuit breaker holds dispatch paused — recovery is the path forward", () => {
-    const held = ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true });
+    const held = ticket({
+      number: 2,
+      assignees: ["operator"],
+      hasAgentClaim: true,
+    });
 
     expect(runStatus(world([held]), [], true)).toEqual({ state: "running" });
   });
@@ -131,7 +152,8 @@ function scriptedDeps(
   state.deps = {
     tick: async (dispatchPaused) => {
       const next = script.shift();
-      if (next === undefined) throw new Error("tick called past the end of the script");
+      if (next === undefined)
+        throw new Error("tick called past the end of the script");
       state.ticks += 1;
       state.pausedFlags.push(dispatchPaused);
       return { infraFailures: 0, ...next };
@@ -139,7 +161,8 @@ function scriptedDeps(
     probe: async () => {
       state.probes += 1;
       const answer = opts.probeAnswers?.shift();
-      if (answer === undefined) throw new Error("probe called past the end of the script");
+      if (answer === undefined)
+        throw new Error("probe called past the end of the script");
       return answer;
     },
     now: () => nowMs,
@@ -191,7 +214,12 @@ describe("run", () => {
       {
         world: world([
           ticket({ number: 2, title: "Walking skeleton", state: "closed" }),
-          ticket({ number: 7, title: "Hard one", state: "closed", labels: ["ready-for-human"] }),
+          ticket({
+            number: 7,
+            title: "Hard one",
+            state: "closed",
+            labels: ["ready-for-human"],
+          }),
         ]),
         actions: [],
       },
@@ -205,7 +233,9 @@ describe("run", () => {
   });
 
   it("trips the breaker on infrastructure failure, ticks paused, and resumes when the probe passes", async () => {
-    const held = world([ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })]);
+    const held = world([
+      ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true }),
+    ]);
     const state = scriptedDeps(
       [
         {
@@ -233,7 +263,9 @@ describe("run", () => {
   });
 
   it("re-trips on a failed probe and waits the doubled cooldown before probing again", async () => {
-    const held = world([ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })]);
+    const held = world([
+      ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true }),
+    ]);
     const state = scriptedDeps(
       [
         { world: held, actions: [], infraFailures: 1 },
@@ -256,7 +288,13 @@ describe("run", () => {
   it("exits stuck with a report naming the open tickets", async () => {
     const state = scriptedDeps([
       {
-        world: world([ticket({ number: 7, title: "Needs a human", labels: ["ready-for-human"] })]),
+        world: world([
+          ticket({
+            number: 7,
+            title: "Needs a human",
+            labels: ["ready-for-human"],
+          }),
+        ]),
         actions: [],
       },
     ]);

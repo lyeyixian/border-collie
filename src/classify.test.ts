@@ -9,37 +9,55 @@ import type { WorkerOutcome } from "./worker.js";
 
 describe("classifyInfrastructure", () => {
   it("classifies a usage-limit death", () => {
-    expect(classifyInfrastructure("Claude AI usage limit reached|1769000000")).toBe("usage-limit");
-    expect(classifyInfrastructure('{"error":{"type":"usage_limit_reached"}}')).toBe("usage-limit");
+    expect(
+      classifyInfrastructure("Claude AI usage limit reached|1769000000"),
+    ).toBe("usage-limit");
+    expect(
+      classifyInfrastructure('{"error":{"type":"usage_limit_reached"}}'),
+    ).toBe("usage-limit");
   });
 
   it("classifies a rate-limit death", () => {
-    expect(classifyInfrastructure('API Error: 429 {"type":"rate_limit_error"}')).toBe("rate-limit");
-    expect(classifyInfrastructure('{"type":"overloaded_error"}')).toBe("rate-limit");
-  });
-
-  it("classifies an auth death", () => {
-    expect(classifyInfrastructure('{"type":"authentication_error","message":"invalid x-api-key"}')).toBe(
-      "auth",
-    );
-    expect(classifyInfrastructure("Invalid API key · Please run /login")).toBe("auth");
-    expect(classifyInfrastructure("OAuth token has expired")).toBe("auth");
-  });
-
-  it("classifies a network death", () => {
-    expect(classifyInfrastructure("Error: getaddrinfo ENOTFOUND api.anthropic.com")).toBe("network");
-    expect(classifyInfrastructure("TypeError: fetch failed\n  cause: ECONNRESET")).toBe("network");
-  });
-
-  it("prefers the most specific class when signatures overlap", () => {
-    // A rate-limited request often also logs connection retries.
-    expect(classifyInfrastructure("rate_limit_error after retry: connection reset")).toBe(
+    expect(
+      classifyInfrastructure('API Error: 429 {"type":"rate_limit_error"}'),
+    ).toBe("rate-limit");
+    expect(classifyInfrastructure('{"type":"overloaded_error"}')).toBe(
       "rate-limit",
     );
   });
 
+  it("classifies an auth death", () => {
+    expect(
+      classifyInfrastructure(
+        '{"type":"authentication_error","message":"invalid x-api-key"}',
+      ),
+    ).toBe("auth");
+    expect(classifyInfrastructure("Invalid API key · Please run /login")).toBe(
+      "auth",
+    );
+    expect(classifyInfrastructure("OAuth token has expired")).toBe("auth");
+  });
+
+  it("classifies a network death", () => {
+    expect(
+      classifyInfrastructure("Error: getaddrinfo ENOTFOUND api.anthropic.com"),
+    ).toBe("network");
+    expect(
+      classifyInfrastructure("TypeError: fetch failed\n  cause: ECONNRESET"),
+    ).toBe("network");
+  });
+
+  it("prefers the most specific class when signatures overlap", () => {
+    // A rate-limited request often also logs connection retries.
+    expect(
+      classifyInfrastructure("rate_limit_error after retry: connection reset"),
+    ).toBe("rate-limit");
+  });
+
   it("returns undefined for ordinary ticket-failure output", () => {
-    expect(classifyInfrastructure("Error: tests failed\n  expected 2 to be 3")).toBeUndefined();
+    expect(
+      classifyInfrastructure("Error: tests failed\n  expected 2 to be 3"),
+    ).toBeUndefined();
     expect(classifyInfrastructure("")).toBeUndefined();
   });
 });
@@ -69,7 +87,9 @@ describe("parseResultEvent", () => {
   });
 
   it("returns undefined when no result event survived", () => {
-    expect(parseResultEvent('{"type":"assistant"}\nplain text')).toBeUndefined();
+    expect(
+      parseResultEvent('{"type":"assistant"}\nplain text'),
+    ).toBeUndefined();
     expect(parseResultEvent("")).toBeUndefined();
   });
 
@@ -93,11 +113,16 @@ describe("lastResultLine", () => {
   });
 
   it("returns the empty string when no result line exists", () => {
-    expect(lastResultLine('{"type":"assistant"}\nprose about rate limits')).toBe("");
+    expect(
+      lastResultLine('{"type":"assistant"}\nprose about rate limits'),
+    ).toBe("");
   });
 });
 
-function outcome(ticket: number, overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
+function outcome(
+  ticket: number,
+  overrides: Partial<WorkerOutcome> = {},
+): WorkerOutcome {
   return {
     ticket,
     attempt: 1,
@@ -136,20 +161,29 @@ describe("reclassifyCorrelatedFailures", () => {
   });
 
   it("leaves Workers that failed in different ways classified as ticket failures", () => {
-    const outcomes = reclassifyCorrelatedFailures([failed(2, "stall"), failed(4, "timeout")]);
+    const outcomes = reclassifyCorrelatedFailures([
+      failed(2, "stall"),
+      failed(4, "timeout"),
+    ]);
 
     expect(outcomes.map((o) => o.failure)).toEqual(["stall", "timeout"]);
     expect(outcomes.every((o) => o.infra === undefined)).toBe(true);
   });
 
   it("leaves a single failure alone — one death is a ticket failure until proven otherwise", () => {
-    const outcomes = reclassifyCorrelatedFailures([failed(2, "no-commits"), outcome(4)]);
+    const outcomes = reclassifyCorrelatedFailures([
+      failed(2, "no-commits"),
+      outcome(4),
+    ]);
 
     expect(outcomes[0]?.failure).toBe("no-commits");
   });
 
   it("never reclassifies budget breaches: a measured budget proves the environment was up", () => {
-    const outcomes = reclassifyCorrelatedFailures([failed(2, "budget"), failed(4, "budget")]);
+    const outcomes = reclassifyCorrelatedFailures([
+      failed(2, "budget"),
+      failed(4, "budget"),
+    ]);
 
     expect(outcomes.map((o) => o.failure)).toEqual(["budget", "budget"]);
   });
@@ -160,7 +194,10 @@ describe("reclassifyCorrelatedFailures", () => {
       failed(4, "no-commits"),
     ]);
 
-    expect(outcomes.map((o) => o.failure)).toEqual(["no-commits", "no-commits"]);
+    expect(outcomes.map((o) => o.failure)).toEqual([
+      "no-commits",
+      "no-commits",
+    ]);
     expect(outcomes.every((o) => o.infra === undefined)).toBe(true);
   });
 

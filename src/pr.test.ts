@@ -5,8 +5,8 @@ import {
   isSanePrBody,
   MAX_WORKER_BODY_LENGTH,
   openPrForOutcome,
-  workerFinalMessage,
   type ReadFile,
+  workerFinalMessage,
 } from "./pr.js";
 import type { Exec } from "./tracker.js";
 import type { WorkerOutcome } from "./worker.js";
@@ -32,7 +32,11 @@ describe("workerFinalMessage", () => {
   });
 
   it("returns undefined when the run did not end in success", () => {
-    const transcript = event({ type: "result", subtype: "error_max_turns", is_error: true });
+    const transcript = event({
+      type: "result",
+      subtype: "error_max_turns",
+      is_error: true,
+    });
 
     expect(workerFinalMessage(transcript)).toBeUndefined();
   });
@@ -49,13 +53,19 @@ describe("workerFinalMessage", () => {
   });
 
   it("tolerates stray non-JSON lines around the events", () => {
-    const transcript = ["not json at all", successResult("Still found."), ""].join("\n");
+    const transcript = [
+      "not json at all",
+      successResult("Still found."),
+      "",
+    ].join("\n");
 
     expect(workerFinalMessage(transcript)).toBe("Still found.");
   });
 
   it("uses the last result event when several exist", () => {
-    const transcript = [successResult("first"), successResult("second")].join("\n");
+    const transcript = [successResult("first"), successResult("second")].join(
+      "\n",
+    );
 
     expect(workerFinalMessage(transcript)).toBe("second");
   });
@@ -85,12 +95,18 @@ describe("ensureCloseKeyword", () => {
   });
 
   it("leaves the body alone when it already closes the ticket", () => {
-    expect(ensureCloseKeyword("A body.\n\nCloses #5", 5)).toBe("A body.\n\nCloses #5");
-    expect(ensureCloseKeyword("Fixes #5 for real", 5)).toBe("Fixes #5 for real");
+    expect(ensureCloseKeyword("A body.\n\nCloses #5", 5)).toBe(
+      "A body.\n\nCloses #5",
+    );
+    expect(ensureCloseKeyword("Fixes #5 for real", 5)).toBe(
+      "Fixes #5 for real",
+    );
   });
 
   it("appends for keyword forms GitHub may not recognize (colon, newline)", () => {
-    expect(ensureCloseKeyword("resolved: #5", 5)).toBe("resolved: #5\n\nCloses #5");
+    expect(ensureCloseKeyword("resolved: #5", 5)).toBe(
+      "resolved: #5\n\nCloses #5",
+    );
     expect(ensureCloseKeyword("closes\n#5", 5)).toBe("closes\n#5\n\nCloses #5");
   });
 
@@ -130,7 +146,8 @@ function fakeExec(): { exec: Exec; calls: string[][] } {
   const calls: string[][] = [];
   const exec: Exec = async (cmd, args) => {
     calls.push([cmd, ...args]);
-    if (cmd === "git" && args[0] === "log") return "First commit\nSecond commit\n";
+    if (cmd === "git" && args[0] === "log")
+      return "First commit\nSecond commit\n";
     if (cmd === "gh") return "https://github.com/o/r/pull/9\n";
     return "";
   };
@@ -178,7 +195,9 @@ describe("openPrForOutcome", () => {
 
   it("falls back to a mechanical body from the ticket and commit subjects when the sanity check fails", async () => {
     const { exec, calls } = fakeExec();
-    const read = readAs(event({ type: "result", subtype: "error_during_execution" }));
+    const read = readAs(
+      event({ type: "result", subtype: "error_during_execution" }),
+    );
 
     await openPrForOutcome(OUTCOME, "PR opening", exec, read);
 
@@ -210,7 +229,10 @@ describe("openPrForOutcome", () => {
 
 describe("fallbackBody", () => {
   it("names the ticket and lists the branch's commit subjects", () => {
-    const body = fallbackBody(5, "PR opening", ["First commit", "Second commit"]);
+    const body = fallbackBody(5, "PR opening", [
+      "First commit",
+      "Second commit",
+    ]);
 
     expect(body).toContain("#5");
     expect(body).toContain("PR opening");

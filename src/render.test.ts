@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { renderComplete, renderPlan, renderStuck } from "./render.js";
-import { plan } from "./plan.js";
 import type { ResolvedConfig } from "./config.js";
+import { plan } from "./plan.js";
+import { renderComplete, renderPlan, renderStuck } from "./render.js";
 import type { OpenAgentPr, Ticket, WorldSnapshot } from "./types.js";
 
-function ticket(overrides: Partial<Ticket> & { number: number; title: string }): Ticket {
+function ticket(
+  overrides: Partial<Ticket> & { number: number; title: string },
+): Ticket {
   return {
     state: "open",
     assignees: [],
@@ -74,10 +76,16 @@ describe("renderPlan", () => {
   });
 
   it("says so when nothing is dispatchable", () => {
-    const empty: WorldSnapshot = { tickets: [], openAgentPrs: [], mergedAgentPrs: [] };
+    const empty: WorldSnapshot = {
+      tickets: [],
+      openAgentPrs: [],
+      mergedAgentPrs: [],
+    };
 
     expect(
-      renderPlan(config({ scope: { kind: "all" } }), empty, [], { dryRun: true }),
+      renderPlan(config({ scope: { kind: "all" } }), empty, [], {
+        dryRun: true,
+      }),
     ).toBe(
       [
         "Scope: repo-wide (--all) — 0 tickets (0 open)",
@@ -165,9 +173,24 @@ describe("renderPlan", () => {
   it("renders the PR-upkeep actions with the PR number and the ticket title", () => {
     const upkeep: WorldSnapshot = {
       tickets: [
-        ticket({ number: 5, title: "Behind base", assignees: ["operator"], hasAgentClaim: true }),
-        ticket({ number: 6, title: "Conflicted", assignees: ["operator"], hasAgentClaim: true }),
-        ticket({ number: 7, title: "Green draft", assignees: ["operator"], hasAgentClaim: true }),
+        ticket({
+          number: 5,
+          title: "Behind base",
+          assignees: ["operator"],
+          hasAgentClaim: true,
+        }),
+        ticket({
+          number: 6,
+          title: "Conflicted",
+          assignees: ["operator"],
+          hasAgentClaim: true,
+        }),
+        ticket({
+          number: 7,
+          title: "Green draft",
+          assignees: ["operator"],
+          hasAgentClaim: true,
+        }),
       ],
       openAgentPrs: [
         { ...openPr(5), behind: true },
@@ -209,9 +232,18 @@ describe("renderPlan", () => {
   });
 
   it("notes the open circuit breaker when dispatch is paused for infrastructure failure", () => {
-    const actions = plan(world, { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true });
+    const actions = plan(world, {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      dispatchPaused: true,
+    });
 
-    expect(renderPlan(config(), world, actions, { dryRun: false, dispatchPaused: true })).toBe(
+    expect(
+      renderPlan(config(), world, actions, {
+        dryRun: false,
+        dispatchPaused: true,
+      }),
+    ).toBe(
       [
         "Scope: sub-issues of #1 — 3 tickets (2 open)",
         "Dispatchable: #2",
@@ -236,7 +268,11 @@ describe("renderStuck", () => {
         openBlockers: 2,
         blockedBy: [7, 99],
       }),
-      ticket({ number: 9, title: "A colleague's work", assignees: ["some-human"] }),
+      ticket({
+        number: 9,
+        title: "A colleague's work",
+        assignees: ["some-human"],
+      }),
     ];
 
     expect(renderStuck(stuckWorld(open))).toBe(
@@ -250,7 +286,9 @@ describe("renderStuck", () => {
   });
 
   it("falls back to the blocker count when the blocker list is missing", () => {
-    const open = [ticket({ number: 8, title: "Blocked blind", openBlockers: 2 })];
+    const open = [
+      ticket({ number: 8, title: "Blocked blind", openBlockers: 2 }),
+    ];
 
     expect(renderStuck(stuckWorld(open))).toBe(
       [
@@ -261,7 +299,9 @@ describe("renderStuck", () => {
   });
 
   it("notes a missing agent label distinctly from an escalation", () => {
-    const open = [ticket({ number: 4, title: "Untriaged", labels: ["needs-triage"] })];
+    const open = [
+      ticket({ number: 4, title: "Untriaged", labels: ["needs-triage"] }),
+    ];
 
     expect(renderStuck(stuckWorld(open))).toBe(
       [
@@ -276,7 +316,12 @@ describe("renderComplete", () => {
   it("summarizes every ticket in Scope, noting human closes after Escalation", () => {
     const report = renderComplete([
       ticket({ number: 2, title: "Walking skeleton", state: "closed" }),
-      ticket({ number: 7, title: "Hard one", state: "closed", labels: ["ready-for-human"] }),
+      ticket({
+        number: 7,
+        title: "Hard one",
+        state: "closed",
+        labels: ["ready-for-human"],
+      }),
     ]);
 
     expect(report).toBe(
@@ -289,6 +334,8 @@ describe("renderComplete", () => {
   });
 
   it("reports an empty Scope as complete with nothing herded", () => {
-    expect(renderComplete([])).toBe("Run Complete: every ticket in Scope is closed (0 tickets).");
+    expect(renderComplete([])).toBe(
+      "Run Complete: every ticket in Scope is closed (0 tickets).",
+    );
   });
 });

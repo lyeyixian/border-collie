@@ -1,4 +1,9 @@
-import { breakerCooldownMs, probeDue, tripBreaker, type Breaker } from "./breaker.js";
+import {
+  type Breaker,
+  breakerCooldownMs,
+  probeDue,
+  tripBreaker,
+} from "./breaker.js";
 import { dispatchableSet } from "./plan.js";
 import { renderComplete, renderStuck } from "./render.js";
 import type { Action, Ticket, WorldSnapshot } from "./types.js";
@@ -41,7 +46,9 @@ export function runStatus(
   const open = world.tickets.filter((ticket) => ticket.state === "open");
   if (open.length === 0) return { state: "complete" };
   const inScope = new Set(world.tickets.map((ticket) => ticket.number));
-  const openScopePrs = world.openAgentPrs.filter((pr) => inScope.has(pr.ticket));
+  const openScopePrs = world.openAgentPrs.filter((pr) =>
+    inScope.has(pr.ticket),
+  );
   if (
     actions.length === 0 &&
     openScopePrs.length === 0 &&
@@ -57,9 +64,11 @@ export type RunOutcome = "complete" | "stuck";
 
 /** The loop's effects, injectable for tests; `tick` is one full observe → plan → act pass. */
 export interface RunDeps {
-  tick: (
-    dispatchPaused: boolean,
-  ) => Promise<{ world: WorldSnapshot; actions: Action[]; infraFailures: number }>;
+  tick: (dispatchPaused: boolean) => Promise<{
+    world: WorldSnapshot;
+    actions: Action[];
+    infraFailures: number;
+  }>;
   /** The circuit breaker's recovery probe: true when the environment answers. */
   probe: () => Promise<boolean>;
   now: () => number;
@@ -67,13 +76,18 @@ export interface RunDeps {
   log: (line: string) => void;
 }
 
-export async function run(pollSeconds: number, deps: RunDeps): Promise<RunOutcome> {
+export async function run(
+  pollSeconds: number,
+  deps: RunDeps,
+): Promise<RunOutcome> {
   let breaker: Breaker;
   for (;;) {
     if (breaker !== undefined && probeDue(breaker, deps.now())) {
       if (await deps.probe()) {
         breaker = undefined;
-        deps.log("circuit breaker closed: the environment recovered — dispatch resumes.");
+        deps.log(
+          "circuit breaker closed: the environment recovered — dispatch resumes.",
+        );
       } else {
         breaker = tripBreaker(breaker, deps.now());
         deps.log(
@@ -81,7 +95,9 @@ export async function run(pollSeconds: number, deps: RunDeps): Promise<RunOutcom
         );
       }
     }
-    const { world, actions, infraFailures } = await deps.tick(breaker !== undefined);
+    const { world, actions, infraFailures } = await deps.tick(
+      breaker !== undefined,
+    );
     if (infraFailures > 0) {
       breaker = tripBreaker(breaker, deps.now());
       deps.log(

@@ -1,6 +1,10 @@
 import { readFile } from "node:fs/promises";
-import { createDraftPr, realExec, type Exec } from "./tracker.js";
-import { branchCommitSubjects, pushAgentBranch, type WorkerOutcome } from "./worker.js";
+import { createDraftPr, type Exec, realExec } from "./tracker.js";
+import {
+  branchCommitSubjects,
+  pushAgentBranch,
+  type WorkerOutcome,
+} from "./worker.js";
 
 /**
  * PR opening: a successful Attempt's branch becomes a draft PR that closes
@@ -41,7 +45,12 @@ export function workerFinalMessage(transcript: string): string | undefined {
       if (record.type === "result") last = record;
     }
   }
-  if (last === undefined || last.subtype !== "success" || last.is_error === true) return undefined;
+  if (
+    last === undefined ||
+    last.subtype !== "success" ||
+    last.is_error === true
+  )
+    return undefined;
   return typeof last.result === "string" ? last.result : undefined;
 }
 
@@ -51,7 +60,11 @@ export function workerFinalMessage(transcript: string): string | undefined {
  * judgment about prose quality.
  */
 export function isSanePrBody(body: string | undefined): body is string {
-  return body !== undefined && body.trim() !== "" && body.length <= MAX_WORKER_BODY_LENGTH;
+  return (
+    body !== undefined &&
+    body.trim() !== "" &&
+    body.length <= MAX_WORKER_BODY_LENGTH
+  );
 }
 
 /**
@@ -61,7 +74,8 @@ export function isSanePrBody(body: string | undefined): body is string {
  * `Closes #n`, while an over-match would leave a merged PR whose ticket
  * never closes, freezing the DAG.
  */
-const CLOSE_KEYWORD = /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+#(\d+)\b/gi;
+const CLOSE_KEYWORD =
+  /\b(?:close[sd]?|fix(?:e[sd])?|resolve[sd]?)[ \t]+#(\d+)\b/gi;
 
 /**
  * Guarantee the body carries the close-on-merge keyword for its ticket, so a
@@ -76,7 +90,11 @@ export function ensureCloseKeyword(body: string, ticket: number): string {
 }
 
 /** Mechanical fallback body: the ticket plus the branch's commit subjects. */
-export function fallbackBody(ticket: number, title: string, commitSubjects: string[]): string {
+export function fallbackBody(
+  ticket: number,
+  title: string,
+  commitSubjects: string[],
+): string {
   return [
     `Automated draft PR for #${ticket}: ${title}`,
     "",
@@ -100,7 +118,9 @@ export async function openPrForOutcome(
   read: ReadFile = realReadFile,
 ): Promise<string> {
   await pushAgentBranch(outcome.branch, exec);
-  const finalMessage = workerFinalMessage(await read(outcome.transcript).catch(() => ""));
+  const finalMessage = workerFinalMessage(
+    await read(outcome.transcript).catch(() => ""),
+  );
   const body = isSanePrBody(finalMessage)
     ? finalMessage
     : fallbackBody(
@@ -109,7 +129,11 @@ export async function openPrForOutcome(
         await branchCommitSubjects(outcome.base, outcome.branch, exec),
       );
   return createDraftPr(
-    { head: outcome.branch, title: ticketTitle, body: ensureCloseKeyword(body, outcome.ticket) },
+    {
+      head: outcome.branch,
+      title: ticketTitle,
+      body: ensureCloseKeyword(body, outcome.ticket),
+    },
     exec,
   );
 }
