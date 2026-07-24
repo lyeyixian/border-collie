@@ -1,6 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { plan } from "./plan.js";
-import type { AttemptFailure, MergedAgentPr, Ticket, WorldSnapshot } from "./types.js";
+import type {
+  AttemptFailure,
+  MergedAgentPr,
+  OpenAgentPr,
+  Ticket,
+  WorldSnapshot,
+} from "./types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
   return {
@@ -27,12 +33,32 @@ function failure(attempt: number): AttemptFailure {
   };
 }
 
+/** A clean, current, non-draft open agent PR — the backdrop that triggers no upkeep. */
+function openPr(ticket: number, overrides: Partial<OpenAgentPr> = {}): OpenAgentPr {
+  return {
+    number: ticket * 10,
+    ticket,
+    headRef: `border-collie/ticket-${ticket}-attempt-1`,
+    draft: false,
+    mergeable: "mergeable",
+    behind: false,
+    ci: "passing",
+    conflictWorkerAsked: false,
+    ...overrides,
+  };
+}
+
 function world(
   tickets: Ticket[],
   openAgentPrTickets: number[] = [],
   mergedAgentPrs: MergedAgentPr[] = [],
 ): WorldSnapshot {
-  return { tickets, openAgentPrTickets, mergedAgentPrs };
+  return { tickets, openAgentPrs: openAgentPrTickets.map((t) => openPr(t)), mergedAgentPrs };
+}
+
+/** A world whose open agent PRs are given in full — for the PR-upkeep cases. */
+function worldWithPrs(tickets: Ticket[], openAgentPrs: OpenAgentPr[]): WorldSnapshot {
+  return { tickets, openAgentPrs, mergedAgentPrs: [] };
 }
 
 function mergedPr(ticket: number): MergedAgentPr {
@@ -380,6 +406,236 @@ describe("plan: retry ladder and Escalation", () => {
     expect(actions).toEqual([
       { type: "close", ticket: 8, prUrl: "https://github.com/o/r/pull/80" },
       { type: "release", ticket: 7, assignees: ["operator"] },
+    ]);
+  });
+});
+
+describe("plan: circuit breaker", () => {
+  it("plans only closure verification while dispatch is paused: no claims, no spawns", () => {
+    const actions = plan(
+      world([ticket({ number: 4 }), ticket({ number: 6, state: "closed" })], [], [mergedPr(6)]),
+      { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("still closes a merged-but-open ticket while paused — pure bookkeeping of landed work", () => {
+    const actions = plan(world([ticket({ number: 6 })], [], [mergedPr(6)]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      dispatchPaused: true,
+    });
+
+    expect(actions).toEqual([
+      { type: "close", ticket: 6, prUrl: "https://github.com/o/r/pull/60" },
+    ]);
+  });
+
+  it("keeps claims held while paused: no orphan releases mid-outage", () => {
+    const held = ticket({
+      number: 4,
+      assignees: ["operator"],
+      hasAgentClaim: true,
+      agentClaimCount: 1,
+    });
+
+    expect(plan(world([held]), { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true })).toEqual([]);
+  });
+
+  it("does not escalate while paused: tickets are judged only against a healthy environment", () => {
+    const exhausted = ticket({ number: 7, agentClaimCount: 2, attemptFailures: [failure(1), failure(2)] });
+
+    expect(plan(world([exhausted]), { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true })).toEqual([]);
+  });
+
+  it("does not count a voided attempt: a claim history net of voids re-dispatches at the same rung", () => {
+    // agentClaimCount arrives net of void markers from the tracker read: one
+    // claim voided by an infrastructure failure leaves the counter at 0.
+    const voided = ticket({ number: 4, agentClaimCount: 0 });
+
+    expect(plan(world([voided]), { maxWorkers: 3, maxOpenPrs: 5 })).toEqual([
+      { type: "claim", ticket: 4 },
+      { type: "spawn", ticket: 4, attempt: 1 },
+    ]);
+  });
+});
+
+describe("plan: PR upkeep", () => {
+  it("plans no upkeep for a clean, current, non-draft PR", () => {
+    const actions = plan(
+      worldWithPrs([ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })], [openPr(3)]),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("mechanically updates a cleanly-mergeable PR that has fallen behind the base", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, behind: true })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([{ type: "update-branch", pr: 30, ticket: 3 }]);
+  });
+
+  it("dispatches one conflict Worker for a conflicted PR with no human ask yet", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, mergeable: "conflicted" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([
+      { type: "conflict-worker", pr: 30, ticket: 3, headRef: "border-collie/ticket-3-attempt-1" },
+    ]);
+  });
+
+  it("never re-dispatches a conflict Worker once one has asked for a human", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, mergeable: "conflicted", conflictWorkerAsked: true })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("neither updates nor readies a conflicted PR (conflict handling is exclusive)", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, mergeable: "conflicted", behind: true, draft: true, conflictWorkerAsked: true })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("plans no branch update while GitHub is still computing mergeability", () => {
+    // A ready (non-draft) PR with unknown mergeability: we cannot tell whether
+    // it is behind, so neither update nor ready is due — leave it for next Tick.
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, mergeable: "unknown", draft: false })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("still flips a green draft to ready even while mergeability is unknown", () => {
+    // draft→ready is decided on CI alone; a fresh no-CI draft need not wait for
+    // GitHub to finish computing whether it is behind.
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, mergeable: "unknown", draft: true, ci: "none" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([{ type: "mark-ready", pr: 30, ticket: 3 }]);
+  });
+
+  it("flips a green draft to ready for review", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, draft: true, ci: "passing" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([{ type: "mark-ready", pr: 30, ticket: 3 }]);
+  });
+
+  it("flips a draft immediately when the repo has no CI configured", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, draft: true, ci: "none" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([{ type: "mark-ready", pr: 30, ticket: 3 }]);
+  });
+
+  it("does not flip a draft while CI is pending or failing", () => {
+    const actions = plan(
+      worldWithPrs(
+        [
+          ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({ number: 4, assignees: ["operator"], hasAgentClaim: true }),
+        ],
+        [
+          openPr(3, { number: 30, draft: true, ci: "pending" }),
+          openPr(4, { number: 40, draft: true, ci: "failing" }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("updates a behind draft this tick and defers the ready flip to the next", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, draft: true, behind: true, ci: "passing" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([{ type: "update-branch", pr: 30, ticket: 3 }]);
+  });
+
+  it("does not mark a non-draft (already ready) PR ready again", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, draft: false, ci: "passing" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("plans PR upkeep after closes and before releases, lowest PR number first", () => {
+    const actions = plan(
+      {
+        tickets: [
+          ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({ number: 5, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({ number: 7, assignees: ["operator"], hasAgentClaim: true }),
+        ],
+        openAgentPrs: [
+          openPr(7, { number: 70, behind: true }),
+          openPr(5, { number: 50, draft: true, ci: "none" }),
+        ],
+        mergedAgentPrs: [mergedPr(2)],
+      },
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([
+      { type: "close", ticket: 2, prUrl: "https://github.com/o/r/pull/20" },
+      { type: "mark-ready", pr: 50, ticket: 5 },
+      { type: "update-branch", pr: 70, ticket: 7 },
     ]);
   });
 });

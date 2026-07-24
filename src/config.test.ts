@@ -14,6 +14,8 @@ describe("resolveConfig", () => {
       stallMinutes: 10,
       maxOpenPrs: 5,
       pollSeconds: 30,
+      maxTurns: 200,
+      maxCostUsd: 20,
     });
   });
 
@@ -38,6 +40,8 @@ describe("resolveConfig", () => {
       stallMinutes: 10,
       maxOpenPrs: 5,
       pollSeconds: 30,
+      maxTurns: 200,
+      maxCostUsd: 20,
     });
   });
 
@@ -53,6 +57,8 @@ describe("resolveConfig", () => {
       stallMinutes: 10,
       maxOpenPrs: 5,
       pollSeconds: 30,
+      maxTurns: 200,
+      maxCostUsd: 20,
     });
   });
 
@@ -97,6 +103,23 @@ describe("resolveConfig", () => {
   it("rejects non-positive timeout and stall windows", () => {
     expect(() => resolveConfig({ parent: 1, worker_timeout_minutes: 0 }, {})).toThrow(ConfigError);
     expect(() => resolveConfig({ parent: 1, worker_stall_minutes: -1 }, {})).toThrow(ConfigError);
+  });
+
+  it("takes the Worker budget backstops from the config file, allowing a fractional cost cap", () => {
+    const resolved = resolveConfig(
+      { parent: 1, worker_max_turns: 80, worker_max_cost_usd: 7.5 },
+      {},
+    );
+
+    expect(resolved.maxTurns).toBe(80);
+    expect(resolved.maxCostUsd).toBe(7.5);
+  });
+
+  it("rejects non-positive or non-numeric budget backstops", () => {
+    expect(() => resolveConfig({ parent: 1, worker_max_turns: 0 }, {})).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1, worker_max_turns: 1.5 }, {})).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1, worker_max_cost_usd: -2 }, {})).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1, worker_max_cost_usd: "20" }, {})).toThrow(ConfigError);
   });
 
   it("rejects a run with neither a parent nor the all flag", () => {

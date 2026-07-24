@@ -11,6 +11,10 @@ const DEFAULT_WORKER_MODEL = "sonnet";
 const DEFAULT_RETRY_MODEL = "opus";
 const DEFAULT_TIMEOUT_MINUTES = 45;
 const DEFAULT_STALL_MINUTES = 10;
+// Budget backstops are deliberately generous: they exist to stop runaway
+// Workers, not to squeeze normal ones.
+const DEFAULT_MAX_TURNS = 200;
+const DEFAULT_MAX_COST_USD = 20;
 
 export class ConfigError extends Error {}
 
@@ -42,11 +46,23 @@ export interface ResolvedConfig {
   timeoutMinutes: number;
   /** Max quiet time between Worker output events. */
   stallMinutes: number;
+  /** Budget backstop: max agentic turns per Worker; breach is a ticket failure. */
+  maxTurns: number;
+  /** Budget alarm: spend in USD above which a finished Attempt is flagged, not failed. */
+  maxCostUsd: number;
 }
 
 function asPositiveInt(value: unknown, name: string): number {
   if (typeof value !== "number" || !Number.isInteger(value) || value <= 0) {
     throw new ConfigError(`${name} must be a positive integer, got ${JSON.stringify(value)}`);
+  }
+  return value;
+}
+
+/** Costs are money, not counts: any positive finite number is fine. */
+function asPositiveNumber(value: unknown, name: string): number {
+  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) {
+    throw new ConfigError(`${name} must be a positive number, got ${JSON.stringify(value)}`);
   }
   return value;
 }
@@ -97,7 +113,22 @@ export function resolveConfig(fileConfig: unknown, flags: Flags): ResolvedConfig
     file["worker_stall_minutes"] ?? DEFAULT_STALL_MINUTES,
     "worker_stall_minutes",
   );
-  const shared = { maxWorkers, maxOpenPrs, pollSeconds, model, retryModel, timeoutMinutes, stallMinutes };
+  const maxTurns = asPositiveInt(file["worker_max_turns"] ?? DEFAULT_MAX_TURNS, "worker_max_turns");
+  const maxCostUsd = asPositiveNumber(
+    file["worker_max_cost_usd"] ?? DEFAULT_MAX_COST_USD,
+    "worker_max_cost_usd",
+  );
+  const shared = {
+    maxWorkers,
+    maxOpenPrs,
+    pollSeconds,
+    model,
+    retryModel,
+    timeoutMinutes,
+    stallMinutes,
+    maxTurns,
+    maxCostUsd,
+  };
 
   if (flags.all) {
     if (flags.parent !== undefined) {

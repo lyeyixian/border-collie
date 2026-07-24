@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { renderComplete, renderPlan, renderStuck } from "./render.js";
 import { plan } from "./plan.js";
 import type { ResolvedConfig } from "./config.js";
-import type { Ticket, WorldSnapshot } from "./types.js";
+import type { OpenAgentPr, Ticket, WorldSnapshot } from "./types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number; title: string }): Ticket {
   return {
@@ -18,6 +18,19 @@ function ticket(overrides: Partial<Ticket> & { number: number; title: string }):
   };
 }
 
+function openPr(ticket: number): OpenAgentPr {
+  return {
+    number: ticket * 10,
+    ticket,
+    headRef: `border-collie/ticket-${ticket}-attempt-1`,
+    draft: false,
+    mergeable: "mergeable",
+    behind: false,
+    ci: "passing",
+    conflictWorkerAsked: false,
+  };
+}
+
 function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
   return {
     scope: { kind: "parent", parent: 1 },
@@ -28,6 +41,8 @@ function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
     retryModel: "opus",
     timeoutMinutes: 45,
     stallMinutes: 10,
+    maxTurns: 200,
+    maxCostUsd: 20,
     ...overrides,
   };
 }
@@ -39,7 +54,7 @@ describe("renderPlan", () => {
       ticket({ number: 3, title: "Claiming", openBlockers: 1 }),
       ticket({ number: 4, title: "Done already", state: "closed" }),
     ],
-    openAgentPrTickets: [],
+    openAgentPrs: [],
     mergedAgentPrs: [],
   };
 
@@ -59,7 +74,7 @@ describe("renderPlan", () => {
   });
 
   it("says so when nothing is dispatchable", () => {
-    const empty: WorldSnapshot = { tickets: [], openAgentPrTickets: [], mergedAgentPrs: [] };
+    const empty: WorldSnapshot = { tickets: [], openAgentPrs: [], mergedAgentPrs: [] };
 
     expect(
       renderPlan(config({ scope: { kind: "all" } }), empty, [], { dryRun: true }),
@@ -83,7 +98,7 @@ describe("renderPlan", () => {
           hasAgentClaim: true,
         }),
       ],
-      openAgentPrTickets: [],
+      openAgentPrs: [],
       mergedAgentPrs: [],
     };
     const actions = plan(orphaned, { maxWorkers: 3, maxOpenPrs: 5 });
@@ -104,7 +119,7 @@ describe("renderPlan", () => {
         ticket({ number: 6, title: "Failed once", agentClaimCount: 1 }),
         ticket({ number: 7, title: "Failed twice", agentClaimCount: 2 }),
       ],
-      openAgentPrTickets: [],
+      openAgentPrs: [],
       mergedAgentPrs: [],
     };
     const actions = plan(laddered, { maxWorkers: 3, maxOpenPrs: 5 });
@@ -132,7 +147,7 @@ describe("renderPlan", () => {
           hasAgentClaim: true,
         }),
       ],
-      openAgentPrTickets: [],
+      openAgentPrs: [],
       mergedAgentPrs: [{ ticket: 6, url: "https://github.com/o/r/pull/60" }],
     };
     const actions = plan(merged, { maxWorkers: 3, maxOpenPrs: 5 });
@@ -147,10 +162,39 @@ describe("renderPlan", () => {
     );
   });
 
+  it("renders the PR-upkeep actions with the PR number and the ticket title", () => {
+    const upkeep: WorldSnapshot = {
+      tickets: [
+        ticket({ number: 5, title: "Behind base", assignees: ["operator"], hasAgentClaim: true }),
+        ticket({ number: 6, title: "Conflicted", assignees: ["operator"], hasAgentClaim: true }),
+        ticket({ number: 7, title: "Green draft", assignees: ["operator"], hasAgentClaim: true }),
+      ],
+      openAgentPrs: [
+        { ...openPr(5), behind: true },
+        { ...openPr(6), mergeable: "conflicted" },
+        { ...openPr(7), draft: true },
+      ],
+      mergedAgentPrs: [],
+    };
+    const actions = plan(upkeep, { maxWorkers: 3, maxOpenPrs: 5 });
+
+    expect(renderPlan(config(), upkeep, actions, { dryRun: true })).toBe(
+      [
+        "Scope: sub-issues of #1 — 3 tickets (3 open)",
+        "Dispatchable: none",
+        "Plan (max_workers=3, max_open_prs=5):",
+        "  update PR #50 — Behind base (behind base, mechanical rebase)",
+        "  conflict Worker for PR #60 — Conflicted (resolve merge conflicts)",
+        "  mark PR #70 ready — Green draft (CI green)",
+        "Dry run: no writes performed.",
+      ].join("\n"),
+    );
+  });
+
   it("notes paused dispatch when dispatchable tickets wait on max_open_prs headroom", () => {
     const throttled: WorldSnapshot = {
       ...world,
-      openAgentPrTickets: [10, 11, 12, 13, 14],
+      openAgentPrs: [10, 11, 12, 13, 14].map(openPr),
     };
     const actions = plan(throttled, { maxWorkers: 3, maxOpenPrs: 5 });
 
@@ -163,11 +207,24 @@ describe("renderPlan", () => {
       ].join("\n"),
     );
   });
+
+  it("notes the open circuit breaker when dispatch is paused for infrastructure failure", () => {
+    const actions = plan(world, { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true });
+
+    expect(renderPlan(config(), world, actions, { dryRun: false, dispatchPaused: true })).toBe(
+      [
+        "Scope: sub-issues of #1 — 3 tickets (2 open)",
+        "Dispatchable: #2",
+        "Dispatch paused: circuit breaker open (infrastructure failure), claims held",
+        "Plan (max_workers=3, max_open_prs=5): nothing to do",
+      ].join("\n"),
+    );
+  });
 });
 
 describe("renderStuck", () => {
   function stuckWorld(tickets: Ticket[]): WorldSnapshot {
-    return { tickets, openAgentPrTickets: [], mergedAgentPrs: [] };
+    return { tickets, openAgentPrs: [], mergedAgentPrs: [] };
   }
 
   it("names each open ticket and exactly what it is stuck on", () => {

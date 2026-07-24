@@ -18,17 +18,43 @@ export const CLAIM_MARKER = "<!-- border-collie:claim -->";
 export const RELEASE_MARKER = "<!-- border-collie:release -->";
 
 /**
- * The four ticket-failure triggers (CONTEXT.md "Ticket failure"): every way
- * a Worker can die that counts against the ticket's Attempts.
+ * The ticket-failure triggers (CONTEXT.md "Ticket failure"): every way a
+ * Worker can die that counts against the ticket's Attempts.
  */
-export type FailureReason = "nonzero-exit" | "no-commits" | "timeout" | "stall";
+export type FailureReason = "nonzero-exit" | "no-commits" | "timeout" | "stall" | "budget";
 
 export const FAILURE_DESCRIPTIONS: Record<FailureReason, string> = {
   "nonzero-exit": "the Worker process exited non-zero",
   "no-commits": "the Worker exited cleanly but committed nothing",
   timeout: "the Worker hit the wall-clock timeout",
   stall: "the Worker produced no output events for the stall window",
+  budget: "the Worker hit the turn-cap budget backstop and was halted mid-flight",
 };
+
+/**
+ * The infrastructure-failure classes (CONTEXT.md "Infrastructure failure"):
+ * environment problems that void the Attempt and trip the circuit breaker
+ * instead of burning Attempts. `correlated` is the same-way-same-Tick
+ * heuristic: several Workers dying identically is an environment problem,
+ * not a coincidence of tickets.
+ */
+export type InfraReason = "usage-limit" | "rate-limit" | "auth" | "network" | "correlated";
+
+export const INFRA_DESCRIPTIONS: Record<InfraReason, string> = {
+  "usage-limit": "the account usage limit was reached",
+  "rate-limit": "the API rate-limited requests",
+  auth: "authentication with the API failed",
+  network: "the network was unreachable",
+  correlated: "several Workers failed the same way within one Tick",
+};
+
+/**
+ * Hidden HTML marker on a comment that voids the preceding claim: the
+ * Attempt died to the environment, so it counts as nothing. Unlike a release
+ * marker it does NOT surrender the claim — the ticket stays agent-held while
+ * the circuit breaker waits out the outage.
+ */
+export const VOID_MARKER = "<!-- border-collie:void -->";
 
 /**
  * One failed Attempt's forensics, embedded in its release comment so attempt
@@ -81,6 +107,25 @@ export function parseAttemptMarker(body: string): AttemptFailure | undefined {
 }
 
 /**
+ * A Conflict Worker gave up on a PR and asked for a human: the marker that
+ * makes the ask structural, so the next Tick never re-dispatches a second
+ * Worker against a conflict a human now owns (the PR-level analogue of
+ * Escalation — see CONTEXT.md "Conflict Worker"). One failed Worker per
+ * conflict episode; a resolution that lands leaves no marker, so a PR the base
+ * later re-conflicts is eligible again.
+ *
+ * Posted only after a Worker completes and fails — deliberately not before
+ * dispatch. A pre-dispatch marker would guarantee at most one Worker even
+ * across an Orchestrator crash, but at the cost of silently stranding a PR
+ * whose Worker never ran (marker present, no human told, never retried). The
+ * post-failure marker instead lets a crash-voided session re-dispatch next
+ * Tick — the same stateless re-run recovery the Orchestrator uses everywhere
+ * (ADR 0001) — bounded because a session that actually ran and failed always
+ * lays the marker down.
+ */
+export const CONFLICT_UNRESOLVED_MARKER = "<!-- border-collie:conflict-unresolved -->";
+
+/**
  * Branch naming that makes a PR structurally an agent PR. Workers land with
  * a later ticket; the convention is fixed here because orphan detection
  * already reads it.
@@ -122,8 +167,9 @@ export interface Ticket {
    */
   hasAgentClaim: boolean;
   /**
-   * Count of claim marker comments ever posted — the stateless Attempt
-   * counter: each Attempt is preceded by exactly one claim.
+   * Count of claim marker comments ever posted, minus voided ones — the
+   * stateless Attempt counter: each Attempt is preceded by exactly one claim,
+   * and an infrastructure-voided Attempt counts as nothing.
    */
   agentClaimCount: number;
   /** Attempt records parsed from release comments, in comment order. */
@@ -140,11 +186,53 @@ export interface MergedAgentPr {
   url: string;
 }
 
+/**
+ * Mergeability of an open agent PR against its base, as GitHub computes it.
+ * `unknown` is GitHub still working it out (or masked by the draft flag) — the
+ * planner leaves such a PR alone and re-reads it next Tick.
+ */
+export type Mergeability = "mergeable" | "conflicted" | "unknown";
+
+/**
+ * CI standing for a PR's head commit, from its check-run rollup. `none` means
+ * no checks at all — which the draft→ready gate reads as "no CI configured",
+ * so a repo without CI readies a PR immediately (the acceptance criterion).
+ */
+export type CiState = "none" | "pending" | "passing" | "failing";
+
+/**
+ * An open agent PR observed for a ticket, carrying the PR-upkeep signals: a
+ * merge into the base leaves clean siblings behind (mechanical update), some
+ * conflicted (a one-shot conflict Worker), and a green draft ready to surface
+ * to the reviewer. Read repo-wide, not per Scope — every agent PR is
+ * border-collie's, and keeping them current is a global concern (same reason
+ * the max_open_prs headroom counts them repo-wide).
+ */
+export interface OpenAgentPr {
+  /** PR number, the handle every upkeep write targets. */
+  number: number;
+  /** Ticket the PR implements, decoded from its agent branch. */
+  ticket: number;
+  /** Head branch — the agent branch; the conflict Worker checks it out and pushes it back. */
+  headRef: string;
+  /** GitHub draft flag: a draft is invisible to the reviewer until flipped ready. */
+  draft: boolean;
+  mergeable: Mergeability;
+  /** True when the head is behind its base and a mechanical update would advance it. */
+  behind: boolean;
+  ci: CiState;
+  /**
+   * True when a conflict-resolution Worker already asked for human help on
+   * this PR (the unresolved marker is present) — vetoes dispatching another.
+   */
+  conflictWorkerAsked: boolean;
+}
+
 /** Everything the planner knows about the world, recomputed each Tick. */
 export interface WorldSnapshot {
   tickets: Ticket[];
-  /** Ticket numbers with an open agent PR (head branch carries the agent prefix). */
-  openAgentPrTickets: number[];
+  /** Open agent PRs (head branch carries the agent prefix), read repo-wide. */
+  openAgentPrs: OpenAgentPr[];
   /** Merged agent PRs whose ticket is in Scope, latest per ticket. */
   mergedAgentPrs: MergedAgentPr[];
 }
@@ -153,18 +241,30 @@ export interface PlanConfig {
   maxWorkers: number;
   /** Open agent PRs at or above this cap pause dispatch (review bandwidth). */
   maxOpenPrs: number;
+  /**
+   * True while the circuit breaker is open: the environment is failing, so
+   * the plan pauses dispatch and keeps claims held — only closure
+   * verification (pure bookkeeping of already-merged work) still runs.
+   * Omitted means closed (dispatch flows).
+   */
+  dispatchPaused?: boolean;
 }
 
 /**
  * One intended write, produced by the pure plan phase.
- * A discriminated union that later tickets extend (open PR, ...). `release`
- * carries the observed assignee logins and `escalate` the observed attempt
- * records so the act phase needs no second look at the world. `spawn` carries
- * the attempt number; the caller binds it to a model (the retry ladder).
+ * A discriminated union. `release` carries the observed assignee logins and
+ * `escalate` the observed attempt records so the act phase needs no second
+ * look at the world. `spawn` carries the attempt number; the caller binds it
+ * to a model (the retry ladder). The three PR-upkeep actions carry the PR
+ * number plus the ticket (for the human-readable rendering) and, for the
+ * conflict Worker, the head branch it works in and pushes back.
  */
 export type Action =
   | { type: "claim"; ticket: number }
   | { type: "release"; ticket: number; assignees: string[] }
   | { type: "spawn"; ticket: number; attempt: number }
   | { type: "escalate"; ticket: number; failures: AttemptFailure[] }
-  | { type: "close"; ticket: number; prUrl: string };
+  | { type: "close"; ticket: number; prUrl: string }
+  | { type: "update-branch"; pr: number; ticket: number }
+  | { type: "conflict-worker"; pr: number; ticket: number; headRef: string }
+  | { type: "mark-ready"; pr: number; ticket: number };

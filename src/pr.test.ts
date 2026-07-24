@@ -115,6 +115,10 @@ const OUTCOME: WorkerOutcome = {
   exitCode: 0,
   newCommits: 2,
   failure: undefined,
+  infra: undefined,
+  costUsd: undefined,
+  turns: undefined,
+  costOverrun: false,
   ok: true,
 };
 

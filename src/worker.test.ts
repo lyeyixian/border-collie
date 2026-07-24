@@ -5,10 +5,14 @@ import { describe, expect, it } from "vitest";
 import type { Exec } from "./tracker.js";
 import {
   branchCommitSubjects,
+  conflictWorkerPrompt,
+  dispatchConflictWorker,
   dispatchWorker,
+  probeEnvironment,
   pushAgentBranch,
   realSpawnWorkerProcess,
   workerPrompt,
+  type ConflictWorkerConfig,
   type SpawnWorkerProcess,
   type WorkerConfig,
   type WorkerProcessExit,
@@ -19,7 +23,14 @@ const WORKTREE = ".border-collie/worktrees/ticket-4";
 const BRANCH = "border-collie/ticket-4-attempt-1";
 const TRANSCRIPT = ".border-collie/transcripts/ticket-4-attempt-1.jsonl";
 
-const CONFIG: WorkerConfig = { model: "sonnet", attempt: 1, timeoutMs: 60_000, stallMs: 30_000 };
+const CONFIG: WorkerConfig = {
+  model: "sonnet",
+  attempt: 1,
+  timeoutMs: 60_000,
+  stallMs: 30_000,
+  maxTurns: 200,
+  maxCostUsd: 20,
+};
 
 /**
  * Fake the git side of the subprocess seam: reads are answered from fixtures,
@@ -46,6 +57,7 @@ function fakeExec(opts: { newCommits?: string; removeThrows?: boolean } = {}): {
 function fakeSpawn(
   result: number | null | Error,
   endedBy: WorkerProcessExit["endedBy"] = "exit",
+  tails: { stdoutTail?: string; stderrTail?: string } = {},
 ): {
   spawn: SpawnWorkerProcess;
   requests: WorkerProcessRequest[];
@@ -54,7 +66,12 @@ function fakeSpawn(
   const spawn: SpawnWorkerProcess = async (request) => {
     requests.push(request);
     if (result instanceof Error) throw result;
-    return { exitCode: result, endedBy };
+    return {
+      exitCode: result,
+      endedBy,
+      stdoutTail: tails.stdoutTail ?? "",
+      stderrTail: tails.stderrTail ?? "",
+    };
   };
   return { spawn, requests };
 }
@@ -91,6 +108,8 @@ describe("dispatchWorker", () => {
           workerPrompt(4),
           "--model",
           "sonnet",
+          "--max-turns",
+          "200",
           "--output-format",
           "stream-json",
           "--verbose",
@@ -158,6 +177,10 @@ describe("dispatchWorker", () => {
       exitCode: 0,
       newCommits: 3,
       failure: undefined,
+      infra: undefined,
+      costUsd: undefined,
+      turns: undefined,
+      costOverrun: false,
       ok: true,
     });
   });
@@ -225,6 +248,123 @@ describe("dispatchWorker", () => {
     expect(requests[0]?.args).toContain("opus");
   });
 
+  it("fails the attempt as a budget breach when the Worker hit the turn cap", async () => {
+    const { exec } = fakeExec({ newCommits: "2" });
+    const { spawn } = fakeSpawn(1, "exit", {
+      stdoutTail: '{"type":"result","subtype":"error_max_turns","total_cost_usd":3.2,"num_turns":200}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      failure: "budget",
+      infra: undefined,
+      costUsd: 3.2,
+      turns: 200,
+    });
+  });
+
+  it("keeps a finished attempt that spent past the cost cap, flagging the overrun instead of failing", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0, "exit", {
+      stdoutTail: '{"type":"result","subtype":"success","total_cost_usd":25.5,"num_turns":80}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({
+      ok: true,
+      failure: undefined,
+      costUsd: 25.5,
+      costOverrun: true,
+    });
+  });
+
+  it("keeps the underlying failure reason when a failed attempt also overran the cost cap", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(1, "exit", {
+      stdoutTail: '{"type":"result","subtype":"error_during_execution","total_cost_usd":25.5,"num_turns":80}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: "nonzero-exit", costOverrun: true });
+  });
+
+  it("succeeds under the cost cap, reporting the spend and turns", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0, "exit", {
+      stdoutTail: '{"type":"result","subtype":"success","total_cost_usd":4.1,"num_turns":52}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: true, failure: undefined, costUsd: 4.1, turns: 52 });
+  });
+
+  it("classifies a failed Worker with a rate-limit signature as an infrastructure failure", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(1, "exit", {
+      stderrTail: 'API Error: 429 {"type":"rate_limit_error"}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: undefined, infra: "rate-limit" });
+  });
+
+  it("classifies a stalled Worker with a network signature as infrastructure, not a stall", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(null, "stall", {
+      stderrTail: "TypeError: fetch failed\n  cause: Error: getaddrinfo ENOTFOUND api.anthropic.com",
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: undefined, infra: "network" });
+  });
+
+  it("never voids on infra-looking text in the transcript body: classification is by cause, not content", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    // A ticket legitimately about rate limiting: the Worker's prose and tool
+    // output mention the signatures, but neither stderr nor the result line do.
+    const { spawn } = fakeSpawn(1, "exit", {
+      stdoutTail: [
+        '{"type":"assistant","message":{"content":"Implementing the rate limit retry after ECONNRESET"}}',
+        '{"type":"result","subtype":"error_during_execution","total_cost_usd":1.1,"num_turns":12}',
+      ].join("\n"),
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: "nonzero-exit", infra: undefined });
+  });
+
+  it("lets a budget breach trump an infra signature: the result event proves the environment was up", async () => {
+    const { exec } = fakeExec({ newCommits: "2" });
+    const { spawn } = fakeSpawn(1, "exit", {
+      stdoutTail: '{"type":"result","subtype":"error_max_turns","total_cost_usd":9,"num_turns":200}',
+      stderrTail: "retrying after rate_limit_error",
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: false, failure: "budget", infra: undefined });
+  });
+
+  it("never voids a successful Worker, whatever transient noise its logs carry", async () => {
+    const { exec } = fakeExec({ newCommits: "2" });
+    const { spawn } = fakeSpawn(0, "exit", {
+      stdoutTail: '{"type":"result","subtype":"success","total_cost_usd":2,"num_turns":30}',
+      stderrTail: "retrying after ECONNRESET",
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({ ok: true, failure: undefined, infra: undefined });
+  });
+
   it("namespaces branch and transcript per attempt, so a retry never clobbers prior evidence", async () => {
     const { exec } = fakeExec({ newCommits: "0" });
     const { spawn } = fakeSpawn(1);
@@ -236,6 +376,34 @@ describe("dispatchWorker", () => {
   });
 });
 
+describe("probeEnvironment", () => {
+  it("answers true when a trivial prompt exits cleanly with no infrastructure signature", async () => {
+    const { spawn, requests } = fakeSpawn(0, "exit", { stdoutTail: "ok" });
+
+    await expect(probeEnvironment("sonnet", spawn)).resolves.toBe(true);
+    expect(requests[0]?.cmd).toBe("claude");
+    expect(requests[0]?.args).toContain("sonnet");
+  });
+
+  it("answers false on a non-zero exit", async () => {
+    const { spawn } = fakeSpawn(1);
+
+    await expect(probeEnvironment("sonnet", spawn)).resolves.toBe(false);
+  });
+
+  it("answers false on a clean exit that still carries an infrastructure signature", async () => {
+    const { spawn } = fakeSpawn(0, "exit", { stdoutTail: "Claude AI usage limit reached|123" });
+
+    await expect(probeEnvironment("sonnet", spawn)).resolves.toBe(false);
+  });
+
+  it("answers false when the probe cannot even spawn — a failed probe, not a crashed run", async () => {
+    const { spawn } = fakeSpawn(new Error("spawn claude ENOENT"));
+
+    await expect(probeEnvironment("sonnet", spawn)).resolves.toBe(false);
+  });
+});
+
 describe("pushAgentBranch", () => {
   it("force-pushes the agent branch to origin", async () => {
     const { exec, calls } = fakeExec();
@@ -243,6 +411,132 @@ describe("pushAgentBranch", () => {
     await pushAgentBranch(BRANCH, exec);
 
     expect(calls).toEqual([["git", "push", "--force", "origin", BRANCH]]);
+  });
+});
+
+const CONFLICT_WT = ".border-collie/conflict-worktrees/pr-30";
+const HEAD_REF = "border-collie/ticket-3-attempt-1";
+const CONFLICT_TRANSCRIPT = ".border-collie/transcripts/pr-30-conflict.jsonl";
+const CONFLICT_CONFIG: ConflictWorkerConfig = {
+  model: "sonnet",
+  timeoutMs: 60_000,
+  stallMs: 30_000,
+  maxTurns: 200,
+};
+
+/**
+ * Fake the git side for a conflict Worker: `merge-base --is-ancestor` exits
+ * cleanly when the branch was rebased onto the base (the default) and throws
+ * otherwise — git's exit-1 for "not an ancestor", which the code reads as an
+ * incomplete or never-started rebase.
+ */
+function fakeConflictExec(opts: { rebased?: boolean } = {}): { exec: Exec; calls: string[][] } {
+  const calls: string[][] = [];
+  const exec: Exec = async (cmd, args) => {
+    calls.push([cmd, ...args]);
+    if (args.includes("merge-base") && opts.rebased === false) {
+      throw new Error("exit 1: origin/HEAD is not an ancestor");
+    }
+    return "";
+  };
+  return { exec, calls };
+}
+
+describe("conflictWorkerPrompt", () => {
+  it("runs the merge-conflict skill against a rebase and pins the do-not-push contract", () => {
+    const prompt = conflictWorkerPrompt();
+
+    expect(prompt).toContain("/resolving-merge-conflicts");
+    expect(prompt).toContain("rebase");
+    expect(prompt).toContain("do not push");
+  });
+});
+
+describe("dispatchConflictWorker", () => {
+  it("checks out the PR's head branch, starts the rebase onto the base, runs claude, and cleans up", async () => {
+    const { exec, calls } = fakeConflictExec();
+    const { spawn, requests } = fakeSpawn(0);
+
+    await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(calls).toEqual([
+      ["git", "worktree", "remove", "--force", CONFLICT_WT],
+      ["git", "worktree", "prune"],
+      ["git", "fetch", "origin"],
+      ["git", "worktree", "add", CONFLICT_WT, "-B", HEAD_REF, `origin/${HEAD_REF}`],
+      ["git", "-C", CONFLICT_WT, "rebase", "origin/HEAD"],
+      ["git", "-C", CONFLICT_WT, "merge-base", "--is-ancestor", "origin/HEAD", HEAD_REF],
+      ["git", "-C", CONFLICT_WT, "rebase", "--abort"],
+      ["git", "worktree", "remove", "--force", CONFLICT_WT],
+    ]);
+    expect(requests[0]).toMatchObject({
+      cmd: "claude",
+      cwd: CONFLICT_WT,
+      transcriptPath: CONFLICT_TRANSCRIPT,
+    });
+    expect(requests[0]?.args).toContain(conflictWorkerPrompt());
+    expect(requests[0]?.args).toContain("sonnet");
+  });
+
+  it("resolves when the Worker exits cleanly and the branch now sits atop the base", async () => {
+    const { exec } = fakeConflictExec({ rebased: true });
+    const { spawn } = fakeSpawn(0);
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome).toEqual({
+      pr: 30,
+      ticket: 3,
+      headRef: HEAD_REF,
+      transcript: CONFLICT_TRANSCRIPT,
+      exitCode: 0,
+      resolved: true,
+    });
+  });
+
+  it("fails to resolve when the branch never made it onto the base (mid-flight or never-started rebase)", async () => {
+    // Both a rebase left mid-conflict and one that never began (e.g. the base
+    // ref could not be read) leave the branch at its old tip, which does not
+    // contain the base — the one signal the containment check reads.
+    const { exec } = fakeConflictExec({ rebased: false });
+    const { spawn } = fakeSpawn(0);
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome.resolved).toBe(false);
+  });
+
+  it("fails to resolve on a non-zero exit even when the branch was rebased", async () => {
+    const { exec } = fakeConflictExec();
+    const { spawn } = fakeSpawn(1);
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome.resolved).toBe(false);
+    expect(outcome.exitCode).toBe(1);
+  });
+
+  it("fails to resolve when the Worker was killed at a watchdog, even when the branch was rebased", async () => {
+    const { exec } = fakeConflictExec();
+    const { spawn } = fakeSpawn(null, "timeout");
+
+    const outcome = await dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn);
+
+    expect(outcome.resolved).toBe(false);
+  });
+
+  it("still aborts the merge and removes the worktree when spawning throws, then rethrows", async () => {
+    const { exec, calls } = fakeConflictExec();
+    const { spawn } = fakeSpawn(new Error("spawn claude ENOENT"));
+
+    await expect(
+      dispatchConflictWorker(30, 3, HEAD_REF, CONFLICT_CONFIG, exec, spawn),
+    ).rejects.toThrow("ENOENT");
+
+    expect(calls.slice(-2)).toEqual([
+      ["git", "-C", CONFLICT_WT, "rebase", "--abort"],
+      ["git", "worktree", "remove", "--force", CONFLICT_WT],
+    ]);
   });
 });
 
@@ -275,12 +569,20 @@ describe("realSpawnWorkerProcess", () => {
     };
   }
 
-  it("lets a clean exit through, streaming stdout to the transcript", async () => {
-    const req = request(`console.log("event")`, { timeoutMs: 5_000, stallMs: 5_000 });
+  it("lets a clean exit through, streaming stdout to the transcript and keeping the tails", async () => {
+    const req = request(`console.log("event"); console.error("warned")`, {
+      timeoutMs: 5_000,
+      stallMs: 5_000,
+    });
 
     const exit = await realSpawnWorkerProcess(req);
 
-    expect(exit).toEqual({ exitCode: 0, endedBy: "exit" });
+    expect(exit).toEqual({
+      exitCode: 0,
+      endedBy: "exit",
+      stdoutTail: "event\n",
+      stderrTail: "warned\n",
+    });
     expect(readFileSync(req.transcriptPath, "utf8")).toContain("event");
   });
 

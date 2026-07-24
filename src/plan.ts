@@ -39,13 +39,23 @@ export function dispatchableSet(world: WorldSnapshot): Ticket[] {
  * back to unassigned; it rejoins the dispatchable set on the next Tick's
  * recomputed snapshot.
  */
+/** True when a ticket has an open agent PR — the work may still land. */
+function hasOpenAgentPr(world: WorldSnapshot, ticket: number): boolean {
+  return world.openAgentPrs.some((pr) => pr.ticket === ticket);
+}
+
+/** True when a ticket has a merged agent PR — the work landed; only closure is pending. */
+function hasMergedAgentPr(world: WorldSnapshot, ticket: number): boolean {
+  return world.mergedAgentPrs.some((pr) => pr.ticket === ticket);
+}
+
 function isOrphanedClaim(ticket: Ticket, world: WorldSnapshot): boolean {
   return (
     ticket.state === "open" &&
     ticket.assignees.length > 0 &&
     ticket.hasAgentClaim &&
-    !world.openAgentPrTickets.includes(ticket.number) &&
-    !world.mergedAgentPrs.some((pr) => pr.ticket === ticket.number)
+    !hasOpenAgentPr(world, ticket.number) &&
+    !hasMergedAgentPr(world, ticket.number)
   );
 }
 
@@ -64,9 +74,41 @@ function isEscalationDue(ticket: Ticket, world: WorldSnapshot): boolean {
     ticket.assignees.length === 0 &&
     ticket.labels.includes(READY_FOR_AGENT) &&
     ticket.agentClaimCount >= MAX_ATTEMPTS &&
-    !world.openAgentPrTickets.includes(ticket.number) &&
-    !world.mergedAgentPrs.some((pr) => pr.ticket === ticket.number)
+    !hasOpenAgentPr(world, ticket.number) &&
+    !hasMergedAgentPr(world, ticket.number)
   );
+}
+
+/**
+ * PR upkeep: after a merge advances the base, keep the remaining open agent
+ * PRs current, one Action per PR at most. Conflict handling comes first and is
+ * exclusive — a conflicted PR is neither updated nor readied until the merge is
+ * resolved: a one-shot conflict Worker unless one has already asked for a
+ * human. A cleanly-mergeable PR that has fallen behind gets the mechanical
+ * branch update, and its ready flip waits for the next Tick, judged against the
+ * updated head (the update re-runs CI). Draft→ready is otherwise decided on CI
+ * alone — a green draft, or one in a repo with no CI configured, flips to
+ * ready-for-review — and independent of mergeability, so a fresh no-CI draft
+ * surfaces even while GitHub is still computing whether it is behind.
+ */
+function prUpkeep(world: WorldSnapshot): Action[] {
+  const actions: Action[] = [];
+  for (const pr of [...world.openAgentPrs].sort((a, b) => a.number - b.number)) {
+    if (pr.mergeable === "conflicted") {
+      if (!pr.conflictWorkerAsked) {
+        actions.push({ type: "conflict-worker", pr: pr.number, ticket: pr.ticket, headRef: pr.headRef });
+      }
+      continue;
+    }
+    if (pr.mergeable === "mergeable" && pr.behind) {
+      actions.push({ type: "update-branch", pr: pr.number, ticket: pr.ticket });
+      continue;
+    }
+    if (pr.draft && (pr.ci === "passing" || pr.ci === "none")) {
+      actions.push({ type: "mark-ready", pr: pr.number, ticket: pr.ticket });
+    }
+  }
+  return actions;
 }
 
 /**
@@ -79,7 +121,10 @@ function isEscalationDue(ticket: Ticket, world: WorldSnapshot): boolean {
  * caller binds attempt ≥ 2 to the stronger retry model. Dispatch is capped
  * by both max_workers and the headroom left under max_open_prs: every spawn
  * becomes an open PR, so claiming only into that headroom throttles the
- * fleet to human review bandwidth, resuming as merges land.
+ * fleet to human review bandwidth, resuming as merges land. PR upkeep sits
+ * between closure and recovery: it keeps the PRs a merge just left behind
+ * current, and consumes no Worker slots (the conflict Worker aside). While the
+ * circuit breaker is open (dispatchPaused) only closes are planned.
  */
 export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   const openTickets = new Set(
@@ -89,6 +134,13 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
     .filter((pr) => openTickets.has(pr.ticket))
     .sort((a, b) => a.ticket - b.ticket)
     .map((pr) => ({ type: "close", ticket: pr.ticket, prUrl: pr.url }));
+
+  // Circuit breaker open: the environment is failing. Only closure
+  // verification proceeds — releases are suppressed so infrastructure-voided
+  // claims stay held (nothing else may grab those tickets mid-outage), and
+  // escalations wait for a healthy environment rather than judging tickets
+  // during one.
+  if (config.dispatchPaused) return closes;
 
   const releases: Action[] = world.tickets
     .filter((ticket) => isOrphanedClaim(ticket, world))
@@ -107,7 +159,7 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   // The headroom counts open agent PRs repo-wide, not per Scope: the cap
   // models the human reviewer's bandwidth, and every agent PR occupies it
   // whichever run opened it.
-  const headroom = Math.max(0, config.maxOpenPrs - world.openAgentPrTickets.length);
+  const headroom = Math.max(0, config.maxOpenPrs - world.openAgentPrs.length);
   const dispatches: Action[] = dispatchableSet(world)
     .filter((ticket) => ticket.agentClaimCount < MAX_ATTEMPTS)
     .slice(0, Math.max(0, Math.min(config.maxWorkers, headroom)))
@@ -116,5 +168,5 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
       { type: "spawn", ticket: ticket.number, attempt: ticket.agentClaimCount + 1 },
     ]);
 
-  return [...closes, ...releases, ...escalations, ...dispatches];
+  return [...closes, ...prUpkeep(world), ...releases, ...escalations, ...dispatches];
 }

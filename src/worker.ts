@@ -1,8 +1,9 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { classifyInfrastructure, lastResultLine, parseResultEvent } from "./classify.js";
 import { realExec, type Exec } from "./tracker.js";
-import { AGENT_BRANCH_PREFIX, type FailureReason } from "./types.js";
+import { AGENT_BRANCH_PREFIX, type FailureReason, type InfraReason } from "./types.js";
 
 /**
  * The WorkerHost seam: everything a dispatched Worker needs around it —
@@ -14,19 +15,48 @@ import { AGENT_BRANCH_PREFIX, type FailureReason } from "./types.js";
 /** Orchestrator-owned scratch space at the target repo root (gitignored). */
 export const RUN_DIR = ".border-collie";
 
-export interface WorkerConfig {
+/** The headless-claude run limits shared by dispatch and conflict Workers. */
+export interface ClaudeRunConfig {
   /** Model the Worker runs on (`claude --model`). */
   model: string;
+  /** Wall-clock ceiling for the whole Worker process. */
+  timeoutMs: number;
+  /** Max quiet time between output events before the Worker counts as stalled. */
+  stallMs: number;
+  /** Budget backstop: max agentic turns (`claude --max-turns`); breach is a ticket failure. */
+  maxTurns: number;
+}
+
+export interface WorkerConfig extends ClaudeRunConfig {
   /**
    * Which Attempt this dispatch is (1-based). Namespaces the branch and
    * transcript so a retry never clobbers the prior attempt's evidence — an
    * Escalation must be able to cite every attempt's forensics.
    */
   attempt: number;
-  /** Wall-clock ceiling for the whole Worker process. */
-  timeoutMs: number;
-  /** Max quiet time between output events before the Worker counts as stalled. */
-  stallMs: number;
+  /**
+   * Budget alarm: spend in USD above which an Attempt is flagged as a cost
+   * overrun. Cost is only knowable post-hoc, so a finished Attempt's work is
+   * kept (discarding it refunds nothing and the retry would cost more) — the
+   * turn cap and wall clock are the stoppers, this is the meter.
+   */
+  maxCostUsd: number;
+}
+
+/** The headless-claude argv every Worker shares: prompt, model, turn cap, stream-json, skip-permissions. */
+function claudeArgs(prompt: string, model: string, maxTurns: number): string[] {
+  return [
+    "-p",
+    prompt,
+    "--model",
+    model,
+    "--max-turns",
+    String(maxTurns),
+    "--output-format",
+    "stream-json",
+    "--verbose",
+    "--dangerously-skip-permissions",
+  ];
 }
 
 /** One finished Attempt, as observed by the Orchestrator. */
@@ -46,11 +76,28 @@ export interface WorkerOutcome {
   /** Commits on the branch beyond the base it was cut from. */
   newCommits: number;
   /**
-   * Which ticket-failure trigger fired, or undefined on success. Exactly the
-   * four triggers: nonzero-exit, no-commits, timeout, stall.
+   * Which ticket-failure trigger fired, or undefined when none did (success,
+   * or an infrastructure failure): nonzero-exit, no-commits, timeout, stall,
+   * budget. Mutually exclusive with `infra`.
    */
   failure: FailureReason | undefined;
-  /** The success predicate: no failure trigger fired. */
+  /**
+   * The infrastructure class a failed Worker's output evidenced, or
+   * undefined. An infra death voids the Attempt instead of burning it
+   * (CONTEXT.md "Infrastructure failure").
+   */
+  infra: InfraReason | undefined;
+  /** Attempt spend in USD, from the transcript's result event when one survived. */
+  costUsd: number | undefined;
+  /** Agentic turns taken, from the transcript's result event when one survived. */
+  turns: number | undefined;
+  /**
+   * The Attempt spent past the cost cap. An alarm, not a failure: a finished
+   * Attempt keeps its work and its PR — the overrun is surfaced so an
+   * oversized ticket reaches the operator's eye, not the bin.
+   */
+  costOverrun: boolean;
+  /** The success predicate: no failure trigger fired, ticket or infrastructure. */
   ok: boolean;
 }
 
@@ -73,6 +120,24 @@ export interface WorkerProcessRequest {
 export interface WorkerProcessExit {
   exitCode: number | null;
   endedBy: "exit" | "timeout" | "stall";
+  /** Last stretch of stdout, kept in memory for classification (full stream is on disk). */
+  stdoutTail: string;
+  /** Last stretch of stderr, kept in memory for classification. */
+  stderrTail: string;
+}
+
+/** How much of each output stream's tail is kept for classification. */
+export const TAIL_LIMIT = 64 * 1024;
+
+/** Accumulate a stream into a bounded tail: only the last TAIL_LIMIT chars survive. */
+function makeTail(): { push: (chunk: Buffer | string) => void; read: () => string } {
+  let tail = "";
+  return {
+    push: (chunk) => {
+      tail = (tail + String(chunk)).slice(-TAIL_LIMIT);
+    },
+    read: () => tail,
+  };
 }
 
 /** Process seam: run the Worker to completion under both watchdogs. */
@@ -87,8 +152,12 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
       cwd: request.cwd,
       stdio: ["ignore", "pipe", "pipe"],
     });
+    const stdoutTail = makeTail();
+    const stderrTail = makeTail();
     child.stdout.pipe(transcript);
     child.stderr.pipe(stderr);
+    child.stdout.on("data", stdoutTail.push);
+    child.stderr.on("data", stderrTail.push);
 
     // SIGKILL, not SIGTERM: a stalled Worker may not be servicing signals.
     let endedBy: WorkerProcessExit["endedBy"] = "exit";
@@ -119,7 +188,12 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
     });
     child.on("close", (code) => {
       end();
-      resolve({ exitCode: code, endedBy });
+      resolve({
+        exitCode: code,
+        endedBy,
+        stdoutTail: stdoutTail.read(),
+        stderrTail: stderrTail.read(),
+      });
     });
   });
 
@@ -134,6 +208,22 @@ export function workerPrompt(ticket: number): string {
     `/implement issue #${ticket}`,
     "",
     "When the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like \"Here's the PR description:\", no status narration, no text before or after it.",
+  ].join("\n");
+}
+
+/**
+ * The entire conflict-resolution Worker prompt: run the merge-conflict skill
+ * against a rebase the Orchestrator has already started, then stop. The
+ * plain-English half stands in when the slash command is unavailable, and
+ * pins the contract the Orchestrator relies on — finish the rebase, touch
+ * nothing else, do not push. A rebase, not a merge, so the agent branch stays
+ * linear and the operator's "Rebase and merge" strategy keeps working.
+ */
+export function conflictWorkerPrompt(): string {
+  return [
+    "/resolving-merge-conflicts",
+    "",
+    "A rebase of this pull request's branch onto the base branch is already in progress and has conflicts. Resolve every conflict and continue the rebase until every commit is applied. Change nothing beyond what resolving the conflicts requires, and do not push — leave the completed rebase on the current branch.",
   ].join("\n");
 }
 
@@ -218,18 +308,9 @@ export async function dispatchWorker(
     // Headless Workers cannot answer permission prompts; skipping them is
     // what confines the blast radius to the worktree plus the operator's
     // own tracker.
-    const { exitCode, endedBy } = await spawnProcess({
+    const { exitCode, endedBy, stdoutTail, stderrTail } = await spawnProcess({
       cmd: "claude",
-      args: [
-        "-p",
-        workerPrompt(ticket),
-        "--model",
-        config.model,
-        "--output-format",
-        "stream-json",
-        "--verbose",
-        "--dangerously-skip-permissions",
-      ],
+      args: claudeArgs(workerPrompt(ticket), config.model, config.maxTurns),
       cwd: worktree,
       transcriptPath: transcript,
       stderrPath: stderrLog,
@@ -241,7 +322,7 @@ export async function dispatchWorker(
     );
     // A killed Worker fails even with commits on the branch: it never got to
     // finish, so the work is unverified and the PR description is missing.
-    const failure: FailureReason | undefined =
+    const trigger: FailureReason | undefined =
       endedBy !== "exit"
         ? endedBy
         : exitCode !== 0
@@ -249,6 +330,27 @@ export async function dispatchWorker(
           : newCommits === 0
             ? "no-commits"
             : undefined;
+    const result = parseResultEvent(stdoutTail);
+    // Classification order: turn cap trumps infra trumps the raw trigger. A
+    // parsed result event proves the environment carried the Worker to its
+    // end, so a turn-cap halt is the ticket's fault whatever infra-looking
+    // noise the logs hold — and it fails even on a clean exit with commits:
+    // a halted Worker never finished, so the work is unverified. The cost
+    // cap is different in kind: cost is only knowable post-hoc from the
+    // result event, so it cannot stop anything — a finished Attempt's work
+    // is kept (discarding it refunds nothing and the retry would cost more)
+    // and the overrun is flagged instead. Infra is only consulted for
+    // Workers that already died — a successful Attempt is never voided —
+    // and only against stderr plus the result line, never the transcript
+    // body, where a ticket legitimately about rate limits would match by
+    // content instead of cause.
+    const turnCapHit = result?.subtype === "error_max_turns";
+    const infra =
+      trigger !== undefined && !turnCapHit
+        ? classifyInfrastructure(`${stderrTail}\n${lastResultLine(stdoutTail)}`)
+        : undefined;
+    const failure: FailureReason | undefined =
+      turnCapHit ? "budget" : infra !== undefined ? undefined : trigger;
     return {
       ticket,
       attempt: config.attempt,
@@ -259,9 +361,142 @@ export async function dispatchWorker(
       exitCode,
       newCommits,
       failure,
-      ok: failure === undefined,
+      infra,
+      costUsd: result?.totalCostUsd,
+      turns: result?.numTurns,
+      costOverrun:
+        result?.totalCostUsd !== undefined && result.totalCostUsd > config.maxCostUsd,
+      ok: failure === undefined && infra === undefined,
     };
   } finally {
     await withGitLock(() => removeWorktree(worktree, exec));
+  }
+}
+
+/** The probe's own generous window: a healthy environment answers in seconds. */
+export const PROBE_TIMEOUT_MS = 2 * 60_000;
+
+/**
+ * The circuit breaker's recovery probe: one trivial headless prompt, no
+ * tracker writes, no worktree. The environment counts as recovered when the
+ * probe exits cleanly with no infrastructure signature in its output — only
+ * then does dispatch resume.
+ */
+export async function probeEnvironment(
+  model: string,
+  spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
+): Promise<boolean> {
+  const { exitCode, endedBy, stdoutTail, stderrTail } = await spawnProcess({
+    cmd: "claude",
+    args: ["-p", "Reply with only the word ok.", "--model", model],
+    cwd: ".",
+    transcriptPath: join(RUN_DIR, "transcripts", "probe.log"),
+    stderrPath: join(RUN_DIR, "transcripts", "probe.stderr.log"),
+    timeoutMs: PROBE_TIMEOUT_MS,
+    stallMs: PROBE_TIMEOUT_MS,
+  }).catch(() => ({
+    // A probe that cannot even spawn is a failed probe, not a crashed run.
+    exitCode: null,
+    endedBy: "exit" as const,
+    stdoutTail: "",
+    stderrTail: "spawn failed",
+  }));
+  return (
+    endedBy === "exit" &&
+    exitCode === 0 &&
+    classifyInfrastructure(`${stderrTail}\n${stdoutTail}`) === undefined
+  );
+}
+
+/** What a conflict-resolution Worker runs with; no attempt ladder — one shot. */
+export type ConflictWorkerConfig = ClaudeRunConfig;
+
+/** One finished conflict-resolution session, as observed by the Orchestrator. */
+export interface ConflictOutcome {
+  pr: number;
+  ticket: number;
+  /** Head branch the Worker resolved in; pushed back on success. */
+  headRef: string;
+  /** Transcript file path, for post-mortems. */
+  transcript: string;
+  exitCode: number | null;
+  /**
+   * True when the branch is fully rebased onto the base: the Worker exited on
+   * its own and the branch ref now contains origin/HEAD. Containment is the
+   * whole test — git moves the branch ref only when a rebase runs to
+   * completion, so a rebase left mid-flight (or never started, e.g. the base
+   * ref could not be read) leaves the branch at its conflicted old tip, which
+   * predates the base. Deliberately NOT probed via REBASE_HEAD: git leaves
+   * that ref behind after a successful `rebase --continue`, which read a
+   * finished rebase as still-in-progress (a false failure).
+   */
+  resolved: boolean;
+}
+
+/**
+ * Dispatch one conflict-resolution Worker against one conflicted agent PR: cut
+ * a worktree on the PR's own head branch, start the rebase onto the base so
+ * the merge-conflict skill has an in-progress conflict to resolve, run
+ * headless claude, then judge whether the rebase completed. A rebase, never a
+ * merge commit: the branch stays linear, so the operator's "Rebase and merge"
+ * strategy keeps working (a resolution recorded in a merge commit is dropped
+ * when that strategy replays the branch's commits, re-conflicting them). The
+ * branch is the PR's existing head (checked out from origin), never a fresh
+ * one — the resolution has to force-push back to the same branch the PR is
+ * opened from. `-B` and the up-front removal reset any leftover of a crashed
+ * run on the same branch. On success the caller pushes the branch; on failure
+ * the rebase is aborted so the retained branch stays at the PR's committed
+ * head — a broken rebase is never published — and the caller asks a human to
+ * take over.
+ */
+export async function dispatchConflictWorker(
+  pr: number,
+  ticket: number,
+  headRef: string,
+  config: ConflictWorkerConfig,
+  exec: Exec = realExec,
+  spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
+): Promise<ConflictOutcome> {
+  const worktree = join(RUN_DIR, "conflict-worktrees", `pr-${pr}`);
+  const transcript = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.jsonl`);
+  const stderrLog = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.stderr.log`);
+
+  await withGitLock(async () => {
+    await removeWorktree(worktree, exec);
+    await exec("git", ["worktree", "prune"]);
+    await exec("git", ["fetch", "origin"]);
+    await exec("git", ["worktree", "add", worktree, "-B", headRef, `origin/${headRef}`]);
+    // A conflicting rebase exits non-zero and stops in progress for the
+    // Worker; swallow that so setting up the conflict never throws.
+    await exec("git", ["-C", worktree, "rebase", "origin/HEAD"]).catch(() => {});
+  });
+
+  try {
+    const { exitCode, endedBy } = await spawnProcess({
+      cmd: "claude",
+      args: claudeArgs(conflictWorkerPrompt(), config.model, config.maxTurns),
+      cwd: worktree,
+      transcriptPath: transcript,
+      stderrPath: stderrLog,
+      timeoutMs: config.timeoutMs,
+      stallMs: config.stallMs,
+    });
+    // The branch ref, not HEAD: mid-rebase HEAD is detached on the commit
+    // being replayed, while the branch only moves on completion.
+    const rebased = await withGitLock(() =>
+      exec("git", ["-C", worktree, "merge-base", "--is-ancestor", "origin/HEAD", headRef]).then(
+        () => true,
+        () => false,
+      ),
+    );
+    const resolved = endedBy === "exit" && exitCode === 0 && rebased;
+    return { pr, ticket, headRef, transcript, exitCode, resolved };
+  } finally {
+    // Abort any half-finished rebase before dropping the worktree; a no-op
+    // when the Worker already completed the rebase.
+    await withGitLock(async () => {
+      await exec("git", ["-C", worktree, "rebase", "--abort"]).catch(() => {});
+      await removeWorktree(worktree, exec);
+    });
   }
 }

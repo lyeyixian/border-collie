@@ -3,15 +3,22 @@ import { promisify } from "node:util";
 import {
   attemptMarker,
   CLAIM_MARKER,
+  CONFLICT_UNRESOLVED_MARKER,
   FAILURE_DESCRIPTIONS,
+  INFRA_DESCRIPTIONS,
   MAX_ATTEMPTS,
   parseAttemptMarker,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
   RELEASE_MARKER,
   ticketFromAgentBranch,
+  VOID_MARKER,
   type AttemptFailure,
+  type CiState,
+  type InfraReason,
+  type Mergeability,
   type MergedAgentPr,
+  type OpenAgentPr,
   type Ticket,
   type WorldSnapshot,
 } from "./types.js";
@@ -76,9 +83,11 @@ interface ClaimHistory {
  * One pass over a ticket's comments, oldest first. The latest border-collie
  * marker comment decides claim ownership: a claim marker after any release
  * marker means the assignment is agent-held. The claim markers ever posted
- * count Attempts (each Attempt is preceded by exactly one claim), and release
- * comments carry the failed attempts' forensic records. All append-only, so
- * history stays auditable and attempt state needs no local store.
+ * count Attempts (each Attempt is preceded by exactly one claim), a void
+ * marker uncounts the claim it follows (an infrastructure death burns
+ * nothing) while leaving the claim held, and release comments carry the
+ * failed attempts' forensic records. All append-only, so history stays
+ * auditable and attempt state needs no local store.
  */
 async function readClaimHistory(ticket: number, exec: Exec): Promise<ClaimHistory> {
   const comments = await readPages<{ body?: string }>(
@@ -90,6 +99,8 @@ async function readClaimHistory(ticket: number, exec: Exec): Promise<ClaimHistor
     if (comment.body?.includes(CLAIM_MARKER)) {
       history.hasAgentClaim = true;
       history.agentClaimCount += 1;
+    } else if (comment.body?.includes(VOID_MARKER)) {
+      history.agentClaimCount = Math.max(0, history.agentClaimCount - 1);
     } else if (comment.body?.includes(RELEASE_MARKER)) {
       history.hasAgentClaim = false;
       const failure = parseAttemptMarker(comment.body);
@@ -112,15 +123,129 @@ async function readOpenBlockers(ticket: number, exec: Exec): Promise<number[]> {
   return blockers.filter((b) => b.state === "open").map((b) => b.number);
 }
 
-/** Ticket numbers of open PRs whose head branch carries the agent prefix. */
-async function listOpenAgentPrTickets(exec: Exec): Promise<number[]> {
-  const pulls = await readPages<{ head?: { ref?: string } }>(
-    "repos/{owner}/{repo}/pulls?state=open&per_page=100",
+/** One check-run (status/conclusion) or legacy status context (state) in the rollup. */
+interface RollupCheck {
+  status?: string;
+  conclusion?: string;
+  state?: string;
+}
+
+interface GhPrListItem {
+  number: number;
+  headRefName?: string;
+  baseRefName?: string;
+  isDraft?: boolean;
+  /** GraphQL mergeability: MERGEABLE | CONFLICTING | UNKNOWN. Independent of the draft flag. */
+  mergeable?: string;
+  statusCheckRollup?: RollupCheck[];
+}
+
+function mergeabilityOf(raw: string | undefined): Mergeability {
+  if (raw === "MERGEABLE") return "mergeable";
+  if (raw === "CONFLICTING") return "conflicted";
+  return "unknown";
+}
+
+/**
+ * True when the PR's head is behind its base — the base carries commits the
+ * head lacks, so a mechanical update would advance it. Read from the compare
+ * API's behind_by, deliberately NOT from the PR's mergeStateStatus: that field
+ * reports DRAFT for a draft PR (masking BEHIND, and every agent PR opens as a
+ * draft), and only surfaces BEHIND at all when "require branches up to date"
+ * branch protection is on — otherwise a stale-but-clean PR reads CLEAN. The
+ * compare is reliable under every configuration.
+ */
+async function prBehindBase(base: string, head: string, exec: Exec): Promise<boolean> {
+  const stdout = await exec("gh", ["api", `repos/{owner}/{repo}/compare/${base}...${head}`]);
+  const comparison = JSON.parse(stdout) as { behind_by?: number };
+  return (comparison.behind_by ?? 0) > 0;
+}
+
+/**
+ * The CI standing of a head commit from its check-run rollup. Empty is `none`
+ * — no checks configured, which the draft→ready gate reads as green. Otherwise
+ * any incomplete or unsuccessful check is decisive: one failure fails the
+ * whole rollup, one still-running check holds it pending, and only an all-green
+ * rollup passes. Handles both modern check-runs (status/conclusion) and legacy
+ * commit-status contexts (state).
+ */
+function ciFromRollup(rollup: RollupCheck[]): CiState {
+  if (rollup.length === 0) return "none";
+  let pending = false;
+  for (const check of rollup) {
+    if (check.status !== undefined) {
+      if (check.status !== "COMPLETED") {
+        pending = true;
+        continue;
+      }
+      if (check.conclusion === "SUCCESS" || check.conclusion === "NEUTRAL" || check.conclusion === "SKIPPED") {
+        continue;
+      }
+      return "failing";
+    }
+    if (check.state === "SUCCESS") continue;
+    if (check.state === "PENDING" || check.state === "EXPECTED") {
+      pending = true;
+      continue;
+    }
+    return "failing";
+  }
+  return pending ? "pending" : "passing";
+}
+
+/**
+ * True when a conflict-resolution Worker already asked for human help on this
+ * PR — the unresolved marker sits in its comment thread. Read only for
+ * conflicted PRs, where it alone decides whether another Worker is dispatched.
+ */
+async function readConflictWorkerAsked(pr: number, exec: Exec): Promise<boolean> {
+  const comments = await readPages<{ body?: string }>(
+    `repos/{owner}/{repo}/issues/${pr}/comments?per_page=100`,
     exec,
   );
-  return pulls
-    .map((pr) => ticketFromAgentBranch(pr.head?.ref ?? ""))
-    .filter((n): n is number => n !== undefined);
+  return comments.some((comment) => comment.body?.includes(CONFLICT_UNRESOLVED_MARKER));
+}
+
+/**
+ * Open agent PRs with the upkeep signals GitHub computes lazily (mergeability,
+ * CI rollup), read in one `gh pr list` call — capped at 100, far above the
+ * max_open_prs the fleet throttles itself to. Non-agent branches are dropped.
+ * Behind-ness is then read per cleanly-mergeable PR (a conflicted one is
+ * handled before any update, an unknown one left for the next Tick), and a
+ * conflicted PR's comments for the unresolved marker.
+ */
+async function listOpenAgentPrs(exec: Exec): Promise<OpenAgentPr[]> {
+  const stdout = await exec("gh", [
+    "pr",
+    "list",
+    "--state",
+    "open",
+    "--limit",
+    "100",
+    "--json",
+    "number,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup",
+  ]);
+  const items = JSON.parse(stdout) as GhPrListItem[];
+  const prs: OpenAgentPr[] = [];
+  for (const item of items) {
+    const headRef = item.headRefName ?? "";
+    const ticket = ticketFromAgentBranch(headRef);
+    if (ticket === undefined) continue;
+    const mergeable = mergeabilityOf(item.mergeable);
+    const base = item.baseRefName ?? "";
+    prs.push({
+      number: item.number,
+      ticket,
+      headRef,
+      draft: item.isDraft ?? false,
+      mergeable,
+      behind: mergeable === "mergeable" && base !== "" ? await prBehindBase(base, headRef, exec) : false,
+      ci: ciFromRollup(item.statusCheckRollup ?? []),
+      conflictWorkerAsked:
+        mergeable === "conflicted" ? await readConflictWorkerAsked(item.number, exec) : false,
+    });
+  }
+  return prs;
 }
 
 /**
@@ -182,17 +307,17 @@ export async function readScope(scope: Scope, exec: Exec = realExec): Promise<Wo
   }
 
   // Agent PRs matter only while open tickets exist: orphan detection, the
-  // escalation veto, and the max_open_prs throttle read the open ones,
-  // closure verification the merged ones. A fully closed Scope needs
+  // escalation veto, the max_open_prs throttle, and PR upkeep read the open
+  // ones, closure verification the merged ones. A fully closed Scope needs
   // neither read.
   const hasOpenTickets = tickets.some((t) => t.state === "open");
   const inScope = new Set(tickets.map((t) => t.number));
-  const openAgentPrTickets = hasOpenTickets ? await listOpenAgentPrTickets(exec) : [];
+  const openAgentPrs = hasOpenTickets ? await listOpenAgentPrs(exec) : [];
   const mergedAgentPrs = hasOpenTickets
     ? (await listMergedAgentPrs(exec)).filter((pr) => inScope.has(pr.ticket))
     : [];
 
-  return { tickets, openAgentPrTickets, mergedAgentPrs };
+  return { tickets, openAgentPrs, mergedAgentPrs };
 }
 
 const CLAIM_COMMENT = `${CLAIM_MARKER}\n🐕 Claimed by border-collie: a Worker will be dispatched against this ticket. This assignment is agent-held — see CONTEXT.md "Claim".`;
@@ -288,6 +413,35 @@ export async function releaseFailedTicket(
   await release(ticket, "@me", body, exec);
 }
 
+/** What a voided Attempt leaves behind, cited in the void comment for humans. */
+export interface VoidedAttempt {
+  attempt: number;
+  reason: InfraReason;
+  model: string;
+  transcript: string;
+}
+
+/**
+ * Act phase: void an Attempt that died to the environment. A comment only —
+ * no unassign, no release marker: the claim stays held while the circuit
+ * breaker waits out the outage, and the void marker uncounts the claim so
+ * the Attempt burns nothing. (The next dispatch reuses the attempt number,
+ * so the cited branch and transcript may be superseded — voided attempts
+ * need no preserved evidence, they never reach Escalation.)
+ */
+export async function voidAttempt(
+  ticket: number,
+  voided: VoidedAttempt,
+  exec: Exec = realExec,
+): Promise<void> {
+  const body = [
+    VOID_MARKER,
+    `🐕 Attempt ${voided.attempt} voided: ${INFRA_DESCRIPTIONS[voided.reason]} (model ${voided.model}) — an infrastructure failure, not a ticket failure, so it burns nothing.`,
+    `Claim held; dispatch pauses until the environment recovers. Transcript at \`${voided.transcript}\`.`,
+  ].join("\n");
+  await exec("gh", ["issue", "comment", String(ticket), "--body", body]);
+}
+
 /**
  * Act phase: Escalate a ticket whose Attempts are exhausted — the forensic
  * comment first, then the label swap that removes it from the dispatchable
@@ -324,4 +478,34 @@ export async function escalateTicket(
     "--add-label",
     READY_FOR_HUMAN,
   ]);
+}
+
+/**
+ * Act phase: mechanically rebase a cleanly-mergeable PR that has fallen behind
+ * onto its base. GitHub does the rebase server-side — no worktree, no judgment
+ * — so a sibling stays current after every merge. Rebase, never a merge
+ * commit: agent branches stay linear so the operator's "Rebase and merge"
+ * strategy stays available (a merge-commit update would make GitHub refuse it
+ * — replaying the branch's commits drops the merge commit and its resolutions,
+ * so the original commits re-conflict).
+ */
+export async function updatePrBranch(pr: number, exec: Exec = realExec): Promise<void> {
+  await exec("gh", ["pr", "update-branch", String(pr), "--rebase"]);
+}
+
+/** Act phase: flip a draft PR to ready-for-review, surfacing it to the reviewer. */
+export async function markPrReady(pr: number, exec: Exec = realExec): Promise<void> {
+  await exec("gh", ["pr", "ready", String(pr)]);
+}
+
+const CONFLICT_UNRESOLVED_COMMENT = `${CONFLICT_UNRESOLVED_MARKER}\n🐕 border-collie ran a conflict-resolution Worker here, but it could not complete the rebase onto the base branch. This PR needs a human to resolve the conflicts — border-collie will not dispatch another Worker for it.`;
+
+/**
+ * Act phase: mark a PR's conflict as human-owned after the conflict Worker
+ * gave up. The marker in this comment is what stops the next Tick dispatching
+ * a second Worker against a conflict a human now holds — the PR-level analogue
+ * of Escalation's forensic comment.
+ */
+export async function commentConflictUnresolved(pr: number, exec: Exec = realExec): Promise<void> {
+  await exec("gh", ["pr", "comment", String(pr), "--body", CONFLICT_UNRESOLVED_COMMENT]);
 }
