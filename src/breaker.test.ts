@@ -9,7 +9,10 @@ import {
 
 describe("tripBreaker", () => {
   it("opens a closed breaker with one trip", () => {
-    expect(tripBreaker(undefined, 1_000)).toEqual({ openedAtMs: 1_000, trips: 1 });
+    expect(tripBreaker(undefined, 1_000)).toEqual({
+      openedAtMs: 1_000,
+      trips: 1,
+    });
   });
 
   it("re-trips an open breaker, restarting the cooldown and counting the trip", () => {

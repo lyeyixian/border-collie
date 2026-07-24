@@ -65,7 +65,11 @@ describe("resolveConfig", () => {
   it("requires an explicit all flag for repo-wide scope", () => {
     const resolved = resolveConfig({ max_workers: 2 }, { all: true });
 
-    expect(resolved).toMatchObject({ scope: { kind: "all" }, maxWorkers: 2, model: "sonnet" });
+    expect(resolved).toMatchObject({
+      scope: { kind: "all" },
+      maxWorkers: 2,
+      model: "sonnet",
+    });
   });
 
   it("takes the worker model from the config file", () => {
@@ -75,19 +79,30 @@ describe("resolveConfig", () => {
   });
 
   it("rejects a worker model that is not a non-empty string", () => {
-    expect(() => resolveConfig({ parent: 1, worker_model: "" }, {})).toThrow(ConfigError);
-    expect(() => resolveConfig({ parent: 1, worker_model: 4 }, {})).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1, worker_model: "" }, {})).toThrow(
+      ConfigError,
+    );
+    expect(() => resolveConfig({ parent: 1, worker_model: 4 }, {})).toThrow(
+      ConfigError,
+    );
   });
 
   it("takes the retry model from the config file, with a flag override", () => {
-    expect(resolveConfig({ parent: 1, retry_model: "sonnet" }, {}).retryModel).toBe("sonnet");
     expect(
-      resolveConfig({ parent: 1, retry_model: "sonnet" }, { retryModel: "haiku" }).retryModel,
+      resolveConfig({ parent: 1, retry_model: "sonnet" }, {}).retryModel,
+    ).toBe("sonnet");
+    expect(
+      resolveConfig(
+        { parent: 1, retry_model: "sonnet" },
+        { retryModel: "haiku" },
+      ).retryModel,
     ).toBe("haiku");
   });
 
   it("rejects a retry model that is not a non-empty string", () => {
-    expect(() => resolveConfig({ parent: 1, retry_model: "" }, {})).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1, retry_model: "" }, {})).toThrow(
+      ConfigError,
+    );
   });
 
   it("takes the Worker timeout and stall windows from the config file", () => {
@@ -101,8 +116,12 @@ describe("resolveConfig", () => {
   });
 
   it("rejects non-positive timeout and stall windows", () => {
-    expect(() => resolveConfig({ parent: 1, worker_timeout_minutes: 0 }, {})).toThrow(ConfigError);
-    expect(() => resolveConfig({ parent: 1, worker_stall_minutes: -1 }, {})).toThrow(ConfigError);
+    expect(() =>
+      resolveConfig({ parent: 1, worker_timeout_minutes: 0 }, {}),
+    ).toThrow(ConfigError);
+    expect(() =>
+      resolveConfig({ parent: 1, worker_stall_minutes: -1 }, {}),
+    ).toThrow(ConfigError);
   });
 
   it("takes the Worker budget backstops from the config file, allowing a fractional cost cap", () => {
@@ -116,10 +135,18 @@ describe("resolveConfig", () => {
   });
 
   it("rejects non-positive or non-numeric budget backstops", () => {
-    expect(() => resolveConfig({ parent: 1, worker_max_turns: 0 }, {})).toThrow(ConfigError);
-    expect(() => resolveConfig({ parent: 1, worker_max_turns: 1.5 }, {})).toThrow(ConfigError);
-    expect(() => resolveConfig({ parent: 1, worker_max_cost_usd: -2 }, {})).toThrow(ConfigError);
-    expect(() => resolveConfig({ parent: 1, worker_max_cost_usd: "20" }, {})).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1, worker_max_turns: 0 }, {})).toThrow(
+      ConfigError,
+    );
+    expect(() =>
+      resolveConfig({ parent: 1, worker_max_turns: 1.5 }, {}),
+    ).toThrow(ConfigError);
+    expect(() =>
+      resolveConfig({ parent: 1, worker_max_cost_usd: -2 }, {}),
+    ).toThrow(ConfigError);
+    expect(() =>
+      resolveConfig({ parent: 1, worker_max_cost_usd: "20" }, {}),
+    ).toThrow(ConfigError);
   });
 
   it("rejects a run with neither a parent nor the all flag", () => {
@@ -156,7 +183,10 @@ describe("resolveConfig", () => {
   });
 
   it("takes max_open_prs and poll_seconds from the config file", () => {
-    const resolved = resolveConfig({ parent: 1, max_open_prs: 2, poll_seconds: 60 }, {});
+    const resolved = resolveConfig(
+      { parent: 1, max_open_prs: 2, poll_seconds: 60 },
+      {},
+    );
 
     expect(resolved.maxOpenPrs).toBe(2);
     expect(resolved.pollSeconds).toBe(60);
@@ -173,8 +203,12 @@ describe("resolveConfig", () => {
   });
 
   it("rejects a non-positive max_open_prs or poll_seconds", () => {
-    expect(() => resolveConfig({ parent: 1, max_open_prs: 0 }, {})).toThrow(ConfigError);
-    expect(() => resolveConfig({ parent: 1 }, { pollSeconds: 0 })).toThrow(ConfigError);
+    expect(() => resolveConfig({ parent: 1, max_open_prs: 0 }, {})).toThrow(
+      ConfigError,
+    );
+    expect(() => resolveConfig({ parent: 1 }, { pollSeconds: 0 })).toThrow(
+      ConfigError,
+    );
   });
 
   it("rejects a malformed config file", () => {

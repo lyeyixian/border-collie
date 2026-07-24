@@ -30,7 +30,10 @@ export function tripBreaker(breaker: Breaker, nowMs: number): OpenBreaker {
 
 /** Cooldown before the next recovery probe: base doubled per consecutive trip, capped. */
 export function breakerCooldownMs(trips: number): number {
-  return Math.min(BREAKER_BASE_COOLDOWN_MS * 2 ** Math.max(0, trips - 1), BREAKER_MAX_COOLDOWN_MS);
+  return Math.min(
+    BREAKER_BASE_COOLDOWN_MS * 2 ** Math.max(0, trips - 1),
+    BREAKER_MAX_COOLDOWN_MS,
+  );
 }
 
 /** Whether the cooldown has elapsed and the environment should be probed. */

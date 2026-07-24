@@ -21,14 +21,20 @@ export const RELEASE_MARKER = "<!-- border-collie:release -->";
  * The ticket-failure triggers (CONTEXT.md "Ticket failure"): every way a
  * Worker can die that counts against the ticket's Attempts.
  */
-export type FailureReason = "nonzero-exit" | "no-commits" | "timeout" | "stall" | "budget";
+export type FailureReason =
+  | "nonzero-exit"
+  | "no-commits"
+  | "timeout"
+  | "stall"
+  | "budget";
 
 export const FAILURE_DESCRIPTIONS: Record<FailureReason, string> = {
   "nonzero-exit": "the Worker process exited non-zero",
   "no-commits": "the Worker exited cleanly but committed nothing",
   timeout: "the Worker hit the wall-clock timeout",
   stall: "the Worker produced no output events for the stall window",
-  budget: "the Worker hit the turn-cap budget backstop and was halted mid-flight",
+  budget:
+    "the Worker hit the turn-cap budget backstop and was halted mid-flight",
 };
 
 /**
@@ -38,7 +44,12 @@ export const FAILURE_DESCRIPTIONS: Record<FailureReason, string> = {
  * heuristic: several Workers dying identically is an environment problem,
  * not a coincidence of tickets.
  */
-export type InfraReason = "usage-limit" | "rate-limit" | "auth" | "network" | "correlated";
+export type InfraReason =
+  | "usage-limit"
+  | "rate-limit"
+  | "auth"
+  | "network"
+  | "correlated";
 
 export const INFRA_DESCRIPTIONS: Record<InfraReason, string> = {
   "usage-limit": "the account usage limit was reached",
@@ -123,7 +134,8 @@ export function parseAttemptMarker(body: string): AttemptFailure | undefined {
  * (ADR 0001) — bounded because a session that actually ran and failed always
  * lays the marker down.
  */
-export const CONFLICT_UNRESOLVED_MARKER = "<!-- border-collie:conflict-unresolved -->";
+export const CONFLICT_UNRESOLVED_MARKER =
+  "<!-- border-collie:conflict-unresolved -->";
 
 /**
  * Branch naming that makes a PR structurally an agent PR. Workers land with

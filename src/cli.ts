@@ -3,19 +3,23 @@ import { parseArgs } from "node:util";
 import { act } from "./act.js";
 import {
   ConfigError,
+  type Flags,
   loadConfigFile,
   modelForAttempt,
-  resolveConfig,
-  type Flags,
   type ResolvedConfig,
+  resolveConfig,
 } from "./config.js";
 import { plan } from "./plan.js";
 import { openPrForOutcome } from "./pr.js";
 import { renderPlan } from "./render.js";
 import { run } from "./run.js";
 import { readScope } from "./tracker.js";
-import { dispatchConflictWorker, dispatchWorker, probeEnvironment } from "./worker.js";
 import type { Action, WorldSnapshot } from "./types.js";
+import {
+  dispatchConflictWorker,
+  dispatchWorker,
+  probeEnvironment,
+} from "./worker.js";
 
 const USAGE = `Usage: border-collie <tick|run> [options]
 
@@ -65,7 +69,10 @@ e.g. {"parent": 1, "max_workers": 3, "max_open_prs": 5, "poll_seconds": 30,
 "worker_timeout_minutes": 45, "worker_stall_minutes": 10,
 "worker_max_turns": 200, "worker_max_cost_usd": 20}`;
 
-function parseIntFlag(value: string | undefined, name: string): number | undefined {
+function parseIntFlag(
+  value: string | undefined,
+  name: string,
+): number | undefined {
   if (value === undefined) return undefined;
   if (!/^\d+$/.test(value)) {
     throw new ConfigError(`${name} must be an integer, got "${value}"`);
@@ -100,7 +107,11 @@ async function tickOnce(
           maxTurns: config.maxTurns,
           maxCostUsd: config.maxCostUsd,
         }),
-      (outcome) => openPrForOutcome(outcome, titles.get(outcome.ticket) ?? `Ticket #${outcome.ticket}`),
+      (outcome) =>
+        openPrForOutcome(
+          outcome,
+          titles.get(outcome.ticket) ?? `Ticket #${outcome.ticket}`,
+        ),
       (pr, ticket, headRef) =>
         dispatchConflictWorker(pr, ticket, headRef, {
           model: config.model,
@@ -151,7 +162,8 @@ async function main(argv: string[]): Promise<number> {
   if (pollSeconds !== undefined) flags.pollSeconds = pollSeconds;
   if (values.all) flags.all = true;
   if (values.model !== undefined) flags.model = values.model;
-  if (values["retry-model"] !== undefined) flags.retryModel = values["retry-model"];
+  if (values["retry-model"] !== undefined)
+    flags.retryModel = values["retry-model"];
 
   const config = resolveConfig(loadConfigFile(process.cwd()), flags);
 
@@ -169,7 +181,9 @@ async function main(argv: string[]): Promise<number> {
   }
 
   if (dryRun) {
-    throw new ConfigError("--dry-run only applies to tick: a dry run never progresses the loop");
+    throw new ConfigError(
+      "--dry-run only applies to tick: a dry run never progresses the loop",
+    );
   }
   const outcome = await run(config.pollSeconds, {
     tick: (dispatchPaused) => tickOnce(config, false, dispatchPaused),

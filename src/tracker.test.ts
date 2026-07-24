@@ -4,6 +4,7 @@ import {
   closeTicket,
   commentConflictUnresolved,
   createDraftPr,
+  type Exec,
   escalateTicket,
   markPrReady,
   readScope,
@@ -11,15 +12,14 @@ import {
   releaseTicket,
   updatePrBranch,
   voidAttempt,
-  type Exec,
 } from "./tracker.js";
 import {
+  type AttemptFailure,
   attemptMarker,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
   RELEASE_MARKER,
   VOID_MARKER,
-  type AttemptFailure,
 } from "./types.js";
 
 const FAILURE: AttemptFailure = {
@@ -56,7 +56,10 @@ const prItem = (overrides: Record<string, unknown> = {}) => ({
  * un-mapped gh api endpoint throws, so a test also asserts which reads do NOT
  * happen.
  */
-function fakeExec(opts: { api?: Record<string, unknown>; prList?: unknown[] }): {
+function fakeExec(opts: {
+  api?: Record<string, unknown>;
+  prList?: unknown[];
+}): {
   exec: Exec;
   calls: string[][];
 } {
@@ -83,27 +86,46 @@ function fakeExec(opts: { api?: Record<string, unknown>; prList?: unknown[] }): 
 }
 
 const SUB_ISSUES = "repos/{owner}/{repo}/issues/1/sub_issues?per_page=100";
-const ALL_ISSUES = "repos/{owner}/{repo}/issues?labels=ready-for-agent&state=open&per_page=100";
-const comments = (n: number) => `repos/{owner}/{repo}/issues/${n}/comments?per_page=100`;
+const ALL_ISSUES =
+  "repos/{owner}/{repo}/issues?labels=ready-for-agent&state=open&per_page=100";
+const comments = (n: number) =>
+  `repos/{owner}/{repo}/issues/${n}/comments?per_page=100`;
 const blockedBy = (n: number) =>
   `repos/{owner}/{repo}/issues/${n}/dependencies/blocked_by?per_page=100`;
 const CLOSED_PULLS = "repos/{owner}/{repo}/pulls?state=closed&per_page=100";
-const compare = (base: string, head: string) => `repos/{owner}/{repo}/compare/${base}...${head}`;
+const compare = (base: string, head: string) =>
+  `repos/{owner}/{repo}/compare/${base}...${head}`;
 
 /** The gh operation a recorded call performed, for asserting read order. */
-const op = (call: string[]) => (call[1] === "pr" && call[2] === "list" ? "pr-list" : call[2]);
+const op = (call: string[]) =>
+  call[1] === "pr" && call[2] === "list" ? "pr-list" : call[2];
 
 describe("readScope", () => {
   it("reads a parent's sub-issues, then comments, then the open and closed PR listings", async () => {
     const { exec, calls } = fakeExec({
-      api: { [SUB_ISSUES]: [[issue({})]], [comments(2)]: [[]], [CLOSED_PULLS]: [[]] },
+      api: {
+        [SUB_ISSUES]: [[issue({})]],
+        [comments(2)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
       prList: [],
     });
 
     await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(calls.map(op)).toEqual([SUB_ISSUES, comments(2), "pr-list", CLOSED_PULLS]);
-    expect(calls[0]).toEqual(["gh", "api", SUB_ISSUES, "--paginate", "--slurp"]);
+    expect(calls.map(op)).toEqual([
+      SUB_ISSUES,
+      comments(2),
+      "pr-list",
+      CLOSED_PULLS,
+    ]);
+    expect(calls[0]).toEqual([
+      "gh",
+      "api",
+      SUB_ISSUES,
+      "--paginate",
+      "--slurp",
+    ]);
     expect(calls.find((c) => c[1] === "pr")).toEqual([
       "gh",
       "pr",
@@ -119,13 +141,22 @@ describe("readScope", () => {
 
   it("reads repo-wide agent-ready issues when scope is all", async () => {
     const { exec, calls } = fakeExec({
-      api: { [ALL_ISSUES]: [[issue({})]], [comments(2)]: [[]], [CLOSED_PULLS]: [[]] },
+      api: {
+        [ALL_ISSUES]: [[issue({})]],
+        [comments(2)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
       prList: [],
     });
 
     await readScope({ kind: "all" }, exec);
 
-    expect(calls.map(op)).toEqual([ALL_ISSUES, comments(2), "pr-list", CLOSED_PULLS]);
+    expect(calls.map(op)).toEqual([
+      ALL_ISSUES,
+      comments(2),
+      "pr-list",
+      CLOSED_PULLS,
+    ]);
   });
 
   it("skips both PR reads when no ticket in Scope is open", async () => {
@@ -194,7 +225,12 @@ describe("readScope", () => {
   it("drops pull requests from a repo-wide listing", async () => {
     const { exec } = fakeExec({
       api: {
-        [ALL_ISSUES]: [[issue({ number: 5 }), issue({ number: 6, pull_request: { url: "x" } })]],
+        [ALL_ISSUES]: [
+          [
+            issue({ number: 5 }),
+            issue({ number: 6, pull_request: { url: "x" } }),
+          ],
+        ],
         [comments(5)]: [[]],
         [CLOSED_PULLS]: [[]],
       },
@@ -209,7 +245,9 @@ describe("readScope", () => {
   it("treats a missing dependency summary as zero open blockers", async () => {
     const { exec } = fakeExec({
       api: {
-        [SUB_ISSUES]: [[issue({ number: 7, issue_dependencies_summary: undefined })]],
+        [SUB_ISSUES]: [
+          [issue({ number: 7, issue_dependencies_summary: undefined })],
+        ],
         [comments(7)]: [[]],
         [CLOSED_PULLS]: [[]],
       },
@@ -225,9 +263,14 @@ describe("readScope", () => {
     const { exec, calls } = fakeExec({
       api: {
         [SUB_ISSUES]: [
-          [issue({ number: 5, assignees: [{ login: "operator" }] }), issue({ number: 6 })],
+          [
+            issue({ number: 5, assignees: [{ login: "operator" }] }),
+            issue({ number: 6 }),
+          ],
         ],
-        [comments(5)]: [[{ body: "human chatter" }, { body: `${CLAIM_MARKER}\n🐕 claimed` }]],
+        [comments(5)]: [
+          [{ body: "human chatter" }, { body: `${CLAIM_MARKER}\n🐕 claimed` }],
+        ],
         [comments(6)]: [[]],
         [CLOSED_PULLS]: [[]],
       },
@@ -262,14 +305,21 @@ describe("readScope", () => {
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(calls.map(op)).toEqual([SUB_ISSUES, blockedBy(4), "pr-list", CLOSED_PULLS]);
+    expect(calls.map(op)).toEqual([
+      SUB_ISSUES,
+      blockedBy(4),
+      "pr-list",
+      CLOSED_PULLS,
+    ]);
     expect(world.tickets.map((t) => t.agentClaimCount)).toEqual([0, 0, 0]);
   });
 
   it("names the open blockers of an open blocked ticket, dropping closed ones", async () => {
     const { exec } = fakeExec({
       api: {
-        [SUB_ISSUES]: [[issue({ number: 4, issue_dependencies_summary: { blocked_by: 2 } })]],
+        [SUB_ISSUES]: [
+          [issue({ number: 4, issue_dependencies_summary: { blocked_by: 2 } })],
+        ],
         [blockedBy(4)]: [
           [
             { number: 2, state: "open" },
@@ -292,7 +342,11 @@ describe("readScope", () => {
       api: {
         [SUB_ISSUES]: [
           [
-            issue({ number: 3, state: "closed", issue_dependencies_summary: { blocked_by: 2 } }),
+            issue({
+              number: 3,
+              state: "closed",
+              issue_dependencies_summary: { blocked_by: 2 },
+            }),
             issue({ number: 4 }),
           ],
         ],
@@ -305,7 +359,12 @@ describe("readScope", () => {
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(calls.map(op)).toEqual([SUB_ISSUES, comments(4), "pr-list", CLOSED_PULLS]);
+    expect(calls.map(op)).toEqual([
+      SUB_ISSUES,
+      comments(4),
+      "pr-list",
+      CLOSED_PULLS,
+    ]);
     expect(world.tickets.map((t) => t.blockedBy)).toEqual([[], []]);
   });
 
@@ -316,7 +375,9 @@ describe("readScope", () => {
         [comments(5)]: [
           [
             { body: `${CLAIM_MARKER}\n🐕 claimed` },
-            { body: `${RELEASE_MARKER}\n${attemptMarker(FAILURE)}\n🐕 Attempt 1 failed` },
+            {
+              body: `${RELEASE_MARKER}\n${attemptMarker(FAILURE)}\n🐕 Attempt 1 failed`,
+            },
             { body: `${CLAIM_MARKER}\n🐕 claimed again` },
             {
               body: `${RELEASE_MARKER}\n${attemptMarker({ ...FAILURE, attempt: 2, model: "opus" })}\n🐕 Attempt 2 failed`,
@@ -340,11 +401,15 @@ describe("readScope", () => {
   it("uncounts a voided claim while keeping it agent-held (infrastructure failures burn nothing)", async () => {
     const { exec } = fakeExec({
       api: {
-        [SUB_ISSUES]: [[issue({ number: 5, assignees: [{ login: "operator" }] })]],
+        [SUB_ISSUES]: [
+          [issue({ number: 5, assignees: [{ login: "operator" }] })],
+        ],
         [comments(5)]: [
           [
             { body: `${CLAIM_MARKER}\n🐕 claimed` },
-            { body: `${VOID_MARKER}\n🐕 Attempt 1 voided: the account usage limit was reached` },
+            {
+              body: `${VOID_MARKER}\n🐕 Attempt 1 voided: the account usage limit was reached`,
+            },
           ],
         ],
         [CLOSED_PULLS]: [[]],
@@ -369,7 +434,9 @@ describe("readScope", () => {
           [
             { body: `${CLAIM_MARKER}\n🐕 claimed` },
             { body: `${VOID_MARKER}\n🐕 Attempt 1 voided` },
-            { body: `${RELEASE_MARKER}\n🐕 released (orphaned after the outage)` },
+            {
+              body: `${RELEASE_MARKER}\n🐕 released (orphaned after the outage)`,
+            },
             { body: `${CLAIM_MARKER}\n🐕 claimed again` },
           ],
         ],
@@ -380,12 +447,19 @@ describe("readScope", () => {
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(world.tickets[0]).toMatchObject({ hasAgentClaim: true, agentClaimCount: 1 });
+    expect(world.tickets[0]).toMatchObject({
+      hasAgentClaim: true,
+      agentClaimCount: 1,
+    });
   });
 
   it("maps open agent-branch PRs with their upkeep signals, ignoring other branches", async () => {
     const { exec } = fakeExec({
-      api: { [SUB_ISSUES]: [[issue({ number: 5 })]], [comments(5)]: [[]], [CLOSED_PULLS]: [[]] },
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
       prList: [
         prItem({ number: 50, headRefName: "border-collie/ticket-5-attempt-1" }),
         prItem({ number: 99, headRefName: "feature/unrelated" }),
@@ -462,7 +536,9 @@ describe("readScope", () => {
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
     expect(world.openAgentPrs.map((pr) => pr.behind)).toEqual([false, false]);
-    expect(calls.some((c) => c[2]?.startsWith("repos/{owner}/{repo}/compare/"))).toBe(false);
+    expect(
+      calls.some((c) => c[2]?.startsWith("repos/{owner}/{repo}/compare/")),
+    ).toBe(false);
   });
 
   it("reads a conflicted PR's comments for the unresolved marker, and skips that read otherwise", async () => {
@@ -471,7 +547,9 @@ describe("readScope", () => {
         [SUB_ISSUES]: [[issue({ number: 5 })]],
         [comments(5)]: [[]],
         // Comments for the conflicted PR #50 carry the unresolved marker.
-        [comments(50)]: [[{ body: `${CONFLICT_UNRESOLVED_MARKER}\n🐕 human, please` }]],
+        [comments(50)]: [
+          [{ body: `${CONFLICT_UNRESOLVED_MARKER}\n🐕 human, please` }],
+        ],
         [CLOSED_PULLS]: [[]],
       },
       prList: [
@@ -543,7 +621,11 @@ describe("readScope", () => {
 
   it("treats an UNKNOWN mergeability as unknown (GitHub still computing)", async () => {
     const { exec } = fakeExec({
-      api: { [SUB_ISSUES]: [[issue({ number: 5 })]], [comments(5)]: [[]], [CLOSED_PULLS]: [[]] },
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
       prList: [prItem({ number: 50, mergeable: "UNKNOWN" })],
     });
 
@@ -584,7 +666,9 @@ describe("readScope", () => {
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(world.mergedAgentPrs).toEqual([{ ticket: 5, url: "https://github.com/o/r/pull/50" }]);
+    expect(world.mergedAgentPrs).toEqual([
+      { ticket: 5, url: "https://github.com/o/r/pull/50" },
+    ]);
   });
 
   it("keeps one merged PR per ticket: the first in the newest-created-first listing", async () => {
@@ -612,7 +696,9 @@ describe("readScope", () => {
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
-    expect(world.mergedAgentPrs).toEqual([{ ticket: 5, url: "https://github.com/o/r/pull/52" }]);
+    expect(world.mergedAgentPrs).toEqual([
+      { ticket: 5, url: "https://github.com/o/r/pull/52" },
+    ]);
   });
 });
 
@@ -634,7 +720,14 @@ describe("claimTicket", () => {
 
     expect(calls).toEqual([
       ["gh", "issue", "edit", "5", "--add-assignee", "@me"],
-      ["gh", "issue", "comment", "5", "--body", expect.stringContaining(CLAIM_MARKER)],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "5",
+        "--body",
+        expect.stringContaining(CLAIM_MARKER),
+      ],
     ]);
   });
 });
@@ -647,7 +740,14 @@ describe("releaseTicket", () => {
 
     expect(calls).toEqual([
       ["gh", "issue", "edit", "5", "--remove-assignee", "operator,other"],
-      ["gh", "issue", "comment", "5", "--body", expect.stringContaining(RELEASE_MARKER)],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "5",
+        "--body",
+        expect.stringContaining(RELEASE_MARKER),
+      ],
     ]);
   });
 });
@@ -680,7 +780,11 @@ describe("createDraftPr", () => {
     };
 
     const url = await createDraftPr(
-      { head: "border-collie/ticket-5", title: "PR opening", body: "A body.\n\nCloses #5" },
+      {
+        head: "border-collie/ticket-5",
+        title: "PR opening",
+        body: "A body.\n\nCloses #5",
+      },
       exec,
     );
 
@@ -710,7 +814,14 @@ describe("releaseFailedTicket", () => {
 
     expect(calls).toEqual([
       ["gh", "issue", "edit", "5", "--remove-assignee", "@me"],
-      ["gh", "issue", "comment", "5", "--body", expect.stringContaining(RELEASE_MARKER)],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "5",
+        "--body",
+        expect.stringContaining(RELEASE_MARKER),
+      ],
     ]);
     const body = calls[1]?.[5] ?? "";
     expect(body).toContain(attemptMarker(FAILURE));
@@ -735,13 +846,22 @@ describe("voidAttempt", () => {
     );
 
     expect(calls).toEqual([
-      ["gh", "issue", "comment", "5", "--body", expect.stringContaining(VOID_MARKER)],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "5",
+        "--body",
+        expect.stringContaining(VOID_MARKER),
+      ],
     ]);
     const body = calls[0]?.[5] ?? "";
     expect(body).not.toContain(RELEASE_MARKER);
     expect(body).toContain("usage limit");
     expect(body).toContain("burns nothing");
-    expect(body).toContain(".border-collie/transcripts/ticket-5-attempt-1.jsonl");
+    expect(body).toContain(
+      ".border-collie/transcripts/ticket-5-attempt-1.jsonl",
+    );
   });
 });
 
@@ -759,7 +879,14 @@ describe("escalateTicket", () => {
     await escalateTicket(5, [FAILURE, second], exec);
 
     expect(calls).toEqual([
-      ["gh", "issue", "comment", "5", "--body", expect.stringContaining("Escalated")],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "5",
+        "--body",
+        expect.stringContaining("Escalated"),
+      ],
       [
         "gh",
         "issue",
@@ -797,9 +924,7 @@ describe("updatePrBranch", () => {
 
     await updatePrBranch(30, exec);
 
-    expect(calls).toEqual([
-      ["gh", "pr", "update-branch", "30", "--rebase"],
-    ]);
+    expect(calls).toEqual([["gh", "pr", "update-branch", "30", "--rebase"]]);
   });
 });
 
@@ -820,7 +945,14 @@ describe("commentConflictUnresolved", () => {
     await commentConflictUnresolved(30, exec);
 
     expect(calls).toEqual([
-      ["gh", "pr", "comment", "30", "--body", expect.stringContaining(CONFLICT_UNRESOLVED_MARKER)],
+      [
+        "gh",
+        "pr",
+        "comment",
+        "30",
+        "--body",
+        expect.stringContaining(CONFLICT_UNRESOLVED_MARKER),
+      ],
     ]);
   });
 });

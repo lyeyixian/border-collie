@@ -1,28 +1,28 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import type { Scope } from "./config.js";
 import {
+  type AttemptFailure,
   attemptMarker,
+  type CiState,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
   FAILURE_DESCRIPTIONS,
   INFRA_DESCRIPTIONS,
+  type InfraReason,
   MAX_ATTEMPTS,
+  type Mergeability,
+  type MergedAgentPr,
+  type OpenAgentPr,
   parseAttemptMarker,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
   RELEASE_MARKER,
+  type Ticket,
   ticketFromAgentBranch,
   VOID_MARKER,
-  type AttemptFailure,
-  type CiState,
-  type InfraReason,
-  type Mergeability,
-  type MergedAgentPr,
-  type OpenAgentPr,
-  type Ticket,
   type WorldSnapshot,
 } from "./types.js";
-import type { Scope } from "./config.js";
 
 /**
  * The Tracker seam (ADR 0002): every tracker operation lives here, with the
@@ -89,12 +89,19 @@ interface ClaimHistory {
  * failed attempts' forensic records. All append-only, so history stays
  * auditable and attempt state needs no local store.
  */
-async function readClaimHistory(ticket: number, exec: Exec): Promise<ClaimHistory> {
+async function readClaimHistory(
+  ticket: number,
+  exec: Exec,
+): Promise<ClaimHistory> {
   const comments = await readPages<{ body?: string }>(
     `repos/{owner}/{repo}/issues/${ticket}/comments?per_page=100`,
     exec,
   );
-  const history: ClaimHistory = { hasAgentClaim: false, agentClaimCount: 0, attemptFailures: [] };
+  const history: ClaimHistory = {
+    hasAgentClaim: false,
+    agentClaimCount: 0,
+    attemptFailures: [],
+  };
   for (const comment of comments) {
     if (comment.body?.includes(CLAIM_MARKER)) {
       history.hasAgentClaim = true;
@@ -155,8 +162,15 @@ function mergeabilityOf(raw: string | undefined): Mergeability {
  * branch protection is on — otherwise a stale-but-clean PR reads CLEAN. The
  * compare is reliable under every configuration.
  */
-async function prBehindBase(base: string, head: string, exec: Exec): Promise<boolean> {
-  const stdout = await exec("gh", ["api", `repos/{owner}/{repo}/compare/${base}...${head}`]);
+async function prBehindBase(
+  base: string,
+  head: string,
+  exec: Exec,
+): Promise<boolean> {
+  const stdout = await exec("gh", [
+    "api",
+    `repos/{owner}/{repo}/compare/${base}...${head}`,
+  ]);
   const comparison = JSON.parse(stdout) as { behind_by?: number };
   return (comparison.behind_by ?? 0) > 0;
 }
@@ -178,7 +192,11 @@ function ciFromRollup(rollup: RollupCheck[]): CiState {
         pending = true;
         continue;
       }
-      if (check.conclusion === "SUCCESS" || check.conclusion === "NEUTRAL" || check.conclusion === "SKIPPED") {
+      if (
+        check.conclusion === "SUCCESS" ||
+        check.conclusion === "NEUTRAL" ||
+        check.conclusion === "SKIPPED"
+      ) {
         continue;
       }
       return "failing";
@@ -198,12 +216,17 @@ function ciFromRollup(rollup: RollupCheck[]): CiState {
  * PR — the unresolved marker sits in its comment thread. Read only for
  * conflicted PRs, where it alone decides whether another Worker is dispatched.
  */
-async function readConflictWorkerAsked(pr: number, exec: Exec): Promise<boolean> {
+async function readConflictWorkerAsked(
+  pr: number,
+  exec: Exec,
+): Promise<boolean> {
   const comments = await readPages<{ body?: string }>(
     `repos/{owner}/{repo}/issues/${pr}/comments?per_page=100`,
     exec,
   );
-  return comments.some((comment) => comment.body?.includes(CONFLICT_UNRESOLVED_MARKER));
+  return comments.some((comment) =>
+    comment.body?.includes(CONFLICT_UNRESOLVED_MARKER),
+  );
 }
 
 /**
@@ -239,10 +262,15 @@ async function listOpenAgentPrs(exec: Exec): Promise<OpenAgentPr[]> {
       headRef,
       draft: item.isDraft ?? false,
       mergeable,
-      behind: mergeable === "mergeable" && base !== "" ? await prBehindBase(base, headRef, exec) : false,
+      behind:
+        mergeable === "mergeable" && base !== ""
+          ? await prBehindBase(base, headRef, exec)
+          : false,
       ci: ciFromRollup(item.statusCheckRollup ?? []),
       conflictWorkerAsked:
-        mergeable === "conflicted" ? await readConflictWorkerAsked(item.number, exec) : false,
+        mergeable === "conflicted"
+          ? await readConflictWorkerAsked(item.number, exec)
+          : false,
     });
   }
   return prs;
@@ -276,7 +304,10 @@ async function listMergedAgentPrs(exec: Exec): Promise<MergedAgentPr[]> {
  * later); repo-wide scope lists open agent-ready issues, excluding PRs
  * (GitHub's issues listing includes them).
  */
-export async function readScope(scope: Scope, exec: Exec = realExec): Promise<WorldSnapshot> {
+export async function readScope(
+  scope: Scope,
+  exec: Exec = realExec,
+): Promise<WorldSnapshot> {
   const endpoint =
     scope.kind === "parent"
       ? `repos/{owner}/{repo}/issues/${scope.parent}/sub_issues?per_page=100`
@@ -330,9 +361,18 @@ const RELEASE_COMMENT = `${RELEASE_MARKER}\n🐕 border-collie released an orpha
  * first (the wayfinder protocol border-collie inherits); a crash in between
  * leaves the ticket looking human-claimed, which fails safe: hands off.
  */
-export async function claimTicket(ticket: number, exec: Exec = realExec): Promise<void> {
+export async function claimTicket(
+  ticket: number,
+  exec: Exec = realExec,
+): Promise<void> {
   await exec("gh", ["issue", "edit", String(ticket), "--add-assignee", "@me"]);
-  await exec("gh", ["issue", "comment", String(ticket), "--body", CLAIM_COMMENT]);
+  await exec("gh", [
+    "issue",
+    "comment",
+    String(ticket),
+    "--body",
+    CLAIM_COMMENT,
+  ]);
 }
 
 /**
@@ -341,8 +381,19 @@ export async function claimTicket(ticket: number, exec: Exec = realExec): Promis
  * afresh (self-healing). The release marker then neutralizes the claim
  * marker so a later human assignment is never misread as agent-held.
  */
-async function release(ticket: number, assignees: string, body: string, exec: Exec): Promise<void> {
-  await exec("gh", ["issue", "edit", String(ticket), "--remove-assignee", assignees]);
+async function release(
+  ticket: number,
+  assignees: string,
+  body: string,
+  exec: Exec,
+): Promise<void> {
+  await exec("gh", [
+    "issue",
+    "edit",
+    String(ticket),
+    "--remove-assignee",
+    assignees,
+  ]);
   await exec("gh", ["issue", "comment", String(ticket), "--body", body]);
 }
 
@@ -368,7 +419,13 @@ export async function closeTicket(
   prUrl: string,
   exec: Exec = realExec,
 ): Promise<void> {
-  await exec("gh", ["issue", "close", String(ticket), "--comment", closeComment(prUrl)]);
+  await exec("gh", [
+    "issue",
+    "close",
+    String(ticket),
+    "--comment",
+    closeComment(prUrl),
+  ]);
 }
 
 /**
@@ -458,7 +515,9 @@ export async function escalateTicket(
 ): Promise<void> {
   const evidence =
     failures.length === 0
-      ? ["(no attempt records found — the claims were likely released as orphans after crashes)"]
+      ? [
+          "(no attempt records found — the claims were likely released as orphans after crashes)",
+        ]
       : failures.map(
           (f) =>
             `- Attempt ${f.attempt} (${f.model}): ${FAILURE_DESCRIPTIONS[f.reason]} — transcript \`${f.transcript}\`, abandoned branch \`${f.branch}\``,
@@ -489,12 +548,18 @@ export async function escalateTicket(
  * — replaying the branch's commits drops the merge commit and its resolutions,
  * so the original commits re-conflict).
  */
-export async function updatePrBranch(pr: number, exec: Exec = realExec): Promise<void> {
+export async function updatePrBranch(
+  pr: number,
+  exec: Exec = realExec,
+): Promise<void> {
   await exec("gh", ["pr", "update-branch", String(pr), "--rebase"]);
 }
 
 /** Act phase: flip a draft PR to ready-for-review, surfacing it to the reviewer. */
-export async function markPrReady(pr: number, exec: Exec = realExec): Promise<void> {
+export async function markPrReady(
+  pr: number,
+  exec: Exec = realExec,
+): Promise<void> {
   await exec("gh", ["pr", "ready", String(pr)]);
 }
 
@@ -506,6 +571,15 @@ const CONFLICT_UNRESOLVED_COMMENT = `${CONFLICT_UNRESOLVED_MARKER}\n🐕 border-
  * a second Worker against a conflict a human now holds — the PR-level analogue
  * of Escalation's forensic comment.
  */
-export async function commentConflictUnresolved(pr: number, exec: Exec = realExec): Promise<void> {
-  await exec("gh", ["pr", "comment", String(pr), "--body", CONFLICT_UNRESOLVED_COMMENT]);
+export async function commentConflictUnresolved(
+  pr: number,
+  exec: Exec = realExec,
+): Promise<void> {
+  await exec("gh", [
+    "pr",
+    "comment",
+    String(pr),
+    "--body",
+    CONFLICT_UNRESOLVED_COMMENT,
+  ]);
 }

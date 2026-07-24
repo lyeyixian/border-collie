@@ -1,13 +1,18 @@
 import { describe, expect, it } from "vitest";
-import { act, type DispatchConflictWorker, type DispatchWorker, type OpenPr } from "./act.js";
+import {
+  act,
+  type DispatchConflictWorker,
+  type DispatchWorker,
+  type OpenPr,
+} from "./act.js";
 import type { Exec } from "./tracker.js";
 import {
+  type AttemptFailure,
   attemptMarker,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
   RELEASE_MARKER,
   VOID_MARKER,
-  type AttemptFailure,
 } from "./types.js";
 import type { ConflictOutcome, WorkerOutcome } from "./worker.js";
 
@@ -38,7 +43,10 @@ function recordingOpenPr(): { openPr: OpenPr; opened: number[] } {
   return { openPr, opened };
 }
 
-function outcome(ticket: number, overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
+function outcome(
+  ticket: number,
+  overrides: Partial<WorkerOutcome> = {},
+): WorkerOutcome {
   return {
     ticket,
     attempt: 1,
@@ -58,7 +66,10 @@ function outcome(ticket: number, overrides: Partial<WorkerOutcome> = {}): Worker
   };
 }
 
-function conflictOutcome(pr: number, overrides: Partial<ConflictOutcome> = {}): ConflictOutcome {
+function conflictOutcome(
+  pr: number,
+  overrides: Partial<ConflictOutcome> = {},
+): ConflictOutcome {
   return {
     pr,
     ticket: pr,
@@ -90,9 +101,23 @@ describe("act", () => {
 
     expect(calls).toEqual([
       ["gh", "issue", "edit", "4", "--remove-assignee", "operator"],
-      ["gh", "issue", "comment", "4", "--body", expect.stringContaining(RELEASE_MARKER)],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "4",
+        "--body",
+        expect.stringContaining(RELEASE_MARKER),
+      ],
       ["gh", "issue", "edit", "9", "--add-assignee", "@me"],
-      ["gh", "issue", "comment", "9", "--body", expect.stringContaining(CLAIM_MARKER)],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "9",
+        "--body",
+        expect.stringContaining(CLAIM_MARKER),
+      ],
     ]);
     expect(lines).toEqual(["released #4 (orphaned claim)", "claimed #9"]);
   });
@@ -121,7 +146,9 @@ describe("act", () => {
         expect.stringContaining("https://github.com/o/r/pull/60"),
       ],
     ]);
-    expect(lines).toEqual(["closed #6 (merged: https://github.com/o/r/pull/60)"]);
+    expect(lines).toEqual([
+      "closed #6 (merged: https://github.com/o/r/pull/60)",
+    ]);
   });
 
   it("performs no writes for an empty plan", async () => {
@@ -149,7 +176,12 @@ describe("act", () => {
       await gate;
       return ticket === 2
         ? outcome(2, { newCommits: 3 })
-        : outcome(4, { exitCode: 1, newCommits: 0, failure: "nonzero-exit", ok: false });
+        : outcome(4, {
+            exitCode: 1,
+            newCommits: 0,
+            failure: "nonzero-exit",
+            ok: false,
+          });
     };
 
     await act(
@@ -223,7 +255,14 @@ describe("act", () => {
     };
     expect(calls).toEqual([
       ["gh", "issue", "edit", "7", "--remove-assignee", "@me"],
-      ["gh", "issue", "comment", "7", "--body", expect.stringContaining(attemptMarker(record))],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "7",
+        "--body",
+        expect.stringContaining(attemptMarker(record)),
+      ],
     ]);
   });
 
@@ -266,7 +305,14 @@ describe("act", () => {
     );
 
     expect(calls).toEqual([
-      ["gh", "issue", "comment", "5", "--body", expect.stringContaining("Escalated")],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "5",
+        "--body",
+        expect.stringContaining("Escalated"),
+      ],
       [
         "gh",
         "issue",
@@ -278,7 +324,9 @@ describe("act", () => {
         "ready-for-human",
       ],
     ]);
-    expect(lines).toEqual(["escalated #5 to ready-for-human (attempts exhausted)"]);
+    expect(lines).toEqual([
+      "escalated #5 to ready-for-human (attempts exhausted)",
+    ]);
   });
 
   it("flags a cost overrun on a finished attempt while still opening its PR", async () => {
@@ -288,8 +336,13 @@ describe("act", () => {
     const dispatch: DispatchWorker = async () =>
       outcome(7, { costUsd: 25.5, turns: 80, costOverrun: true });
 
-    await act([{ type: "spawn", ticket: 7, attempt: 1 }], dispatch, openPr, noConflict, exec, (line) =>
-      lines.push(line),
+    await act(
+      [{ type: "spawn", ticket: 7, attempt: 1 }],
+      dispatch,
+      openPr,
+      noConflict,
+      exec,
+      (line) => lines.push(line),
     );
 
     expect(opened).toEqual([7]); // the work is kept — discarding refunds nothing
@@ -303,7 +356,12 @@ describe("act", () => {
     const { exec, calls } = recordingExec();
     const lines: string[] = [];
     const dispatch: DispatchWorker = async () =>
-      outcome(7, { exitCode: 1, newCommits: 0, infra: "usage-limit", ok: false });
+      outcome(7, {
+        exitCode: 1,
+        newCommits: 0,
+        infra: "usage-limit",
+        ok: false,
+      });
 
     const report = await act(
       [{ type: "spawn", ticket: 7, attempt: 1 }],
@@ -315,7 +373,14 @@ describe("act", () => {
     );
 
     expect(calls).toEqual([
-      ["gh", "issue", "comment", "7", "--body", expect.stringContaining(VOID_MARKER)],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "7",
+        "--body",
+        expect.stringContaining(VOID_MARKER),
+      ],
     ]);
     expect(report).toEqual({ infraFailures: 1 });
     expect(lines).toContain("voided attempt 1 of #7 (usage-limit); claim held");
@@ -325,7 +390,12 @@ describe("act", () => {
     const { exec, calls } = recordingExec();
     const lines: string[] = [];
     const dispatch: DispatchWorker = async (ticket) =>
-      outcome(ticket, { exitCode: 1, newCommits: 0, failure: "nonzero-exit", ok: false });
+      outcome(ticket, {
+        exitCode: 1,
+        newCommits: 0,
+        failure: "nonzero-exit",
+        ok: false,
+      });
 
     const report = await act(
       [
@@ -432,10 +502,10 @@ describe("act: PR upkeep", () => {
       (line) => lines.push(line),
     );
 
-    expect(calls).toEqual([
-      ["gh", "pr", "update-branch", "30", "--rebase"],
+    expect(calls).toEqual([["gh", "pr", "update-branch", "30", "--rebase"]]);
+    expect(lines).toEqual([
+      "updated PR #30 branch (mechanical rebase onto the base)",
     ]);
-    expect(lines).toEqual(["updated PR #30 branch (mechanical rebase onto the base)"]);
   });
 
   it("flips a green draft PR to ready for review via the tracker", async () => {
@@ -458,11 +528,21 @@ describe("act: PR upkeep", () => {
   it("pushes the branch when the conflict Worker resolves the merge", async () => {
     const { exec, calls } = recordingExec();
     const lines: string[] = [];
-    const dispatchConflict: DispatchConflictWorker = async (pr, ticket, headRef) =>
-      conflictOutcome(pr, { ticket, headRef, resolved: true });
+    const dispatchConflict: DispatchConflictWorker = async (
+      pr,
+      ticket,
+      headRef,
+    ) => conflictOutcome(pr, { ticket, headRef, resolved: true });
 
     await act(
-      [{ type: "conflict-worker", pr: 30, ticket: 3, headRef: "border-collie/ticket-3-attempt-1" }],
+      [
+        {
+          type: "conflict-worker",
+          pr: 30,
+          ticket: 3,
+          headRef: "border-collie/ticket-3-attempt-1",
+        },
+      ],
       noDispatch,
       recordingOpenPr().openPr,
       dispatchConflict,
@@ -483,11 +563,21 @@ describe("act: PR upkeep", () => {
   it("asks for human resolution when the conflict Worker gives up (no push)", async () => {
     const { exec, calls } = recordingExec();
     const lines: string[] = [];
-    const dispatchConflict: DispatchConflictWorker = async (pr, ticket, headRef) =>
-      conflictOutcome(pr, { ticket, headRef, exitCode: 1, resolved: false });
+    const dispatchConflict: DispatchConflictWorker = async (
+      pr,
+      ticket,
+      headRef,
+    ) => conflictOutcome(pr, { ticket, headRef, exitCode: 1, resolved: false });
 
     await act(
-      [{ type: "conflict-worker", pr: 30, ticket: 3, headRef: "border-collie/ticket-3-attempt-1" }],
+      [
+        {
+          type: "conflict-worker",
+          pr: 30,
+          ticket: 3,
+          headRef: "border-collie/ticket-3-attempt-1",
+        },
+      ],
       noDispatch,
       recordingOpenPr().openPr,
       dispatchConflict,
@@ -496,7 +586,14 @@ describe("act: PR upkeep", () => {
     );
 
     expect(calls).toEqual([
-      ["gh", "pr", "comment", "30", "--body", expect.stringContaining(CONFLICT_UNRESOLVED_MARKER)],
+      [
+        "gh",
+        "pr",
+        "comment",
+        "30",
+        "--body",
+        expect.stringContaining(CONFLICT_UNRESOLVED_MARKER),
+      ],
     ]);
     expect(lines).toEqual([
       "dispatched conflict Worker for PR #30 (ticket #3)",
@@ -519,7 +616,11 @@ describe("act: PR upkeep", () => {
       await gate;
       return outcome(ticket);
     };
-    const dispatchConflict: DispatchConflictWorker = async (pr, ticket, headRef) => {
+    const dispatchConflict: DispatchConflictWorker = async (
+      pr,
+      ticket,
+      headRef,
+    ) => {
       inFlight.push(`conflict-${pr}`);
       if (inFlight.length === 2) bothInFlight();
       await gate;
@@ -528,7 +629,12 @@ describe("act: PR upkeep", () => {
 
     await act(
       [
-        { type: "conflict-worker", pr: 40, ticket: 4, headRef: "border-collie/ticket-4-attempt-1" },
+        {
+          type: "conflict-worker",
+          pr: 40,
+          ticket: 4,
+          headRef: "border-collie/ticket-4-attempt-1",
+        },
         { type: "spawn", ticket: 2, attempt: 1 },
       ],
       dispatch,
@@ -556,7 +662,12 @@ describe("act: PR upkeep", () => {
     await expect(
       act(
         [
-          { type: "conflict-worker", pr: 40, ticket: 4, headRef: "border-collie/ticket-4-attempt-1" },
+          {
+            type: "conflict-worker",
+            pr: 40,
+            ticket: 4,
+            headRef: "border-collie/ticket-4-attempt-1",
+          },
           { type: "spawn", ticket: 2, attempt: 1 },
         ],
         dispatch,
