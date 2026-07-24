@@ -4,19 +4,39 @@
   "description": "An orchestration loop that herds a ticket DAG to Done with a fleet of Claude Code agents.",
   "type": "module",
   "license": "MIT",
+  "engines": {
+    "node": ">=24"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/lyeyixian/border-collie.git"
+  },
+  "keywords": [
+    "claude-code",
+    "claude",
+    "ai-agents",
+    "orchestration",
+    "automation",
+    "cli"
+  ],
   "bin": {
     "border-collie": "./dist/cli.js"
   },
   "files": [
     "dist"
   ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
     "lint": "biome check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dev": "tsx src/cli.ts"
+    "dev": "tsx src/cli.ts",
+    "smoke": "scripts/smoke.sh"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.5",
