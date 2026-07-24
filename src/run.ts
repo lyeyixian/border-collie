@@ -1,5 +1,6 @@
 import { breakerCooldownMs, probeDue, tripBreaker, type Breaker } from "./breaker.js";
-import { renderStuck } from "./render.js";
+import { dispatchableSet } from "./plan.js";
+import { renderComplete, renderStuck } from "./render.js";
 import type { Action, Ticket, WorldSnapshot } from "./types.js";
 
 /**
@@ -20,11 +21,17 @@ export type RunStatus =
 /**
  * Terminal-state judgment for a run, from the Tick's snapshot and plan.
  * Complete: every ticket in Scope is closed. Stuck: open tickets remain but
- * the Tick planned nothing and no agent PR is open — nothing is in flight
- * and nothing will change without a human. Anything else keeps polling; in
- * particular, open agent PRs awaiting human merge are the loop's normal
- * steady state, never an exit — and an open circuit breaker is never Stuck:
- * the path forward is the environment recovering, not a human.
+ * nothing can move without a human — the Tick planned nothing (no close,
+ * release, escalation, or dispatch was due), no in-Scope agent PR is open
+ * (a foreign run's PRs cannot close a ticket here, so they never keep a
+ * dead Scope polling), and nothing is dispatchable (a dispatchable ticket
+ * merely throttled by max_open_prs headroom becomes claimable when PRs
+ * merge, wherever those PRs came from). No Worker runs at this point by
+ * construction: the Tick waits for every Worker it spawned before
+ * returning. Anything else keeps polling; in particular, open agent PRs
+ * awaiting human merge are the loop's normal steady state, never an exit —
+ * and an open circuit breaker is never Stuck: the path forward is the
+ * environment recovering, not a human.
  */
 export function runStatus(
   world: WorldSnapshot,
@@ -33,7 +40,14 @@ export function runStatus(
 ): RunStatus {
   const open = world.tickets.filter((ticket) => ticket.state === "open");
   if (open.length === 0) return { state: "complete" };
-  if (actions.length === 0 && world.openAgentPrs.length === 0 && !dispatchPaused) {
+  const inScope = new Set(world.tickets.map((ticket) => ticket.number));
+  const openScopePrs = world.openAgentPrs.filter((pr) => inScope.has(pr.ticket));
+  if (
+    actions.length === 0 &&
+    openScopePrs.length === 0 &&
+    dispatchableSet(world).length === 0 &&
+    !dispatchPaused
+  ) {
     return { state: "stuck", open };
   }
   return { state: "running" };
@@ -76,11 +90,11 @@ export async function run(pollSeconds: number, deps: RunDeps): Promise<RunOutcom
     }
     const status = runStatus(world, actions, breaker !== undefined);
     if (status.state === "complete") {
-      deps.log("Run Complete: every ticket in Scope is closed.");
+      deps.log(renderComplete(world.tickets));
       return "complete";
     }
     if (status.state === "stuck") {
-      deps.log(renderStuck(status.open));
+      deps.log(renderStuck(world));
       return "stuck";
     }
     deps.log(`Next Tick in ${pollSeconds}s.`);

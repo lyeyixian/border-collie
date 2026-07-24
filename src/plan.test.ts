@@ -15,6 +15,7 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
     assignees: [],
     labels: ["ready-for-agent"],
     openBlockers: 0,
+    blockedBy: [],
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],

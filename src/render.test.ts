@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { renderPlan, renderStuck } from "./render.js";
+import { renderComplete, renderPlan, renderStuck } from "./render.js";
 import { plan } from "./plan.js";
 import type { ResolvedConfig } from "./config.js";
 import type { OpenAgentPr, Ticket, WorldSnapshot } from "./types.js";
@@ -10,6 +10,7 @@ function ticket(overrides: Partial<Ticket> & { number: number; title: string }):
     assignees: [],
     labels: ["ready-for-agent"],
     openBlockers: 0,
+    blockedBy: [],
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],
@@ -222,23 +223,72 @@ describe("renderPlan", () => {
 });
 
 describe("renderStuck", () => {
-  it("names each open ticket and why it cannot move without a human", () => {
-    const report = renderStuck([
+  function stuckWorld(tickets: Ticket[]): WorldSnapshot {
+    return { tickets, openAgentPrs: [], mergedAgentPrs: [] };
+  }
+
+  it("names each open ticket and exactly what it is stuck on", () => {
+    const open = [
       ticket({ number: 7, title: "Escalated", labels: ["ready-for-human"] }),
       ticket({
         number: 8,
-        title: "A colleague's work",
-        assignees: ["some-human"],
-        openBlockers: 1,
+        title: "Downstream",
+        openBlockers: 2,
+        blockedBy: [7, 99],
       }),
+      ticket({ number: 9, title: "A colleague's work", assignees: ["some-human"] }),
+    ];
+
+    expect(renderStuck(stuckWorld(open))).toBe(
+      [
+        "Run Stuck: open tickets remain, but every path forward runs through a human.",
+        "  #7 — Escalated (labelled ready-for-human)",
+        "  #8 — Downstream (blocked by #7, #99 (outside Scope))",
+        "  #9 — A colleague's work (claimed by some-human — a human claim, hands off)",
+      ].join("\n"),
+    );
+  });
+
+  it("falls back to the blocker count when the blocker list is missing", () => {
+    const open = [ticket({ number: 8, title: "Blocked blind", openBlockers: 2 })];
+
+    expect(renderStuck(stuckWorld(open))).toBe(
+      [
+        "Run Stuck: open tickets remain, but every path forward runs through a human.",
+        "  #8 — Blocked blind (2 open blockers)",
+      ].join("\n"),
+    );
+  });
+
+  it("notes a missing agent label distinctly from an escalation", () => {
+    const open = [ticket({ number: 4, title: "Untriaged", labels: ["needs-triage"] })];
+
+    expect(renderStuck(stuckWorld(open))).toBe(
+      [
+        "Run Stuck: open tickets remain, but every path forward runs through a human.",
+        "  #4 — Untriaged (not labelled ready-for-agent)",
+      ].join("\n"),
+    );
+  });
+});
+
+describe("renderComplete", () => {
+  it("summarizes every ticket in Scope, noting human closes after Escalation", () => {
+    const report = renderComplete([
+      ticket({ number: 2, title: "Walking skeleton", state: "closed" }),
+      ticket({ number: 7, title: "Hard one", state: "closed", labels: ["ready-for-human"] }),
     ]);
 
     expect(report).toBe(
       [
-        "Run Stuck: open tickets remain, but every path forward runs through a human.",
-        "  #7 — Escalated (not labelled ready-for-agent)",
-        "  #8 — A colleague's work (claimed by some-human; 1 open blocker)",
+        "Run Complete: every ticket in Scope is closed (2 tickets).",
+        "  #2 — Walking skeleton",
+        "  #7 — Hard one (closed by a human after Escalation)",
       ].join("\n"),
     );
+  });
+
+  it("reports an empty Scope as complete with nothing herded", () => {
+    expect(renderComplete([])).toBe("Run Complete: every ticket in Scope is closed (0 tickets).");
   });
 });
