@@ -2,6 +2,10 @@
 
 An orchestration loop that implements tracer-bullet tickets with a fleet of Claude Code agents.
 
+## Commit messages
+
+Follow Conventional Commits: `type(scope): subject`. Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `build`. Scope optional. Subject imperative, lowercase, no trailing period. Same format for PR titles (they become merge-commit subjects).
+
 ## Agent skills
 
 ### Issue tracker
