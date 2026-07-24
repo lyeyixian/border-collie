@@ -1,0 +1,80 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gate:
+    uses: ./.github/workflows/gates.yml
+
+  guard-version:
+    name: Guard tag matches manifest version
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Compare tag to package.json version
+        run: |
+          tag_version="${GITHUB_REF_NAME#v}"
+          manifest_version="$(jq -r .version package.json)"
+          if [ "$tag_version" != "$manifest_version" ]; then
+            echo "::error::tag $GITHUB_REF_NAME does not match package.json version $manifest_version"
+            exit 1
+          fi
+          echo "tag $GITHUB_REF_NAME matches package.json version $manifest_version"
+
+  publish:
+    name: Publish
+    needs: [gate, guard-version]
+    if: |
+      always() &&
+      needs.gate.result == 'success' &&
+      (needs.guard-version.result == 'success' || needs.guard-version.result == 'skipped')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+          registry-url: https://registry.npmjs.org
+
+      - run: pnpm install --frozen-lockfile
+
+      - name: Update npm for trusted publishing (OIDC)
+        run: npm install -g npm@latest
+
+      - run: pnpm run build
+
+      - name: Publish (dry run)
+        if: github.event_name == 'workflow_dispatch'
+        run: pnpm publish --dry-run --no-git-checks
+
+      - name: Publish
+        if: github.event_name == 'push'
+        run: pnpm publish --no-git-checks
+
+  release:
+    name: Create GitHub Release
+    needs: publish
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" --generate-notes
