@@ -1,5 +1,6 @@
 import { buildCommand } from "@stricli/core";
 import type { Context } from "./cli-context.js";
+import { WORKER_DEATH_PROSE } from "./cli-docs.js";
 import {
   type CliFlags,
   resolveConfigFromFlags,
@@ -41,15 +42,7 @@ merge, its body taken from the Worker's final message (mechanical fallback:
 ticket + commit subjects). Dispatch pauses while open agent PRs sit at
 max_open_prs and resumes as merges land.
 
-Every way a Worker can die is noticed — non-zero exit, no commits, wall-clock
-timeout, stall, turn-cap breach — and released with a forensic attempt
-record. A finished Worker that spent past the cost cap keeps its work and
-its PR; the overrun is flagged so oversized tickets surface. A once-failed
-ticket is retried fresh on the stronger retry model; a twice-failed ticket is
-Escalated to ready-for-human with the evidence. Environment deaths (usage
-limit, rate limit, auth, network — or several Workers dying the same way in
-one tick) are infrastructure failures instead: the attempt is voided,
-burning nothing, and the tick prints a notice so the operator knows to
+${WORKER_DEATH_PROSE} the tick prints a notice so the operator knows to
 re-run once the environment recovers.`,
   },
 });
