@@ -1,6 +1,6 @@
 {
   "name": "border-collie",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "An orchestration loop that herds a ticket DAG to Done with a fleet of Claude Code agents.",
   "type": "module",
   "license": "MIT",
