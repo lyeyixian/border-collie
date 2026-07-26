@@ -2,6 +2,15 @@
 
 An orchestration loop that implements tracer-bullet tickets with a fleet of Claude Code agents.
 
+## Source layout
+
+- `src/core` — pure functions, no I/O.
+- `src/adapters` — I/O: GitHub, filesystem, the Worker process.
+- `src/app` — wires core and adapters together.
+- `src/cli` — delivery: the command application and its composition-root context module.
+
+Each layer may depend only on the layers listed above it; `cli` may also reach `adapters` directly, from its context module only. See `docs/adr/0005-functional-core-imperative-shell-not-clean-architecture.md` for why.
+
 ## Commit messages
 
 Follow Conventional Commits: `type(scope): subject`. Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`, `ci`, `build`. Scope optional. Subject imperative, lowercase, no trailing period. Same format for PR titles (they become merge-commit subjects).
