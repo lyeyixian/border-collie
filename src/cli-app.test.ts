@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { runCli } from "./cli-app.js";
 import type { Context } from "./cli-context.js";
+import { VERSION } from "./cli-version.js";
 import { ConfigError, type Flags, type ResolvedConfig } from "./config.js";
 import type { Ticket, WorldSnapshot } from "./types.js";
 
@@ -299,6 +300,29 @@ describe("help", () => {
 
     expect(fake.stdout()).toContain("idempotent pass");
     expect(fake.stdout()).toContain("--max-workers");
+  });
+});
+
+describe("version", () => {
+  it.each([["--version"], ["-v"]])(
+    "prints package.json's version and exits 0 for %s",
+    async (flag) => {
+      const fake = fakeContext();
+
+      await runCli([flag], fake.context);
+
+      expect(fake.context.process.exitCode).toBeFalsy();
+      expect(fake.stdout().trim()).toBe(VERSION);
+      expect(fake.tickCalls).toHaveLength(0);
+    },
+  );
+
+  it("lists --version in the root help text", async () => {
+    const fake = fakeContext();
+
+    await runCli(["--help"], fake.context);
+
+    expect(fake.stdout()).toContain("--version");
   });
 });
 

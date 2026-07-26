@@ -43,4 +43,12 @@ bin="$install_dir/node_modules/.bin/border-collie"
 log "Running border-collie --help"
 "$bin" --help >/dev/null || die "border-collie --help exited non-zero"
 
+# --version reads package.json relative to the installed dist/, a path that
+# only exists once the tarball is unpacked — the source tree can't prove it.
+log "Running border-collie --version"
+expected_version=$(node -p 'require("./package.json").version')
+actual_version=$("$bin" --version) || die "border-collie --version exited non-zero"
+[ "$actual_version" = "$expected_version" ] ||
+  die "border-collie --version printed '$actual_version', expected '$expected_version'"
+
 log "Smoke passed"

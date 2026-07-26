@@ -1,11 +1,14 @@
 import {
   buildApplication,
   buildRouteMap,
+  type PartialApplicationConfiguration,
   run as runStricli,
+  version,
 } from "@stricli/core";
 import type { Context } from "./cli-context.js";
 import { runCommand } from "./cli-run-command.js";
 import { tickCommand } from "./cli-tick-command.js";
+import { VERSION } from "./cli-version.js";
 
 const routeMap = buildRouteMap({
   routes: { tick: tickCommand, run: runCommand },
@@ -20,9 +23,26 @@ e.g. {"parent": 1, "max_workers": 3, "max_open_prs": 5, "poll_seconds": 30,
   },
 });
 
-export const app = buildApplication(routeMap, {
+const appConfig: PartialApplicationConfiguration = {
   name: "border-collie",
   scanner: { caseStyle: "allow-kebab-for-camel" },
+};
+
+/**
+ * stricli wires its default --help/--help-all integrations only when the
+ * integrations argument is omitted, and --version has to be passed through
+ * that same argument. So build once to let stricli resolve its own defaults
+ * (integrations and the localized flag briefs), then rebuild with --version
+ * added to them rather than hand-copying stricli's internal defaults here.
+ */
+const withDefaultIntegrations = buildApplication(routeMap, appConfig);
+
+export const app = buildApplication(routeMap, appConfig, {
+  ...withDefaultIntegrations.integrations,
+  version: version({
+    brief: withDefaultIntegrations.defaultText.briefs.version,
+    info: { currentVersion: VERSION },
+  }),
 });
 
 /**
