@@ -12,12 +12,8 @@ import {
   updatePrBranch,
   voidAttempt,
 } from "./tracker.js";
-import type { Action } from "./types.js";
-import {
-  type ConflictOutcome,
-  pushAgentBranch,
-  type WorkerOutcome,
-} from "./worker.js";
+import type { Action, WorkerOutcome } from "./types.js";
+import { type ConflictOutcome, pushAgentBranch } from "./worker.js";
 
 /**
  * Dispatch one Worker against one claimed ticket; the caller binds the

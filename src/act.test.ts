@@ -13,8 +13,9 @@ import {
   CONFLICT_UNRESOLVED_MARKER,
   RELEASE_MARKER,
   VOID_MARKER,
+  type WorkerOutcome,
 } from "./types.js";
-import type { ConflictOutcome, WorkerOutcome } from "./worker.js";
+import type { ConflictOutcome } from "./worker.js";
 
 function recordingExec(): { exec: Exec; calls: string[][] } {
   const calls: string[][] = [];

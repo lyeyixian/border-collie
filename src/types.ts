@@ -59,6 +59,48 @@ export const INFRA_DESCRIPTIONS: Record<InfraReason, string> = {
   correlated: "several Workers failed the same way within one Tick",
 };
 
+/** One finished Attempt, as observed by the Orchestrator. */
+export interface WorkerOutcome {
+  ticket: number;
+  /** Attempt number the dispatch ran as, echoed from the config. */
+  attempt: number;
+  /** Agent-prefixed branch the Worker committed to; retained after cleanup. */
+  branch: string;
+  /** Commit the branch was cut from; `base..branch` is the Attempt's work. */
+  base: string;
+  /** Transcript file path, for post-mortems. */
+  transcript: string;
+  /** Model the attempt ran on, echoed into the attempt record on failure. */
+  model: string;
+  exitCode: number | null;
+  /** Commits on the branch beyond the base it was cut from. */
+  newCommits: number;
+  /**
+   * Which ticket-failure trigger fired, or undefined when none did (success,
+   * or an infrastructure failure): nonzero-exit, no-commits, timeout, stall,
+   * budget. Mutually exclusive with `infra`.
+   */
+  failure: FailureReason | undefined;
+  /**
+   * The infrastructure class a failed Worker's output evidenced, or
+   * undefined. An infra death voids the Attempt instead of burning it
+   * (CONTEXT.md "Infrastructure failure").
+   */
+  infra: InfraReason | undefined;
+  /** Attempt spend in USD, from the transcript's result event when one survived. */
+  costUsd: number | undefined;
+  /** Agentic turns taken, from the transcript's result event when one survived. */
+  turns: number | undefined;
+  /**
+   * The Attempt spent past the cost cap. An alarm, not a failure: a finished
+   * Attempt keeps its work and its PR — the overrun is surfaced so an
+   * oversized ticket reaches the operator's eye, not the bin.
+   */
+  costOverrun: boolean;
+  /** The success predicate: no failure trigger fired, ticket or infrastructure. */
+  ok: boolean;
+}
+
 /**
  * Hidden HTML marker on a comment that voids the preceding claim: the
  * Attempt died to the environment, so it counts as nothing. Unlike a release

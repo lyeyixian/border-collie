@@ -1,10 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createDraftPr, type Exec, realExec } from "./tracker.js";
-import {
-  branchCommitSubjects,
-  pushAgentBranch,
-  type WorkerOutcome,
-} from "./worker.js";
+import type { WorkerOutcome } from "./types.js";
+import { branchCommitSubjects, pushAgentBranch } from "./worker.js";
 
 /**
  * PR opening: a successful Attempt's branch becomes a draft PR that closes
