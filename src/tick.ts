@@ -12,6 +12,7 @@ export async function tickOnce(
   config: ResolvedConfig,
   dryRun: boolean,
   dispatchPaused = false,
+  log: (line: string) => void,
 ): Promise<{ world: WorldSnapshot; actions: Action[]; infraFailures: number }> {
   const world = await readScope(config.scope);
   const actions = plan(world, {
@@ -19,7 +20,7 @@ export async function tickOnce(
     maxOpenPrs: config.maxOpenPrs,
     dispatchPaused,
   });
-  console.log(renderPlan(config, world, actions, { dryRun, dispatchPaused }));
+  log(renderPlan(config, world, actions, { dryRun, dispatchPaused }));
   let infraFailures = 0;
   if (!dryRun) {
     const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
@@ -46,6 +47,8 @@ export async function tickOnce(
           stallMs: config.stallMinutes * 60_000,
           maxTurns: config.maxTurns,
         }),
+      undefined,
+      log,
     );
     infraFailures = report.infraFailures;
   }
