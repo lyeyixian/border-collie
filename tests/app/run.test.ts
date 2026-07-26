@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { type RunDeps, run, runStatus } from "./app/run.js";
-import { BREAKER_BASE_COOLDOWN_MS } from "./core/breaker.js";
+import { type RunDeps, run, runStatus } from "../../src/app/run.js";
+import { BREAKER_BASE_COOLDOWN_MS } from "../../src/core/breaker.js";
 import type {
   Action,
   MergedAgentPr,
   OpenAgentPr,
   Ticket,
   WorldSnapshot,
-} from "./core/types.js";
+} from "../../src/core/types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
   return {

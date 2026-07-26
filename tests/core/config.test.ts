@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { ConfigError, modelForAttempt, resolveConfig } from "./core/config.js";
+import {
+  ConfigError,
+  modelForAttempt,
+  resolveConfig,
+} from "../../src/core/config.js";
 
 describe("resolveConfig", () => {
   it("takes the scope parent and max_workers from the config file", () => {

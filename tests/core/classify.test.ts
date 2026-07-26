@@ -4,8 +4,8 @@ import {
   lastResultLine,
   parseResultEvent,
   reclassifyCorrelatedFailures,
-} from "./core/classify.js";
-import type { WorkerOutcome } from "./core/types.js";
+} from "../../src/core/classify.js";
+import type { WorkerOutcome } from "../../src/core/types.js";
 
 describe("classifyInfrastructure", () => {
   it("classifies a usage-limit death", () => {
