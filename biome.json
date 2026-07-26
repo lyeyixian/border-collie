@@ -31,5 +31,99 @@
         "organizeImports": "on"
       }
     }
-  }
+  },
+  "overrides": [
+    {
+      "includes": ["src/core/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["../adapters/**"],
+                    "message": "core is the pure layer and must have no I/O. Inject the adapter's result as a parameter instead of importing the adapter, or move this logic to app if it genuinely needs to orchestrate an adapter call."
+                  },
+                  {
+                    "group": ["../app/**"],
+                    "message": "core is the pure layer; app depends on core, not the reverse. If app needs this logic, keep it in core and have app import it — do not import app from core."
+                  },
+                  {
+                    "group": ["../cli/**"],
+                    "message": "core is the pure layer and must not depend on the delivery layer. Move CLI-facing wiring or formatting into cli, not core."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/adapters/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["../app/**"],
+                    "message": "adapters may depend on core only. app composes adapters together, not the reverse — move this composition into app instead of importing it from an adapter."
+                  },
+                  {
+                    "group": ["../cli/**"],
+                    "message": "adapters may depend on core only. cli's context module is the composition root that wires adapters together — depend on core here, and let cli reach into this adapter instead."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/app/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["../cli/**"],
+                    "message": "app may depend on core and adapters only, not cli. cli calls into app, not the reverse — expose this from app and have the cli command handler call it."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/main.ts"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["./core/**", "./adapters/**", "./app/**"],
+                    "message": "main may depend on cli only, so it stays a thin composition-root entry point. Route this through cli/app.ts (or cli/context.ts for wiring adapters) instead of importing it directly here."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    }
+  ]
 }
