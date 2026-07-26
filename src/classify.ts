@@ -1,5 +1,4 @@
-import type { InfraReason } from "./types.js";
-import type { WorkerOutcome } from "./worker.js";
+import type { InfraReason, WorkerOutcome } from "./types.js";
 
 /**
  * Failure classification (CONTEXT.md "Infrastructure failure"): pure

@@ -9,7 +9,7 @@ import {
   workerFinalMessage,
 } from "./pr.js";
 import type { Exec } from "./tracker.js";
-import type { WorkerOutcome } from "./worker.js";
+import type { WorkerOutcome } from "./types.js";
 
 const event = (fields: Record<string, unknown>) => JSON.stringify(fields);
 
