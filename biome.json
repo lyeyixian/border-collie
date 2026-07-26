@@ -53,6 +53,10 @@
                   {
                     "group": ["../cli/**"],
                     "message": "core is the pure layer and must not depend on the delivery layer. Move CLI-facing wiring or formatting into cli, not core."
+                  },
+                  {
+                    "group": ["../main.js"],
+                    "message": "main is the composition-root entry point; it depends on cli, and nothing depends on it. Whatever you need from main belongs in core already — this shouldn't be an import at all."
                   }
                 ]
               }
@@ -77,6 +81,10 @@
                   {
                     "group": ["../cli/**"],
                     "message": "adapters may depend on core only. cli's context module is the composition root that wires adapters together — depend on core here, and let cli reach into this adapter instead."
+                  },
+                  {
+                    "group": ["../main.js"],
+                    "message": "main is the composition-root entry point; it depends on cli, and nothing depends on it. An adapter has no legitimate reason to reach into main."
                   }
                 ]
               }
@@ -97,6 +105,30 @@
                   {
                     "group": ["../cli/**"],
                     "message": "app may depend on core and adapters only, not cli. cli calls into app, not the reverse — expose this from app and have the cli command handler call it."
+                  },
+                  {
+                    "group": ["../main.js"],
+                    "message": "main is the composition-root entry point; it depends on cli, and nothing depends on it. app has no legitimate reason to reach into main."
+                  }
+                ]
+              }
+            }
+          }
+        }
+      }
+    },
+    {
+      "includes": ["src/cli/**"],
+      "linter": {
+        "rules": {
+          "style": {
+            "noRestrictedImports": {
+              "level": "error",
+              "options": {
+                "patterns": [
+                  {
+                    "group": ["../main.js"],
+                    "message": "main is the composition-root entry point; it depends on cli, and nothing depends on it. cli has no legitimate reason to reach into main."
                   }
                 ]
               }
