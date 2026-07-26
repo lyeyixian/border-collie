@@ -91,7 +91,7 @@ export async function act(
   openPr: OpenPr,
   dispatchConflict: DispatchConflictWorker,
   exec: Exec = realExec,
-  log: (line: string) => void = console.log,
+  log: (line: string) => void,
 ): Promise<ActReport> {
   const workers: Promise<SpawnResult>[] = [];
   const conflicts: Promise<ConflictOutcome>[] = [];

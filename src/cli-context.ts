@@ -45,11 +45,14 @@ function nodeProcessAdapter(): StricliProcess {
 
 /** The real context: today's collaborators, wired exactly as the entry point wired them before. */
 export function buildRealContext(): Context {
+  const cliProcess = nodeProcessAdapter();
   return {
-    process: nodeProcessAdapter(),
+    process: cliProcess,
     loadConfig: (flags) => resolveConfig(loadConfigFile(process.cwd()), flags),
     tick: (config, dryRun, dispatchPaused) =>
-      tickOnce(config, dryRun, dispatchPaused),
+      tickOnce(config, dryRun, dispatchPaused, (line) =>
+        cliProcess.stdout.write(`${line}\n`),
+      ),
     probe: (model) => probeEnvironment(model),
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
