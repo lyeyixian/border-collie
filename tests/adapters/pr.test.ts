@@ -7,9 +7,9 @@ import {
   openPrForOutcome,
   type ReadFile,
   workerFinalMessage,
-} from "./adapters/pr.js";
-import type { Exec } from "./adapters/tracker.js";
-import type { WorkerOutcome } from "./core/types.js";
+} from "../../src/adapters/pr.js";
+import type { Exec } from "../../src/adapters/tracker.js";
+import type { WorkerOutcome } from "../../src/core/types.js";
 
 const event = (fields: Record<string, unknown>) => JSON.stringify(fields);
 

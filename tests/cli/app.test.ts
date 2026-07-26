@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { runCli } from "./cli/app.js";
-import type { Context } from "./cli/context.js";
-import { VERSION } from "./cli/version.js";
-import { ConfigError, type Flags, type ResolvedConfig } from "./core/config.js";
-import type { Ticket, WorldSnapshot } from "./core/types.js";
+import { runCli } from "../../src/cli/app.js";
+import type { Context } from "../../src/cli/context.js";
+import { VERSION } from "../../src/cli/version.js";
+import {
+  ConfigError,
+  type Flags,
+  type ResolvedConfig,
+} from "../../src/core/config.js";
+import type { Ticket, WorldSnapshot } from "../../src/core/types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
   return {

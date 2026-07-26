@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import type { Exec } from "./adapters/tracker.js";
-import type { ConflictOutcome } from "./adapters/worker.js";
+import type { Exec } from "../../src/adapters/tracker.js";
+import type { ConflictOutcome } from "../../src/adapters/worker.js";
 import {
   act,
   type DispatchConflictWorker,
   type DispatchWorker,
   type OpenPr,
-} from "./app/act.js";
+} from "../../src/app/act.js";
 import {
   type AttemptFailure,
   attemptMarker,
@@ -15,7 +15,7 @@ import {
   RELEASE_MARKER,
   VOID_MARKER,
   type WorkerOutcome,
-} from "./core/types.js";
+} from "../../src/core/types.js";
 
 function recordingExec(): { exec: Exec; calls: string[][] } {
   const calls: string[][] = [];
