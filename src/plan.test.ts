@@ -1,12 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { plan } from "./plan.js";
+import { plan } from "./core/plan.js";
 import type {
   AttemptFailure,
   MergedAgentPr,
   OpenAgentPr,
   Ticket,
   WorldSnapshot,
-} from "./types.js";
+} from "./core/types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
   return {

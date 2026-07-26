@@ -1,6 +1,6 @@
 import { readFile } from "node:fs/promises";
+import type { WorkerOutcome } from "../core/types.js";
 import { createDraftPr, type Exec, realExec } from "./tracker.js";
-import type { WorkerOutcome } from "./types.js";
 import { branchCommitSubjects, pushAgentBranch } from "./worker.js";
 
 /**

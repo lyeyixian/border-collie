@@ -4,7 +4,7 @@ import {
   attemptMarker,
   parseAttemptMarker,
   ticketFromAgentBranch,
-} from "./types.js";
+} from "./core/types.js";
 
 const FAILURE: AttemptFailure = {
   attempt: 1,

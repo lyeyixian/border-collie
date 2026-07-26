@@ -3,10 +3,10 @@ import {
   breakerCooldownMs,
   probeDue,
   tripBreaker,
-} from "./breaker.js";
-import { dispatchableSet } from "./plan.js";
-import { renderComplete, renderStuck } from "./render.js";
-import type { Action, Ticket, WorldSnapshot } from "./types.js";
+} from "../core/breaker.js";
+import { dispatchableSet } from "../core/plan.js";
+import { renderComplete, renderStuck } from "../core/render.js";
+import type { Action, Ticket, WorldSnapshot } from "../core/types.js";
 
 /**
  * The resident loop: Tick, judge the world, sleep the poll interval, Tick

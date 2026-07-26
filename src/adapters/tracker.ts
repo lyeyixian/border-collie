@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { Scope } from "./config.js";
+import type { Scope } from "../core/config.js";
 import {
   type AttemptFailure,
   attemptMarker,
@@ -22,7 +22,7 @@ import {
   ticketFromAgentBranch,
   VOID_MARKER,
   type WorldSnapshot,
-} from "./types.js";
+} from "../core/types.js";
 
 /**
  * The Tracker seam (ADR 0002): every tracker operation lives here, with the

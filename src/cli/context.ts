@@ -1,9 +1,13 @@
 import type { CommandContext, StricliProcess } from "@stricli/core";
-import { type Flags, type ResolvedConfig, resolveConfig } from "./config.js";
-import { loadConfigFile } from "./config-file.js";
-import { tickOnce } from "./tick.js";
-import type { Action, WorldSnapshot } from "./types.js";
-import { probeEnvironment } from "./worker.js";
+import { loadConfigFile } from "../adapters/config-file.js";
+import { probeEnvironment } from "../adapters/worker.js";
+import { tickOnce } from "../app/tick.js";
+import {
+  type Flags,
+  type ResolvedConfig,
+  resolveConfig,
+} from "../core/config.js";
+import type { Action, WorldSnapshot } from "../core/types.js";
 
 /** Every effect a command handler needs, injected so handlers never import them directly. */
 export interface Context extends CommandContext {

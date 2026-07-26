@@ -1,4 +1,3 @@
-import { reclassifyCorrelatedFailures } from "./classify.js";
 import {
   claimTicket,
   closeTicket,
@@ -11,9 +10,10 @@ import {
   releaseTicket,
   updatePrBranch,
   voidAttempt,
-} from "./tracker.js";
-import type { Action, WorkerOutcome } from "./types.js";
-import { type ConflictOutcome, pushAgentBranch } from "./worker.js";
+} from "../adapters/tracker.js";
+import { type ConflictOutcome, pushAgentBranch } from "../adapters/worker.js";
+import { reclassifyCorrelatedFailures } from "../core/classify.js";
+import type { Action, WorkerOutcome } from "../core/types.js";
 
 /**
  * Dispatch one Worker against one claimed ticket; the caller binds the

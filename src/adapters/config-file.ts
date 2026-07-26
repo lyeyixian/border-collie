@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
-import { CONFIG_FILE, ConfigError } from "./config.js";
+import { CONFIG_FILE, ConfigError } from "../core/config.js";
 
 /** Read the config file from the target repo root; absent file is fine. */
 export function loadConfigFile(repoDir: string): unknown {

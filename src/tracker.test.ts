@@ -12,7 +12,7 @@ import {
   releaseTicket,
   updatePrBranch,
   voidAttempt,
-} from "./tracker.js";
+} from "./adapters/tracker.js";
 import {
   type AttemptFailure,
   attemptMarker,
@@ -20,7 +20,7 @@ import {
   CONFLICT_UNRESOLVED_MARKER,
   RELEASE_MARKER,
   VOID_MARKER,
-} from "./types.js";
+} from "./core/types.js";
 
 const FAILURE: AttemptFailure = {
   attempt: 1,
