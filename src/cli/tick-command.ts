@@ -1,11 +1,7 @@
 import { buildCommand } from "@stricli/core";
-import type { Context } from "./cli-context.js";
-import { WORKER_DEATH_PROSE } from "./cli-docs.js";
-import {
-  type CliFlags,
-  resolveConfigFromFlags,
-  sharedFlags,
-} from "./cli-flags.js";
+import type { Context } from "./context.js";
+import { WORKER_DEATH_PROSE } from "./docs.js";
+import { type CliFlags, resolveConfigFromFlags, sharedFlags } from "./flags.js";
 
 async function tickHandler(
   this: Context,

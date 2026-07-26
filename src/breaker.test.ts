@@ -5,7 +5,7 @@ import {
   breakerCooldownMs,
   probeDue,
   tripBreaker,
-} from "./breaker.js";
+} from "./core/breaker.js";
 
 describe("tripBreaker", () => {
   it("opens a closed breaker with one trip", () => {

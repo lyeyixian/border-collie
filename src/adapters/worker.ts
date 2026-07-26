@@ -5,13 +5,13 @@ import {
   classifyInfrastructure,
   lastResultLine,
   parseResultEvent,
-} from "./classify.js";
-import { type Exec, realExec } from "./tracker.js";
+} from "../core/classify.js";
 import {
   AGENT_BRANCH_PREFIX,
   type FailureReason,
   type WorkerOutcome,
-} from "./types.js";
+} from "../core/types.js";
+import { type Exec, realExec } from "./tracker.js";
 
 /**
  * The WorkerHost seam: everything a dispatched Worker needs around it —

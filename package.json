@@ -20,7 +20,7 @@
     "cli"
   ],
   "bin": {
-    "border-collie": "./dist/cli.js"
+    "border-collie": "./dist/main.js"
   },
   "files": [
     "dist"
@@ -35,7 +35,7 @@
     "lint": "biome check .",
     "test": "vitest run",
     "test:watch": "vitest",
-    "dev": "tsx src/cli.ts",
+    "dev": "tsx src/main.ts",
     "smoke": "scripts/smoke.sh"
   },
   "devDependencies": {

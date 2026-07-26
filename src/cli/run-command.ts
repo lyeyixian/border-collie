@@ -1,13 +1,9 @@
 import { buildCommand } from "@stricli/core";
-import type { Context } from "./cli-context.js";
-import { WORKER_DEATH_PROSE } from "./cli-docs.js";
-import {
-  type CliFlags,
-  resolveConfigFromFlags,
-  sharedFlags,
-} from "./cli-flags.js";
-import { ConfigError } from "./config.js";
-import { run } from "./run.js";
+import { run } from "../app/run.js";
+import { ConfigError } from "../core/config.js";
+import type { Context } from "./context.js";
+import { WORKER_DEATH_PROSE } from "./docs.js";
+import { type CliFlags, resolveConfigFromFlags, sharedFlags } from "./flags.js";
 
 async function runHandler(
   this: Context,

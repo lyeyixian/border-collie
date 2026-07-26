@@ -1,11 +1,11 @@
+import { openPrForOutcome } from "../adapters/pr.js";
+import { readScope } from "../adapters/tracker.js";
+import { dispatchConflictWorker, dispatchWorker } from "../adapters/worker.js";
+import { modelForAttempt, type ResolvedConfig } from "../core/config.js";
+import { plan } from "../core/plan.js";
+import { renderPlan } from "../core/render.js";
+import type { Action, WorldSnapshot } from "../core/types.js";
 import { act } from "./act.js";
-import { modelForAttempt, type ResolvedConfig } from "./config.js";
-import { plan } from "./plan.js";
-import { openPrForOutcome } from "./pr.js";
-import { renderPlan } from "./render.js";
-import { readScope } from "./tracker.js";
-import type { Action, WorldSnapshot } from "./types.js";
-import { dispatchConflictWorker, dispatchWorker } from "./worker.js";
 
 /** One full observe → plan → act pass — the single Tick both commands share. */
 export async function tickOnce(

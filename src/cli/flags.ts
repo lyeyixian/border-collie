@@ -1,6 +1,10 @@
 import type { CommandContext, FlagParametersForType } from "@stricli/core";
-import type { Context } from "./cli-context.js";
-import { ConfigError, type Flags, type ResolvedConfig } from "./config.js";
+import {
+  ConfigError,
+  type Flags,
+  type ResolvedConfig,
+} from "../core/config.js";
+import type { Context } from "./context.js";
 
 /** The nine-flag set shared by `tick` and `run`; every field optional except the two booleans. */
 export interface CliFlags {

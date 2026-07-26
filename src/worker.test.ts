@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Exec } from "./tracker.js";
+import type { Exec } from "./adapters/tracker.js";
 import {
   branchCommitSubjects,
   type ConflictWorkerConfig,
@@ -17,7 +17,7 @@ import {
   type WorkerProcessExit,
   type WorkerProcessRequest,
   workerPrompt,
-} from "./worker.js";
+} from "./adapters/worker.js";
 
 const WORKTREE = ".border-collie/worktrees/ticket-4";
 const BRANCH = "border-collie/ticket-4-attempt-1";

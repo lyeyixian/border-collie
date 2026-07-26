@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import type { ResolvedConfig } from "./config.js";
-import { plan } from "./plan.js";
-import { renderComplete, renderPlan, renderStuck } from "./render.js";
-import type { OpenAgentPr, Ticket, WorldSnapshot } from "./types.js";
+import type { ResolvedConfig } from "./core/config.js";
+import { plan } from "./core/plan.js";
+import { renderComplete, renderPlan, renderStuck } from "./core/render.js";
+import type { OpenAgentPr, Ticket, WorldSnapshot } from "./core/types.js";
 
 function ticket(
   overrides: Partial<Ticket> & { number: number; title: string },

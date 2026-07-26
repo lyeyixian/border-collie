@@ -5,10 +5,10 @@ import {
   run as runStricli,
   version,
 } from "@stricli/core";
-import type { Context } from "./cli-context.js";
-import { runCommand } from "./cli-run-command.js";
-import { tickCommand } from "./cli-tick-command.js";
-import { VERSION } from "./cli-version.js";
+import type { Context } from "./context.js";
+import { runCommand } from "./run-command.js";
+import { tickCommand } from "./tick-command.js";
+import { VERSION } from "./version.js";
 
 const routeMap = buildRouteMap({
   routes: { tick: tickCommand, run: runCommand },
