@@ -1,10 +1,6 @@
 import type { CommandContext, StricliProcess } from "@stricli/core";
-import {
-  type Flags,
-  loadConfigFile,
-  type ResolvedConfig,
-  resolveConfig,
-} from "./config.js";
+import { type Flags, type ResolvedConfig, resolveConfig } from "./config.js";
+import { loadConfigFile } from "./config-file.js";
 import { tickOnce } from "./tick.js";
 import type { Action, WorldSnapshot } from "./types.js";
 import { probeEnvironment } from "./worker.js";

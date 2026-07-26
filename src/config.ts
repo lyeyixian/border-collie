@@ -1,6 +1,3 @@
-import { readFileSync } from "node:fs";
-import { join } from "node:path";
-
 /** File name looked up at the target repo's root. */
 export const CONFIG_FILE = "border-collie.json";
 
@@ -172,20 +169,4 @@ export function modelForAttempt(
   attempt: number,
 ): string {
   return attempt >= 2 ? config.retryModel : config.model;
-}
-
-/** Read the config file from the target repo root; absent file is fine. */
-export function loadConfigFile(repoDir: string): unknown {
-  let raw: string;
-  try {
-    raw = readFileSync(join(repoDir, CONFIG_FILE), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  try {
-    return JSON.parse(raw);
-  } catch {
-    throw new ConfigError(`${CONFIG_FILE} is not valid JSON`);
-  }
 }
