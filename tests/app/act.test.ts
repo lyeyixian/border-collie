@@ -577,7 +577,7 @@ describe("act", () => {
     );
   });
 
-  it("still reports the Worker's outcome when PR opening fails, then rethrows", async () => {
+  it("still reports the Worker's outcome when PR opening fails, then rethrows, logging the failure at error", async () => {
     const { exec } = recordingExec();
     const { log, events } = recordingLog();
     const dispatch: DispatchWorker = async (ticket) => outcome(ticket);
@@ -597,6 +597,11 @@ describe("act", () => {
 
     expect(msgs(events)).toContain(
       "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+    );
+    const prOpenFailed = events.find((e) => e.kind === "pr-open-failed");
+    expect(prOpenFailed?.level).toBe("error");
+    expect(prOpenFailed?.msg).toBe(
+      "PR opening failed for #2 after a successful Attempt: gh pr create exploded",
     );
   });
 });

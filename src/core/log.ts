@@ -33,6 +33,7 @@ export type LogEvent = LogEventBase &
     | { kind: "spawn"; ticket: number; attempt: number }
     | { kind: "worker-outcome"; outcome: WorkerOutcome }
     | { kind: "pr-opened"; ticket: number; prUrl: string }
+    | { kind: "pr-open-failed"; ticket: number }
     | { kind: "cost-overrun"; ticket: number; attempt: number; costUsd: number }
     | {
         kind: "attempt-voided";

@@ -252,20 +252,22 @@ describe("exit-code contract", () => {
     expect(fake.stdout()).toContain("Infrastructure failure detected");
   });
 
-  it("run exits 0 on Complete", async () => {
+  it("run exits 0 on Complete, narrating it through the injected log", async () => {
     const fake = fakeContext({ tickResults: [{ world: CLOSED_WORLD }] });
 
     await runCli(["run", "--parent", "1"], fake.context);
 
     expect(fake.context.process.exitCode).toBeFalsy();
+    expect(fake.events.some((e) => e.kind === "complete-report")).toBe(true);
   });
 
-  it("run exits 1 on Stuck", async () => {
+  it("run exits 1 on Stuck, narrating it through the injected log", async () => {
     const fake = fakeContext({ tickResults: [{ world: STUCK_WORLD }] });
 
     await runCli(["run", "--parent", "1"], fake.context);
 
     expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.events.some((e) => e.kind === "stuck-report")).toBe(true);
   });
 
   it("a config error prints a one-line message and exits 1", async () => {

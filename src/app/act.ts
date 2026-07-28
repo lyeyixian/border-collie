@@ -317,7 +317,16 @@ export async function act(
   if (rejectedConflict) throw rejectedConflict.reason;
   for (const result of settled) {
     if (result.status === "fulfilled" && result.value.prFailure !== undefined) {
-      throw result.value.prFailure;
+      const { outcome: failedOutcome, prFailure } = result.value;
+      const reason =
+        prFailure instanceof Error ? prFailure.message : String(prFailure);
+      log({
+        kind: "pr-open-failed",
+        level: "error",
+        msg: `PR opening failed for #${failedOutcome.ticket} after a successful Attempt: ${reason}`,
+        ticket: failedOutcome.ticket,
+      });
+      throw prFailure;
     }
   }
   return {
