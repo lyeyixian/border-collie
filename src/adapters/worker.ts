@@ -6,6 +6,7 @@ import {
   lastResultLine,
   parseResultEvent,
 } from "../core/classify.js";
+import type { Log, LogEvent } from "../core/log.js";
 import {
   AGENT_BRANCH_PREFIX,
   type FailureReason,
@@ -257,11 +258,16 @@ export async function branchCommitSubjects(
  * recorded progress (ADR 0001: GitHub is the only state store), so
  * re-running the Tick supersedes it.
  */
+/** No-op default for the optional `log` parameter, so every existing caller need not pass one. */
+const noopLog: Log = ((_event: LogEvent) => {}) as Log;
+noopLog.child = () => noopLog;
+
 export async function dispatchWorker(
   ticket: number,
   config: WorkerConfig,
   exec: Exec = realExec,
   spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
+  log: Log = noopLog,
 ): Promise<WorkerOutcome> {
   const branch = `${AGENT_BRANCH_PREFIX}${ticket}-attempt-${config.attempt}`;
   const worktree = join(RUN_DIR, "worktrees", `ticket-${ticket}`);
@@ -289,6 +295,18 @@ export async function dispatchWorker(
       "origin/HEAD",
     ]);
     return (await exec("git", ["rev-parse", branch])).trim();
+  });
+  // Logged once the worktree actually exists, so an operator can find a
+  // Worker's evidence — the worktree while it runs, the transcript any time
+  // after — without deriving the paths by hand.
+  log({
+    kind: "worker-paths",
+    level: "debug",
+    msg: `Worker for #${ticket} (attempt ${config.attempt}): worktree ${worktree}, transcript ${transcript}`,
+    ticket,
+    attempt: config.attempt,
+    worktree,
+    transcript,
   });
 
   try {
@@ -451,6 +469,7 @@ export async function dispatchConflictWorker(
   config: ConflictWorkerConfig,
   exec: Exec = realExec,
   spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
+  log: Log = noopLog,
 ): Promise<ConflictOutcome> {
   const worktree = join(RUN_DIR, "conflict-worktrees", `pr-${pr}`);
   const transcript = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.jsonl`);
@@ -477,6 +496,14 @@ export async function dispatchConflictWorker(
     await exec("git", ["-C", worktree, "rebase", "origin/HEAD"]).catch(
       () => {},
     );
+  });
+  log({
+    kind: "conflict-worker-paths",
+    level: "debug",
+    msg: `Conflict Worker for PR #${pr}: worktree ${worktree}, transcript ${transcript}`,
+    pr,
+    worktree,
+    transcript,
   });
 
   try {

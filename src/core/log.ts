@@ -50,9 +50,29 @@ export type LogEvent = LogEventBase &
     | { kind: "breaker-still-open"; trips: number; nextProbeMs: number }
     | { kind: "breaker-open"; infraFailures: number; nextProbeMs: number }
     | { kind: "next-tick"; pollSeconds: number }
+    | { kind: "tick-wait"; pollSeconds: number }
     | { kind: "plan-report"; report: PlanReport }
     | { kind: "stuck-report"; report: StuckReport }
     | { kind: "complete-report"; report: CompleteReport }
+    | {
+        kind: "tracker-command";
+        cmd: string;
+        args: string[];
+        exitCode: number | null;
+      }
+    | {
+        kind: "worker-paths";
+        ticket: number;
+        attempt: number;
+        worktree: string;
+        transcript: string;
+      }
+    | {
+        kind: "conflict-worker-paths";
+        pr: number;
+        worktree: string;
+        transcript: string;
+      }
   );
 
 /** Fields a Worker's (or Conflict Worker's) sub-logger binds onto every event it emits. */

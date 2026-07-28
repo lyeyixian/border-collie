@@ -18,6 +18,16 @@ import {
   type WorkerProcessRequest,
   workerPrompt,
 } from "../../src/adapters/worker.js";
+import type { Log, LogEvent } from "../../src/core/log.js";
+
+function recordingLog(): { log: Log; events: LogEvent[] } {
+  const events: LogEvent[] = [];
+  const log = ((event: LogEvent) => {
+    events.push(event);
+  }) as Log;
+  log.child = () => log;
+  return { log, events };
+}
 
 const WORKTREE = ".border-collie/worktrees/ticket-4";
 const BRANCH = "border-collie/ticket-4-attempt-1";
@@ -122,6 +132,33 @@ describe("dispatchWorker", () => {
         stallMs: 30_000,
       },
     ]);
+  });
+
+  it("logs the worktree and transcript paths at debug once the worktree exists, before spawning", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0);
+    const { log, events } = recordingLog();
+
+    await dispatchWorker(4, CONFIG, exec, spawn, log);
+
+    expect(events).toEqual([
+      {
+        kind: "worker-paths",
+        level: "debug",
+        msg: `Worker for #4 (attempt 1): worktree ${WORKTREE}, transcript ${TRANSCRIPT}`,
+        ticket: 4,
+        attempt: 1,
+        worktree: WORKTREE,
+        transcript: TRANSCRIPT,
+      },
+    ]);
+  });
+
+  it("logs nothing when no log is injected — existing callers are unaffected", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0);
+
+    await expect(dispatchWorker(4, CONFIG, exec, spawn)).resolves.toBeDefined();
   });
 
   it("serializes git phases across concurrent dispatches (repo-level locks), keeping Workers concurrent", async () => {
@@ -568,6 +605,33 @@ describe("dispatchConflictWorker", () => {
     });
     expect(requests[0]?.args).toContain(conflictWorkerPrompt());
     expect(requests[0]?.args).toContain("sonnet");
+  });
+
+  it("logs the worktree and transcript paths at debug once the rebase is set up, before spawning", async () => {
+    const { exec } = fakeConflictExec();
+    const { spawn } = fakeSpawn(0);
+    const { log, events } = recordingLog();
+
+    await dispatchConflictWorker(
+      30,
+      3,
+      HEAD_REF,
+      CONFLICT_CONFIG,
+      exec,
+      spawn,
+      log,
+    );
+
+    expect(events).toEqual([
+      {
+        kind: "conflict-worker-paths",
+        level: "debug",
+        msg: `Conflict Worker for PR #30: worktree ${CONFLICT_WT}, transcript ${CONFLICT_TRANSCRIPT}`,
+        pr: 30,
+        worktree: CONFLICT_WT,
+        transcript: CONFLICT_TRANSCRIPT,
+      },
+    ]);
   });
 
   it("resolves when the Worker exits cleanly and the branch now sits atop the base", async () => {

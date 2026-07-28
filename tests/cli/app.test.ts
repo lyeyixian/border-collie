@@ -66,6 +66,7 @@ interface FakeContext {
   }[];
   probeCalls: string[];
   events: LogEvent[];
+  verbosityCalls: boolean[];
 }
 
 function fakeContext(
@@ -84,6 +85,7 @@ function fakeContext(
   }[] = [];
   const probeCalls: string[] = [];
   const events: LogEvent[] = [];
+  const verbosityCalls: boolean[] = [];
   const tickResults = overrides.tickResults ?? [{ world: CLOSED_WORLD }];
 
   const context: Context = {
@@ -116,6 +118,9 @@ function fakeContext(
     now: () => 0,
     sleep: async () => {},
     log: recordingLog(events),
+    setVerbose: (verbose) => {
+      verbosityCalls.push(verbose);
+    },
   };
 
   return {
@@ -126,6 +131,7 @@ function fakeContext(
     tickCalls,
     probeCalls,
     events,
+    verbosityCalls,
   };
 }
 
@@ -152,6 +158,14 @@ describe("argv → flags mapping", () => {
     await runCli(["tick", "--dry-run", "--parent", "1"], fake.context);
 
     expect(fake.loadConfigCalls[0]).not.toHaveProperty("dryRun");
+  });
+
+  it("drops --verbose from the flags object handed to config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(["tick", "--verbose", "--parent", "1"], fake.context);
+
+    expect(fake.loadConfigCalls[0]).not.toHaveProperty("verbose");
   });
 
   it("omits unset flags entirely rather than passing them as undefined", async () => {
@@ -196,6 +210,40 @@ describe("integer flag rejection", () => {
 
     expect(fake.context.process.exitCode).toBe(1);
     expect(fake.stderr()).toContain("-1");
+  });
+});
+
+describe("verbosity flag", () => {
+  it("lowers the console's minimum level to debug for tick when --verbose is passed", async () => {
+    const fake = fakeContext();
+
+    await runCli(["tick", "--verbose", "--parent", "1"], fake.context);
+
+    expect(fake.verbosityCalls).toEqual([true]);
+  });
+
+  it("leaves the console at its default level for tick when --verbose is omitted", async () => {
+    const fake = fakeContext();
+
+    await runCli(["tick", "--parent", "1"], fake.context);
+
+    expect(fake.verbosityCalls).toEqual([false]);
+  });
+
+  it("lowers the console's minimum level to debug for run when --verbose is passed", async () => {
+    const fake = fakeContext({ tickResults: [{ world: CLOSED_WORLD }] });
+
+    await runCli(["run", "--verbose", "--parent", "1"], fake.context);
+
+    expect(fake.verbosityCalls).toEqual([true]);
+  });
+
+  it("does not affect config resolution — only the console sink", async () => {
+    const fake = fakeContext();
+
+    await runCli(["tick", "--verbose", "--parent", "1"], fake.context);
+
+    expect(fake.tickCalls).toHaveLength(1);
   });
 });
 
@@ -311,6 +359,14 @@ describe("help", () => {
 
     expect(fake.context.process.exitCode).toBeFalsy();
     expect(fake.stdout()).toContain("USAGE");
+  });
+
+  it("documents --verbose alongside the other flags in per-command help", async () => {
+    const fake = fakeContext();
+
+    await runCli(["tick", "--help"], fake.context);
+
+    expect(fake.stdout()).toContain("--verbose");
   });
 
   it("carries the tick/run lifecycle prose into per-command help", async () => {

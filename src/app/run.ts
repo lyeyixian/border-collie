@@ -144,6 +144,12 @@ export async function run(
       msg: `Next Tick in ${pollSeconds}s.`,
       pollSeconds,
     });
+    deps.log({
+      kind: "tick-wait",
+      level: "debug",
+      msg: `waiting ${pollSeconds}s before the next Tick`,
+      pollSeconds,
+    });
     await deps.sleep(pollSeconds * 1000);
   }
 }

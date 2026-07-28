@@ -1,5 +1,5 @@
 import { openPrForOutcome } from "../adapters/pr.js";
-import { readScope, realExec } from "../adapters/tracker.js";
+import { readScope, realExec, withDebugLogging } from "../adapters/tracker.js";
 import { dispatchConflictWorker, dispatchWorker } from "../adapters/worker.js";
 import { modelForAttempt, type ResolvedConfig } from "../core/config.js";
 import type { Log } from "../core/log.js";
@@ -15,7 +15,11 @@ export async function tickOnce(
   dispatchPaused = false,
   log: Log,
 ): Promise<{ world: WorldSnapshot; actions: Action[]; infraFailures: number }> {
-  const world = await readScope(config.scope);
+  // Every tracker command this Tick issues, plus its exit code, is narrated
+  // at debug through the same seam — detail that does not exist today, kept
+  // out of the default console but always in the durable file.
+  const exec = withDebugLogging(realExec, log);
+  const world = await readScope(config.scope, exec);
   const actions = plan(world, {
     maxWorkers: config.maxWorkers,
     maxOpenPrs: config.maxOpenPrs,
@@ -36,27 +40,42 @@ export async function tickOnce(
     const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
     const report = await act(actions, {
       dispatch: (ticket, attempt) =>
-        dispatchWorker(ticket, {
-          model: modelForAttempt(config, attempt),
-          attempt,
-          timeoutMs: config.timeoutMinutes * 60_000,
-          stallMs: config.stallMinutes * 60_000,
-          maxTurns: config.maxTurns,
-          maxCostUsd: config.maxCostUsd,
-        }),
+        dispatchWorker(
+          ticket,
+          {
+            model: modelForAttempt(config, attempt),
+            attempt,
+            timeoutMs: config.timeoutMinutes * 60_000,
+            stallMs: config.stallMinutes * 60_000,
+            maxTurns: config.maxTurns,
+            maxCostUsd: config.maxCostUsd,
+          },
+          undefined,
+          undefined,
+          log,
+        ),
       openPr: (outcome) =>
         openPrForOutcome(
           outcome,
           titles.get(outcome.ticket) ?? `Ticket #${outcome.ticket}`,
+          exec,
         ),
       dispatchConflict: (pr, ticket, headRef) =>
-        dispatchConflictWorker(pr, ticket, headRef, {
-          model: config.model,
-          timeoutMs: config.timeoutMinutes * 60_000,
-          stallMs: config.stallMinutes * 60_000,
-          maxTurns: config.maxTurns,
-        }),
-      exec: realExec,
+        dispatchConflictWorker(
+          pr,
+          ticket,
+          headRef,
+          {
+            model: config.model,
+            timeoutMs: config.timeoutMinutes * 60_000,
+            stallMs: config.stallMinutes * 60_000,
+            maxTurns: config.maxTurns,
+          },
+          undefined,
+          undefined,
+          log,
+        ),
+      exec,
       log,
     });
     infraFailures = report.infraFailures;

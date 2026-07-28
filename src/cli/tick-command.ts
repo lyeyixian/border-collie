@@ -7,6 +7,7 @@ async function tickHandler(
   this: Context,
   flags: CliFlags,
 ): Promise<undefined | Error> {
+  this.setVerbose(flags.verbose);
   const config = resolveConfigFromFlags(this, flags);
   if (config instanceof Error) return config;
 

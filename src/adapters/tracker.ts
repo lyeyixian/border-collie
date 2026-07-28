@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Scope } from "../core/config.js";
+import type { Log } from "../core/log.js";
 import {
   type AttemptFailure,
   attemptMarker,
@@ -41,6 +42,54 @@ export const realExec: Exec = async (cmd, args) => {
   });
   return stdout;
 };
+
+/** The numeric exit code on a failed `execFile`, or null when the process never reported one (e.g. it never spawned). */
+function exitCodeOf(error: unknown): number | null {
+  if (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    typeof (error as { code: unknown }).code === "number"
+  ) {
+    return (error as { code: number }).code;
+  }
+  return null;
+}
+
+/**
+ * Decorates an `Exec` with a `debug` event per call, carrying the command and
+ * its exit code — detail that does not exist today, so an operator can see
+ * what the Orchestrator actually asked the tracker to do without reproducing
+ * the run. Neither `cmd`/`args` nor an exit code ever carries a credential:
+ * `gh` and `git` read auth from the environment, never argv.
+ */
+export function withDebugLogging(exec: Exec, log: Log): Exec {
+  return async (cmd, args) => {
+    try {
+      const stdout = await exec(cmd, args);
+      log({
+        kind: "tracker-command",
+        level: "debug",
+        msg: `${cmd} ${args.join(" ")} (exit 0)`,
+        cmd,
+        args,
+        exitCode: 0,
+      });
+      return stdout;
+    } catch (error) {
+      const exitCode = exitCodeOf(error);
+      log({
+        kind: "tracker-command",
+        level: "debug",
+        msg: `${cmd} ${args.join(" ")} (exit ${exitCode ?? "unknown"})`,
+        cmd,
+        args,
+        exitCode,
+      });
+      throw error;
+    }
+  };
+}
 
 interface GithubIssue {
   number: number;
