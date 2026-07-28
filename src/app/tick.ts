@@ -1,5 +1,5 @@
 import { openPrForOutcome } from "../adapters/pr.js";
-import { readScope } from "../adapters/tracker.js";
+import { readScope, realExec } from "../adapters/tracker.js";
 import { dispatchConflictWorker, dispatchWorker } from "../adapters/worker.js";
 import { modelForAttempt, type ResolvedConfig } from "../core/config.js";
 import { plan } from "../core/plan.js";
@@ -24,9 +24,8 @@ export async function tickOnce(
   let infraFailures = 0;
   if (!dryRun) {
     const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
-    const report = await act(
-      actions,
-      (ticket, attempt) =>
+    const report = await act(actions, {
+      dispatch: (ticket, attempt) =>
         dispatchWorker(ticket, {
           model: modelForAttempt(config, attempt),
           attempt,
@@ -35,21 +34,21 @@ export async function tickOnce(
           maxTurns: config.maxTurns,
           maxCostUsd: config.maxCostUsd,
         }),
-      (outcome) =>
+      openPr: (outcome) =>
         openPrForOutcome(
           outcome,
           titles.get(outcome.ticket) ?? `Ticket #${outcome.ticket}`,
         ),
-      (pr, ticket, headRef) =>
+      dispatchConflict: (pr, ticket, headRef) =>
         dispatchConflictWorker(pr, ticket, headRef, {
           model: config.model,
           timeoutMs: config.timeoutMinutes * 60_000,
           stallMs: config.stallMinutes * 60_000,
           maxTurns: config.maxTurns,
         }),
-      undefined,
+      exec: realExec,
       log,
-    );
+    });
     infraFailures = report.infraFailures;
   }
   return { world, actions, infraFailures };
