@@ -40,17 +40,24 @@ interface SpawnResult {
   prUrl?: string;
   /** PR opening failed after a successful Attempt; reported, then rethrown. */
   prFailure?: unknown;
+  /** This Worker's sub-logger, carried forward so outcome/PR lines inherit its bindings. */
+  log: Log;
+}
+
+/** What one conflict-worker action came to: the outcome, and its sub-logger to carry forward. */
+interface ConflictSpawnResult {
+  outcome: ConflictOutcome;
+  log: Log;
 }
 
 function describeOutcome(outcome: WorkerOutcome): string {
   const commits = `${outcome.newCommits} new commit${outcome.newCommits === 1 ? "" : "s"}`;
   const where = `on ${outcome.branch} (transcript: ${outcome.transcript})`;
-  if (outcome.ok)
-    return `Worker for #${outcome.ticket} succeeded: ${commits} ${where}`;
+  if (outcome.ok) return `Worker succeeded: ${commits} ${where}`;
   if (outcome.infra !== undefined) {
-    return `Worker for #${outcome.ticket} hit an infrastructure failure (${outcome.infra}): attempt ${outcome.attempt} voided, exit ${outcome.exitCode} ${where}`;
+    return `Worker hit an infrastructure failure (${outcome.infra}): attempt ${outcome.attempt} voided, exit ${outcome.exitCode} ${where}`;
   }
-  return `Worker for #${outcome.ticket} failed attempt ${outcome.attempt} (${outcome.failure}): exit ${outcome.exitCode}, ${commits} ${where}`;
+  return `Worker failed attempt ${outcome.attempt} (${outcome.failure}): exit ${outcome.exitCode}, ${commits} ${where}`;
 }
 
 /** What one Tick's act phase reports back to the loop. */
@@ -71,8 +78,8 @@ export interface ActDeps {
 function describeConflict(outcome: ConflictOutcome): string {
   const where = `on ${outcome.headRef} (transcript: ${outcome.transcript})`;
   return outcome.resolved
-    ? `Conflict Worker for PR #${outcome.pr} resolved the conflicts ${where}`
-    : `Conflict Worker for PR #${outcome.pr} could not resolve the conflicts (exit ${outcome.exitCode}) ${where}`;
+    ? `Conflict Worker resolved the conflicts ${where}`
+    : `Conflict Worker could not resolve the conflicts (exit ${outcome.exitCode}) ${where}`;
 }
 
 /**
@@ -100,7 +107,7 @@ export async function act(
 ): Promise<ActReport> {
   const { dispatch, openPr, dispatchConflict, exec, log } = deps;
   const workers: Promise<SpawnResult>[] = [];
-  const conflicts: Promise<ConflictOutcome>[] = [];
+  const conflicts: Promise<ConflictSpawnResult>[] = [];
   for (const action of actions) {
     switch (action.type) {
       case "claim":
@@ -158,39 +165,49 @@ export async function act(
           pr: action.pr,
         });
         break;
-      case "conflict-worker":
+      case "conflict-worker": {
+        const conflictLog = log.child({ pr: action.pr });
         conflicts.push(
-          dispatchConflict(action.pr, action.ticket, action.headRef),
+          dispatchConflict(action.pr, action.ticket, action.headRef).then(
+            (outcome) => ({ outcome, log: conflictLog }),
+          ),
         );
-        log({
+        conflictLog({
           kind: "conflict-dispatch",
           level: "info",
-          msg: `dispatched conflict Worker for PR #${action.pr} (ticket #${action.ticket})`,
-          pr: action.pr,
+          msg: `dispatched conflict Worker (ticket #${action.ticket})`,
           ticket: action.ticket,
         });
         break;
-      case "spawn":
+      }
+      case "spawn": {
+        const workerLog = log.child({
+          ticket: action.ticket,
+          attempt: action.attempt,
+        });
         workers.push(
           dispatch(action.ticket, action.attempt).then(
             async (outcome): Promise<SpawnResult> => {
-              if (!outcome.ok) return { outcome };
+              if (!outcome.ok) return { outcome, log: workerLog };
               try {
-                return { outcome, prUrl: await openPr(outcome) };
+                return {
+                  outcome,
+                  prUrl: await openPr(outcome),
+                  log: workerLog,
+                };
               } catch (error) {
-                return { outcome, prFailure: error };
+                return { outcome, prFailure: error, log: workerLog };
               }
             },
           ),
         );
-        log({
+        workerLog({
           kind: "spawn",
           level: "info",
-          msg: `spawned Worker for #${action.ticket} (attempt ${action.attempt})`,
-          ticket: action.ticket,
-          attempt: action.attempt,
+          msg: `spawned Worker (attempt ${action.attempt})`,
         });
         break;
+      }
     }
   }
 
@@ -204,33 +221,35 @@ export async function act(
   // Reclassify once every Worker has settled: only the full Tick's outcomes
   // can show several Workers dying the same way (an environment problem,
   // not a coincidence of tickets). Zipped straight back onto the spawn
-  // results so each outcome keeps its own PR.
-  const outcomes = reclassifyCorrelatedFailures(
+  // results so each outcome keeps its own PR and sub-logger.
+  const reclassifiedOutcomes = reclassifyCorrelatedFailures(
     fulfilled.map((spawn) => spawn.outcome),
-  ).map((outcome, i) => ({ outcome, prUrl: fulfilled[i]?.prUrl }));
-  for (const { outcome, prUrl } of outcomes) {
-    log({
+  );
+  const outcomes = fulfilled.map((spawn, i) => ({
+    outcome: reclassifiedOutcomes[i] ?? spawn.outcome,
+    prUrl: spawn.prUrl,
+    log: spawn.log,
+  }));
+  for (const { outcome, prUrl, log: workerLog } of outcomes) {
+    workerLog({
       kind: "worker-outcome",
       level: outcome.infra !== undefined ? "warn" : "info",
       msg: describeOutcome(outcome),
       outcome,
     });
     if (prUrl !== undefined) {
-      log({
+      workerLog({
         kind: "pr-opened",
         level: "info",
-        msg: `opened draft PR for #${outcome.ticket}: ${prUrl}`,
-        ticket: outcome.ticket,
+        msg: `opened draft PR: ${prUrl}`,
         prUrl,
       });
     }
     if (outcome.costOverrun && outcome.costUsd !== undefined) {
-      log({
+      workerLog({
         kind: "cost-overrun",
         level: "warn",
-        msg: `cost overrun on #${outcome.ticket}: attempt ${outcome.attempt} spent $${outcome.costUsd.toFixed(2)} — the ticket may be cut too big for one Worker`,
-        ticket: outcome.ticket,
-        attempt: outcome.attempt,
+        msg: `cost overrun: attempt ${outcome.attempt} spent $${outcome.costUsd.toFixed(2)} — the ticket may be cut too big for one Worker`,
         costUsd: outcome.costUsd,
       });
     }
@@ -245,12 +264,10 @@ export async function act(
         },
         exec,
       );
-      log({
+      workerLog({
         kind: "attempt-voided",
         level: "warn",
-        msg: `voided attempt ${outcome.attempt} of #${outcome.ticket} (${outcome.infra}); claim held`,
-        ticket: outcome.ticket,
-        attempt: outcome.attempt,
+        msg: `voided attempt ${outcome.attempt} (${outcome.infra}); claim held`,
         reason: outcome.infra,
       });
     } else if (outcome.failure) {
@@ -265,12 +282,10 @@ export async function act(
         },
         exec,
       );
-      log({
+      workerLog({
         kind: "attempt-released",
         level: "info",
-        msg: `released #${outcome.ticket} with the attempt record (failed attempt ${outcome.attempt})`,
-        ticket: outcome.ticket,
-        attempt: outcome.attempt,
+        msg: `released with the attempt record (failed attempt ${outcome.attempt})`,
         reason: outcome.failure,
       });
     }
@@ -282,29 +297,26 @@ export async function act(
   const settledConflicts = await Promise.allSettled(conflicts);
   for (const result of settledConflicts) {
     if (result.status !== "fulfilled") continue;
-    const outcome = result.value;
-    log({
+    const { outcome, log: conflictLog } = result.value;
+    conflictLog({
       kind: "conflict-outcome",
       level: outcome.resolved ? "info" : "warn",
       msg: describeConflict(outcome),
-      pr: outcome.pr,
       resolved: outcome.resolved,
     });
     if (outcome.resolved) {
       await pushAgentBranch(outcome.headRef, exec);
-      log({
+      conflictLog({
         kind: "conflict-pushed",
         level: "info",
-        msg: `pushed the resolved rebase for PR #${outcome.pr}`,
-        pr: outcome.pr,
+        msg: "pushed the resolved rebase",
       });
     } else {
       await commentConflictUnresolved(outcome.pr, exec);
-      log({
+      conflictLog({
         kind: "conflict-unresolved",
         level: "warn",
-        msg: `asked for human resolution on PR #${outcome.pr}`,
-        pr: outcome.pr,
+        msg: "asked for human resolution",
       });
     }
   }
@@ -317,14 +329,13 @@ export async function act(
   if (rejectedConflict) throw rejectedConflict.reason;
   for (const result of settled) {
     if (result.status === "fulfilled" && result.value.prFailure !== undefined) {
-      const { outcome: failedOutcome, prFailure } = result.value;
+      const { prFailure, log: workerLog } = result.value;
       const reason =
         prFailure instanceof Error ? prFailure.message : String(prFailure);
-      log({
+      workerLog({
         kind: "pr-open-failed",
         level: "error",
-        msg: `PR opening failed for #${failedOutcome.ticket} after a successful Attempt: ${reason}`,
-        ticket: failedOutcome.ticket,
+        msg: `PR opening failed after a successful Attempt: ${reason}`,
       });
       throw prFailure;
     }

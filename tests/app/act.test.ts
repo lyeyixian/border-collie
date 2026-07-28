@@ -7,7 +7,7 @@ import {
   type DispatchWorker,
   type OpenPr,
 } from "../../src/app/act.js";
-import type { LogEvent } from "../../src/core/log.js";
+import type { Log, LogBindings, LogEvent } from "../../src/core/log.js";
 import {
   type AttemptFailure,
   attemptMarker,
@@ -27,13 +27,29 @@ function recordingExec(): { exec: Exec; calls: string[][] } {
   return { exec, calls };
 }
 
-/** Records emitted events; `msgs()` mirrors the old narration-line assertions. */
-function recordingLog(): {
-  log: (event: LogEvent) => void;
-  events: LogEvent[];
-} {
+/**
+ * Records emitted events, merging each sub-logger's bindings onto every
+ * event it forwards — exactly what a real sink sees, so assertions can
+ * check the bound ticket/attempt/pr fields directly instead of scraping
+ * rendered text. `msgs()` mirrors the old narration-line assertions.
+ */
+function recordingLog(): { log: Log; events: LogEvent[] } {
   const events: LogEvent[] = [];
-  return { log: (event) => events.push(event), events };
+  function make(bindings: LogBindings): Log {
+    const fn = ((event: LogEvent) => {
+      events.push({ ...bindings, ...event } as LogEvent);
+    }) as Log;
+    fn.child = (childBindings) => make({ ...bindings, ...childBindings });
+    return fn;
+  }
+  return { log: make({}), events };
+}
+
+/** A `Log` that discards everything, for tests uninterested in narration. */
+function noopLog(): Log {
+  const fn = ((_event: LogEvent) => {}) as Log;
+  fn.child = () => fn;
+  return fn;
 }
 
 function msgs(events: LogEvent[]): string[] {
@@ -190,7 +206,7 @@ describe("act", () => {
       openPr,
       dispatchConflict: noConflict,
       exec,
-      log: () => {},
+      log: noopLog(),
     });
 
     expect(calls).toEqual([]);
@@ -262,14 +278,28 @@ describe("act", () => {
     ]);
     expect(msgs(events)).toEqual([
       "claimed #2",
-      "spawned Worker for #2 (attempt 1)",
+      "spawned Worker (attempt 1)",
       "claimed #4",
-      "spawned Worker for #4 (attempt 1)",
-      "Worker for #2 succeeded: 3 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
-      "opened draft PR for #2: https://github.com/o/r/pull/20",
-      "Worker for #4 failed attempt 1 (nonzero-exit): exit 1, 0 new commits on border-collie/ticket-4 (transcript: .border-collie/transcripts/ticket-4.jsonl)",
-      "released #4 with the attempt record (failed attempt 1)",
+      "spawned Worker (attempt 1)",
+      "Worker succeeded: 3 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+      "opened draft PR: https://github.com/o/r/pull/20",
+      "Worker failed attempt 1 (nonzero-exit): exit 1, 0 new commits on border-collie/ticket-4 (transcript: .border-collie/transcripts/ticket-4.jsonl)",
+      "released with the attempt record (failed attempt 1)",
     ]);
+    // Each Worker's own sub-logger binds its ticket and attempt onto every
+    // line it emits — concurrent Workers stay tellable apart by field, not
+    // by a "#N" buried in prose.
+    const worker2Events = events.filter(
+      (e) => e.kind !== "claim" && (e as { ticket?: number }).ticket === 2,
+    );
+    expect(worker2Events).toHaveLength(3); // spawn, worker-outcome, pr-opened
+    expect(
+      worker2Events.every((e) => (e as { attempt?: number }).attempt === 1),
+    ).toBe(true);
+    const worker4Events = events.filter(
+      (e) => e.kind !== "claim" && (e as { ticket?: number }).ticket === 4,
+    );
+    expect(worker4Events).toHaveLength(3); // spawn, worker-outcome, attempt-released
   });
 
   it("dispatches with the planned attempt number (the retry ladder rung)", async () => {
@@ -285,7 +315,7 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
-      log: () => {},
+      log: noopLog(),
     });
 
     expect(attempts).toEqual([[7, 2]]);
@@ -301,7 +331,7 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
-      log: () => {},
+      log: noopLog(),
     });
 
     const record: AttemptFailure = {
@@ -333,7 +363,7 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
-      log: () => {},
+      log: noopLog(),
     });
 
     expect(calls).toEqual([]);
@@ -454,8 +484,10 @@ describe("act", () => {
     const costOverrun = events.find((e) => e.kind === "cost-overrun");
     expect(costOverrun?.level).toBe("warn");
     expect(costOverrun?.msg).toBe(
-      "cost overrun on #7: attempt 1 spent $25.50 — the ticket may be cut too big for one Worker",
+      "cost overrun: attempt 1 spent $25.50 — the ticket may be cut too big for one Worker",
     );
+    // Bound by the Worker's sub-logger, not repeated per call site.
+    expect(costOverrun).toMatchObject({ ticket: 7, attempt: 1 });
   });
 
   it("voids an infrastructure-classified attempt: comment only, claim held, counted in the report, logged at warn", async () => {
@@ -490,9 +522,9 @@ describe("act", () => {
     expect(report).toEqual({ infraFailures: 1 });
     const voided = events.find((e) => e.kind === "attempt-voided");
     expect(voided?.level).toBe("warn");
-    expect(voided?.msg).toBe(
-      "voided attempt 1 of #7 (usage-limit); claim held",
-    );
+    expect(voided?.msg).toBe("voided attempt 1 (usage-limit); claim held");
+    // Bound by the Worker's sub-logger, not repeated per call site.
+    expect(voided).toMatchObject({ ticket: 7, attempt: 1 });
   });
 
   it("reclassifies several Workers failing the same way in one Tick as correlated infrastructure", async () => {
@@ -541,7 +573,7 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
-      log: () => {},
+      log: noopLog(),
     });
 
     expect(report).toEqual({ infraFailures: 0 });
@@ -573,7 +605,7 @@ describe("act", () => {
     ).rejects.toThrow("git exploded");
 
     expect(msgs(events)).toContain(
-      "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+      "Worker succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
     );
   });
 
@@ -596,13 +628,15 @@ describe("act", () => {
     ).rejects.toThrow("gh pr create exploded");
 
     expect(msgs(events)).toContain(
-      "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+      "Worker succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
     );
     const prOpenFailed = events.find((e) => e.kind === "pr-open-failed");
     expect(prOpenFailed?.level).toBe("error");
     expect(prOpenFailed?.msg).toBe(
-      "PR opening failed for #2 after a successful Attempt: gh pr create exploded",
+      "PR opening failed after a successful Attempt: gh pr create exploded",
     );
+    // Bound by the Worker's sub-logger, not repeated per call site.
+    expect(prOpenFailed).toMatchObject({ ticket: 2, attempt: 1 });
   });
 });
 
@@ -690,10 +724,12 @@ describe("act: PR upkeep", () => {
     ]);
     expect(events.every((e) => e.level === "info")).toBe(true);
     expect(msgs(events)).toEqual([
-      "dispatched conflict Worker for PR #30 (ticket #3)",
-      "Conflict Worker for PR #30 resolved the conflicts on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
-      "pushed the resolved rebase for PR #30",
+      "dispatched conflict Worker (ticket #3)",
+      "Conflict Worker resolved the conflicts on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
+      "pushed the resolved rebase",
     ]);
+    // Bound by the Conflict Worker's sub-logger, not repeated per call site.
+    expect(events.every((e) => (e as { pr?: number }).pr === 30)).toBe(true);
   });
 
   it("asks for human resolution when the conflict Worker gives up (no push), logged at warn", async () => {
@@ -740,10 +776,12 @@ describe("act: PR upkeep", () => {
     ]);
     expect(events.map((e) => e.level)).toEqual(["info", "warn", "warn"]);
     expect(msgs(events)).toEqual([
-      "dispatched conflict Worker for PR #30 (ticket #3)",
-      "Conflict Worker for PR #30 could not resolve the conflicts (exit 1) on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
-      "asked for human resolution on PR #30",
+      "dispatched conflict Worker (ticket #3)",
+      "Conflict Worker could not resolve the conflicts (exit 1) on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
+      "asked for human resolution",
     ]);
+    // Bound by the Conflict Worker's sub-logger, not repeated per call site.
+    expect(events.every((e) => (e as { pr?: number }).pr === 30)).toBe(true);
   });
 
   it("runs conflict Workers concurrently with dispatch Workers and reports both", async () => {
@@ -791,9 +829,9 @@ describe("act: PR upkeep", () => {
     );
 
     expect(inFlight.sort()).toEqual(["conflict-40", "worker-2"]);
-    expect(msgs(events)).toContain("pushed the resolved rebase for PR #40");
+    expect(msgs(events)).toContain("pushed the resolved rebase");
     expect(msgs(events)).toContain(
-      "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+      "Worker succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
     );
   });
 
@@ -827,7 +865,7 @@ describe("act: PR upkeep", () => {
     ).rejects.toThrow("claude ENOENT");
 
     expect(msgs(events)).toContain(
-      "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+      "Worker succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
     );
   });
 });
