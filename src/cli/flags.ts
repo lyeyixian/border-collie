@@ -16,7 +16,7 @@ export interface CliFlags {
   pollSeconds?: number;
   model?: string;
   retryModel?: string;
-  /** CLI-only, like `dryRun`: lowers the console's minimum level to debug, never the file's. */
+  /** CLI-only, like `dryRun`: lowers the console's minimum level to debug. */
   verbose: boolean;
 }
 
@@ -118,8 +118,7 @@ export const sharedFlags = {
   },
   verbose: {
     kind: "boolean",
-    brief:
-      "lower the console's minimum level to debug (the durable file is already at debug regardless)",
+    brief: "lower the console's minimum level to debug, for live debugging",
     default: false,
   },
 } as const satisfies FlagParametersForType<CliFlags, CommandContext>;

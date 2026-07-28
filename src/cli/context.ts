@@ -30,7 +30,7 @@ export interface Context extends CommandContext {
   readonly sleep: (ms: number) => Promise<void>;
   /** The single logging seam narration travels through; see src/core/log.ts. */
   readonly log: Log;
-  /** The verbosity flag: lowers the console's minimum level to debug. Never affects the file. */
+  /** The verbosity flag: lowers the console's minimum level to debug. Scoped to the console sink only. */
   readonly setVerbose: (verbose: boolean) => void;
 }
 

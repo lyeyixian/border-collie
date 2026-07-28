@@ -350,7 +350,7 @@ describe("run", () => {
     expect(nextTick).toMatchObject({ pollSeconds: 45 });
   });
 
-  it("also logs the inter-Tick wait at debug, so the durable file has it even when the console hides it", async () => {
+  it("also logs the inter-Tick wait at debug, hidden from the console by default", async () => {
     const inFlight = world(
       [ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })],
       [2],

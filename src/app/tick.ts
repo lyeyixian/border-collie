@@ -1,6 +1,10 @@
 import { openPrForOutcome } from "../adapters/pr.js";
 import { readScope, realExec, withDebugLogging } from "../adapters/tracker.js";
-import { dispatchConflictWorker, dispatchWorker } from "../adapters/worker.js";
+import {
+  dispatchConflictWorker,
+  dispatchWorker,
+  realSpawnWorkerProcess,
+} from "../adapters/worker.js";
 import { modelForAttempt, type ResolvedConfig } from "../core/config.js";
 import type { Log } from "../core/log.js";
 import { plan } from "../core/plan.js";
@@ -15,9 +19,10 @@ export async function tickOnce(
   dispatchPaused = false,
   log: Log,
 ): Promise<{ world: WorldSnapshot; actions: Action[]; infraFailures: number }> {
-  // Every tracker command this Tick issues, plus its exit code, is narrated
-  // at debug through the same seam — detail that does not exist today, kept
-  // out of the default console but always in the durable file.
+  // Every command this Tick issues through the adapters — gh and git alike
+  // — plus its exit code, is narrated at debug through the same seam:
+  // detail that does not exist today, hidden from the console unless
+  // --verbose is passed.
   const exec = withDebugLogging(realExec, log);
   const world = await readScope(config.scope, exec);
   const actions = plan(world, {
@@ -50,8 +55,8 @@ export async function tickOnce(
             maxTurns: config.maxTurns,
             maxCostUsd: config.maxCostUsd,
           },
-          undefined,
-          undefined,
+          exec,
+          realSpawnWorkerProcess,
           log,
         ),
       openPr: (outcome) =>
@@ -71,8 +76,8 @@ export async function tickOnce(
             stallMs: config.stallMinutes * 60_000,
             maxTurns: config.maxTurns,
           },
-          undefined,
-          undefined,
+          exec,
+          realSpawnWorkerProcess,
           log,
         ),
       exec,
