@@ -1,7 +1,9 @@
+import { join } from "node:path";
 import type { CommandContext, StricliProcess } from "@stricli/core";
 import { Logger } from "tslog";
+import { fileTransport } from "tslog/transports/file";
 import { loadConfigFile } from "../adapters/config-file.js";
-import { probeEnvironment } from "../adapters/worker.js";
+import { probeEnvironment, RUN_DIR } from "../adapters/worker.js";
 import { tickOnce } from "../app/tick.js";
 import {
   type Flags,
@@ -62,32 +64,76 @@ function tagFor(bindings: LogBindings): string {
 }
 
 /**
- * Console sink for the Orchestrator's narration: pretty, colored, leveled,
- * timestamped, at a minimum level of `info` — lowered to `debug` by the
- * verbosity flag via `setMinLevel`, tslog's supported way to change a
- * logger's level after construction. Code-position and stack capture are
- * disabled — this is domain narration, not application debugging. Color (and
- * `NO_COLOR`/`FORCE_COLOR`) and TTY detection are handled by tslog itself.
- * Constructed only here: `core` and `app` never import the library, they
- * only see the `Log` function type.
+ * Two sinks over one logger, since a durable record needs more detail than a
+ * human wants scrolling past live: `type: "hidden"` suppresses tslog's own
+ * console output (which has no per-sink level of its own) so each sink below
+ * can set its own threshold.
  *
- * The three report kinds bypass tslog entirely: they print as the familiar
- * unadorned block straight to the process's stdout, byte-identical to before
- * structured logging existed — a report is read as a table, not narration,
- * and a level/timestamp prefix would be bolted onto it. `child` derives a
- * tslog sub-logger per dispatched Worker: its `name` tags every console line
- * so concurrent Workers stay tellable apart, and its `bindings` carry the
- * Ticket/Attempt (or PR) as real fields once a structured sink exists to
- * read them.
+ * - **Console**: pretty, colored, leveled, timestamped, minimum level `info`
+ *   — lowered to `debug` by the verbosity flag. tslog's `setMinLevel` isn't
+ *   enough here: it moves the shared floor both sinks read from before their
+ *   own per-transport `minLevel` applies, so lowering it would also let
+ *   below-`info` records reach the file gate unnecessarily. Instead the
+ *   console transport reads its `minLevel` from a closed-over variable the
+ *   flag mutates directly, leaving the file's threshold untouched.
+ *   Code-position and stack capture are disabled — this is domain narration,
+ *   not application debugging. Color (and `NO_COLOR`/`FORCE_COLOR`) and TTY
+ *   detection are handled by tslog itself.
+ * - **File**: the run's durable record, one newline-delimited JSON file per
+ *   process invocation under `<cwd>/<RUN_DIR>/logs`, named by start time.
+ *   Minimum level `debug`, unconditionally — this detail cannot be recovered
+ *   by re-running later. The parent directory is created on first write;
+ *   append mode; a sink failure (permissions, full disk) is contained and
+ *   reported rather than fatal; the buffered tail is flushed on normal exit
+ *   and on crash. Records use tslog's native shape, not its pino-compatible
+ *   preset.
+ *
+ * The root logger binds a run identifier matching the file's name, so every
+ * record — console or file — carries it.
+ *
+ * The three report kinds bypass both sinks entirely: they print as the
+ * familiar unadorned block straight to the process's stdout, byte-identical
+ * to before structured logging existed — a report is read as a table, not
+ * narration, and a level/timestamp prefix would be bolted onto it. `child`
+ * derives a tslog sub-logger per dispatched Worker: its `name` tags every
+ * console line so concurrent Workers stay tellable apart, and its
+ * `bindings` carry the Ticket/Attempt (or PR) as real fields captured by
+ * the file sink, alongside the run id every sub-logger inherits.
+ *
+ * Constructed only here: `core` and `app` never import tslog, they only see
+ * the `Log` function type.
  */
-function buildLog(cliProcess: StricliProcess): {
+function buildLog(
+  cliProcess: StricliProcess,
+  cwd: string,
+): {
   log: Log;
   setVerbose: (verbose: boolean) => void;
 } {
+  const runId = new Date().toISOString().replace(/[:.]/g, "-");
   const rootLogger = new Logger({
-    minLevel: "INFO",
+    type: "hidden",
     stack: { capture: "off" },
+    bindings: { runId },
   });
+  let consoleMinLevel: "INFO" | "DEBUG" = "INFO";
+  rootLogger.attachTransport({
+    name: "console",
+    format: "pretty",
+    get minLevel() {
+      return consoleMinLevel;
+    },
+    write: (_record, line) => {
+      cliProcess.stdout.write(`${line}\n`);
+    },
+  });
+  rootLogger.attachTransport(
+    fileTransport({
+      path: join(cwd, RUN_DIR, "logs", `${runId}.jsonl`),
+      format: "json",
+      minLevel: "DEBUG",
+    }),
+  );
   function wrap(logger: typeof rootLogger): Log {
     const log = ((event: LogEvent): void => {
       const block = reportBlockText(event);
@@ -108,17 +154,19 @@ function buildLog(cliProcess: StricliProcess): {
   }
   return {
     log: wrap(rootLogger),
-    setVerbose: (verbose) => rootLogger.setMinLevel(verbose ? "DEBUG" : "INFO"),
+    setVerbose: (verbose) => {
+      consoleMinLevel = verbose ? "DEBUG" : "INFO";
+    },
   };
 }
 
 /** The real context: today's collaborators, wired exactly as the entry point wired them before. */
-export function buildRealContext(): Context {
+export function buildRealContext(cwd: string = process.cwd()): Context {
   const cliProcess = nodeProcessAdapter();
-  const { log, setVerbose } = buildLog(cliProcess);
+  const { log, setVerbose } = buildLog(cliProcess, cwd);
   return {
     process: cliProcess,
-    loadConfig: (flags) => resolveConfig(loadConfigFile(process.cwd()), flags),
+    loadConfig: (flags) => resolveConfig(loadConfigFile(cwd), flags),
     tick: (config, dryRun, dispatchPaused) =>
       tickOnce(config, dryRun, dispatchPaused, log),
     probe: (model) => probeEnvironment(model),
