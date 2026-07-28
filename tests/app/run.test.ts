@@ -228,10 +228,15 @@ describe("run", () => {
 
     await run(30, state.deps);
 
-    const report = state.events.find((e) => e.kind === "complete-report");
+    const report = state.events.find(
+      (e): e is Extract<LogEvent, { kind: "complete-report" }> =>
+        e.kind === "complete-report",
+    );
     expect(report?.level).toBe("info");
-    expect(report?.msg).toContain("#2 — Walking skeleton");
-    expect(report?.msg).toContain("#7 — Hard one");
+    expect(report?.report.tickets).toEqual([
+      { ticket: 2, title: "Walking skeleton", escalated: false },
+      { ticket: 7, title: "Hard one", escalated: true },
+    ]);
   });
 
   it("trips the breaker on infrastructure failure, ticks paused, and resumes when the probe passes", async () => {
@@ -313,9 +318,12 @@ describe("run", () => {
 
     expect(outcome).toBe("stuck");
     expect(state.sleeps).toEqual([]);
-    const report = state.events.find((e) => e.kind === "stuck-report");
+    const report = state.events.find(
+      (e): e is Extract<LogEvent, { kind: "stuck-report" }> =>
+        e.kind === "stuck-report",
+    );
     expect(report?.level).toBe("warn");
-    expect(report?.msg).toContain("#7");
+    expect(report?.report.tickets.map((t) => t.ticket)).toEqual([7]);
   });
 
   it("logs the poll wait at info between ticks", async () => {

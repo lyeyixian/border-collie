@@ -4,7 +4,7 @@ import { dispatchConflictWorker, dispatchWorker } from "../adapters/worker.js";
 import { modelForAttempt, type ResolvedConfig } from "../core/config.js";
 import type { Log } from "../core/log.js";
 import { plan } from "../core/plan.js";
-import { renderPlan } from "../core/render.js";
+import { buildPlanReport } from "../core/render.js";
 import type { Action, WorldSnapshot } from "../core/types.js";
 import { act } from "./act.js";
 
@@ -21,10 +21,15 @@ export async function tickOnce(
     maxOpenPrs: config.maxOpenPrs,
     dispatchPaused,
   });
+  const planReport = buildPlanReport(config, world, actions, {
+    dryRun,
+    dispatchPaused,
+  });
   log({
     kind: "plan-report",
     level: "info",
-    msg: renderPlan(config, world, actions, { dryRun, dispatchPaused }),
+    msg: "dispatch plan",
+    report: planReport,
   });
   let infraFailures = 0;
   if (!dryRun) {

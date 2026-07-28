@@ -8,8 +8,83 @@ import {
   type WorldSnapshot,
 } from "./types.js";
 
-/** Render the dispatch plan as human-readable lines. Pure. */
-export function renderPlan(
+// ---------------------------------------------------------------------------
+// Dispatch plan report
+// ---------------------------------------------------------------------------
+
+/** Why dispatch is paused this Tick, or absent when it isn't. */
+export type PlanPausedReason =
+  | { kind: "breaker" }
+  | { kind: "max-open-prs"; openCount: number };
+
+/** One planned action, resolved to exactly the fields its console line needs. */
+export type PlanActionLine =
+  | { type: "claim"; ticket: number; title: string }
+  | { type: "release"; ticket: number; title: string }
+  | {
+      type: "spawn";
+      ticket: number;
+      title: string;
+      model: string;
+      attempt: number;
+    }
+  | { type: "escalate"; ticket: number; title: string }
+  | { type: "close"; ticket: number; title: string; prUrl: string }
+  | { type: "update-branch"; pr: number; title: string }
+  | { type: "conflict-worker"; pr: number; title: string }
+  | { type: "mark-ready"; pr: number; title: string };
+
+export interface PlanReport {
+  scopeLabel: string;
+  totalTickets: number;
+  openTickets: number;
+  /** Dispatchable ticket numbers, in the order they'd claim. */
+  dispatchable: number[];
+  paused: PlanPausedReason | null;
+  maxWorkers: number;
+  maxOpenPrs: number;
+  actions: PlanActionLine[];
+  dryRun: boolean;
+}
+
+function toPlanActionLine(
+  action: Action,
+  title: string,
+  config: ResolvedConfig,
+): PlanActionLine {
+  switch (action.type) {
+    case "claim":
+      return { type: "claim", ticket: action.ticket, title };
+    case "release":
+      return { type: "release", ticket: action.ticket, title };
+    case "spawn":
+      return {
+        type: "spawn",
+        ticket: action.ticket,
+        title,
+        model: modelForAttempt(config, action.attempt),
+        attempt: action.attempt,
+      };
+    case "escalate":
+      return { type: "escalate", ticket: action.ticket, title };
+    case "close":
+      return {
+        type: "close",
+        ticket: action.ticket,
+        title,
+        prUrl: action.prUrl,
+      };
+    case "update-branch":
+      return { type: "update-branch", pr: action.pr, title };
+    case "conflict-worker":
+      return { type: "conflict-worker", pr: action.pr, title };
+    case "mark-ready":
+      return { type: "mark-ready", pr: action.pr, title };
+  }
+}
+
+/** Build the dispatch plan report's data. Pure. */
+export function buildPlanReport(
   config: ResolvedConfig,
   world: WorldSnapshot,
   actions: Action[],
@@ -17,156 +92,244 @@ export function renderPlan(
     dryRun,
     dispatchPaused = false,
   }: { dryRun: boolean; dispatchPaused?: boolean },
-): string {
+): PlanReport {
   const { scope, maxWorkers, maxOpenPrs } = config;
-  const lines: string[] = [];
-  const open = world.tickets.filter((t) => t.state === "open").length;
   const scopeLabel =
     scope.kind === "parent"
       ? `sub-issues of #${scope.parent}`
       : "repo-wide (--all)";
-  lines.push(
-    `Scope: ${scopeLabel} — ${world.tickets.length} tickets (${open} open)`,
-  );
+  const dispatchable = dispatchableSet(world).map((ticket) => ticket.number);
 
-  const dispatchable = dispatchableSet(world);
-  if (dispatchable.length === 0) {
-    lines.push("Dispatchable: none");
-  } else {
-    lines.push(
-      `Dispatchable: ${dispatchable.map((t) => `#${t.number}`).join(", ")}`,
-    );
-  }
+  let paused: PlanPausedReason | null = null;
   if (dispatchPaused) {
-    lines.push(
-      "Dispatch paused: circuit breaker open (infrastructure failure), claims held",
-    );
+    paused = { kind: "breaker" };
   } else if (
     dispatchable.length > 0 &&
     world.openAgentPrs.length >= maxOpenPrs
   ) {
-    lines.push(
-      `Dispatch paused: ${world.openAgentPrs.length} open agent PRs at max_open_prs (${maxOpenPrs})`,
-    );
+    paused = { kind: "max-open-prs", openCount: world.openAgentPrs.length };
   }
 
   const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
-  if (actions.length === 0) {
+  const actionLines = actions.map((action) =>
+    toPlanActionLine(action, titles.get(action.ticket) ?? "", config),
+  );
+
+  return {
+    scopeLabel,
+    totalTickets: world.tickets.length,
+    openTickets: world.tickets.filter((t) => t.state === "open").length,
+    dispatchable,
+    paused,
+    maxWorkers,
+    maxOpenPrs,
+    actions: actionLines,
+    dryRun,
+  };
+}
+
+function renderPlanActionLine(line: PlanActionLine): string {
+  switch (line.type) {
+    case "claim":
+      return `  claim #${line.ticket} — ${line.title}`;
+    case "release":
+      return `  release #${line.ticket} — ${line.title} (orphaned agent claim)`;
+    case "spawn":
+      return `  spawn Worker for #${line.ticket} — ${line.title} (model ${line.model}, attempt ${line.attempt})`;
+    case "escalate":
+      return `  escalate #${line.ticket} — ${line.title} (attempts exhausted → ready-for-human)`;
+    case "close":
+      return `  close #${line.ticket} — ${line.title} (merged: ${line.prUrl})`;
+    case "update-branch":
+      return `  update PR #${line.pr} — ${line.title} (behind base, mechanical rebase)`;
+    case "conflict-worker":
+      return `  conflict Worker for PR #${line.pr} — ${line.title} (resolve merge conflicts)`;
+    case "mark-ready":
+      return `  mark PR #${line.pr} ready — ${line.title} (CI green)`;
+  }
+}
+
+/** Render the dispatch plan report as the familiar unadorned text block. Pure. */
+export function renderPlanReport(report: PlanReport): string {
+  const lines: string[] = [];
+  lines.push(
+    `Scope: ${report.scopeLabel} — ${report.totalTickets} tickets (${report.openTickets} open)`,
+  );
+
+  lines.push(
+    report.dispatchable.length === 0
+      ? "Dispatchable: none"
+      : `Dispatchable: ${report.dispatchable.map((n) => `#${n}`).join(", ")}`,
+  );
+
+  if (report.paused?.kind === "breaker") {
     lines.push(
-      `Plan (max_workers=${maxWorkers}, max_open_prs=${maxOpenPrs}): nothing to do`,
+      "Dispatch paused: circuit breaker open (infrastructure failure), claims held",
     );
-  } else {
-    lines.push(`Plan (max_workers=${maxWorkers}, max_open_prs=${maxOpenPrs}):`);
-    for (const action of actions) {
-      const title = titles.get(action.ticket) ?? "";
-      switch (action.type) {
-        case "claim":
-          lines.push(`  claim #${action.ticket} — ${title}`);
-          break;
-        case "release":
-          lines.push(
-            `  release #${action.ticket} — ${title} (orphaned agent claim)`,
-          );
-          break;
-        case "spawn":
-          lines.push(
-            `  spawn Worker for #${action.ticket} — ${title} (model ${modelForAttempt(
-              config,
-              action.attempt,
-            )}, attempt ${action.attempt})`,
-          );
-          break;
-        case "escalate":
-          lines.push(
-            `  escalate #${action.ticket} — ${title} (attempts exhausted → ready-for-human)`,
-          );
-          break;
-        case "close":
-          lines.push(
-            `  close #${action.ticket} — ${title} (merged: ${action.prUrl})`,
-          );
-          break;
-        case "update-branch":
-          lines.push(
-            `  update PR #${action.pr} — ${title} (behind base, mechanical rebase)`,
-          );
-          break;
-        case "conflict-worker":
-          lines.push(
-            `  conflict Worker for PR #${action.pr} — ${title} (resolve merge conflicts)`,
-          );
-          break;
-        case "mark-ready":
-          lines.push(`  mark PR #${action.pr} ready — ${title} (CI green)`);
-          break;
-      }
-    }
+  } else if (report.paused?.kind === "max-open-prs") {
+    lines.push(
+      `Dispatch paused: ${report.paused.openCount} open agent PRs at max_open_prs (${report.maxOpenPrs})`,
+    );
   }
 
-  if (dryRun) lines.push("Dry run: no writes performed.");
+  if (report.actions.length === 0) {
+    lines.push(
+      `Plan (max_workers=${report.maxWorkers}, max_open_prs=${report.maxOpenPrs}): nothing to do`,
+    );
+  } else {
+    lines.push(
+      `Plan (max_workers=${report.maxWorkers}, max_open_prs=${report.maxOpenPrs}):`,
+    );
+    lines.push(...report.actions.map(renderPlanActionLine));
+  }
+
+  if (report.dryRun) lines.push("Dry run: no writes performed.");
   return lines.join("\n");
 }
 
+// ---------------------------------------------------------------------------
+// Stuck report
+// ---------------------------------------------------------------------------
+
 /**
- * Why this open ticket cannot move without a human. Any assignee at a Stuck
- * exit is a human claim: agent claims are either orphans (released before the
- * exit) or backed by a PR (which keeps the run polling).
+ * Why one open ticket cannot move without a human, as structured data — "what
+ * blocked what" is answerable without parsing a rendered block.
  */
-function stuckReason(ticket: Ticket, inScope: Set<number>): string {
-  const reasons: string[] = [];
+export type StuckReasonDetail =
+  | { kind: "human-claim"; assignees: string[] }
+  | { kind: "ready-for-human" }
+  | { kind: "not-ready-for-agent" }
+  | { kind: "blocked-by"; blockers: { ticket: number; inScope: boolean }[] }
+  | { kind: "blocked-count"; count: number };
+
+export interface StuckTicketReport {
+  ticket: number;
+  title: string;
+  reasons: StuckReasonDetail[];
+}
+
+export interface StuckReport {
+  tickets: StuckTicketReport[];
+}
+
+/**
+ * Any assignee at a Stuck exit is a human claim: agent claims are either
+ * orphans (released before the exit) or backed by a PR (which keeps the run
+ * polling).
+ */
+function stuckReasons(
+  ticket: Ticket,
+  inScope: Set<number>,
+): StuckReasonDetail[] {
+  const reasons: StuckReasonDetail[] = [];
   if (ticket.assignees.length > 0) {
-    reasons.push(
-      `claimed by ${ticket.assignees.join(", ")} — a human claim, hands off`,
-    );
+    reasons.push({ kind: "human-claim", assignees: ticket.assignees });
   }
   if (ticket.labels.includes(READY_FOR_HUMAN)) {
-    reasons.push(`labelled ${READY_FOR_HUMAN}`);
+    reasons.push({ kind: "ready-for-human" });
   } else if (!ticket.labels.includes(READY_FOR_AGENT)) {
-    reasons.push(`not labelled ${READY_FOR_AGENT}`);
+    reasons.push({ kind: "not-ready-for-agent" });
   }
   if (ticket.openBlockers > 0) {
     // Blockers outside Scope are flagged: their tickets get no line of their
     // own in this report. The count is the fallback for an unread list.
     reasons.push(
       ticket.blockedBy.length > 0
-        ? `blocked by ${ticket.blockedBy
-            .map((n) => (inScope.has(n) ? `#${n}` : `#${n} (outside Scope)`))
-            .join(", ")}`
-        : `${ticket.openBlockers} open blocker${ticket.openBlockers === 1 ? "" : "s"}`,
+        ? {
+            kind: "blocked-by",
+            blockers: ticket.blockedBy.map((n) => ({
+              ticket: n,
+              inScope: inScope.has(n),
+            })),
+          }
+        : { kind: "blocked-count", count: ticket.openBlockers },
     );
   }
-  return reasons.join("; ") || "no path forward found";
+  return reasons;
 }
 
-/** Render the Stuck exit report: each remaining open ticket and exactly what it is stuck on. Pure. */
-export function renderStuck(world: WorldSnapshot): string {
+/** Build the Stuck exit report's data: each remaining open ticket and exactly what it is stuck on. Pure. */
+export function buildStuckReport(world: WorldSnapshot): StuckReport {
   const inScope = new Set(world.tickets.map((t) => t.number));
+  return {
+    tickets: world.tickets
+      .filter((ticket) => ticket.state === "open")
+      .map((ticket) => ({
+        ticket: ticket.number,
+        title: ticket.title,
+        reasons: stuckReasons(ticket, inScope),
+      })),
+  };
+}
+
+function renderStuckReasonText(reason: StuckReasonDetail): string {
+  switch (reason.kind) {
+    case "human-claim":
+      return `claimed by ${reason.assignees.join(", ")} — a human claim, hands off`;
+    case "ready-for-human":
+      return `labelled ${READY_FOR_HUMAN}`;
+    case "not-ready-for-agent":
+      return `not labelled ${READY_FOR_AGENT}`;
+    case "blocked-by":
+      return `blocked by ${reason.blockers
+        .map((b) =>
+          b.inScope ? `#${b.ticket}` : `#${b.ticket} (outside Scope)`,
+        )
+        .join(", ")}`;
+    case "blocked-count":
+      return `${reason.count} open blocker${reason.count === 1 ? "" : "s"}`;
+  }
+}
+
+/** Render the Stuck exit report as the familiar unadorned text block. Pure. */
+export function renderStuckReport(report: StuckReport): string {
   return [
     "Run Stuck: open tickets remain, but every path forward runs through a human.",
-    ...world.tickets
-      .filter((ticket) => ticket.state === "open")
-      .map(
-        (ticket) =>
-          `  #${ticket.number} — ${ticket.title} (${stuckReason(ticket, inScope)})`,
-      ),
+    ...report.tickets.map((ticket) => {
+      const reasonText =
+        ticket.reasons.map(renderStuckReasonText).join("; ") ||
+        "no path forward found";
+      return `  #${ticket.ticket} — ${ticket.title} (${reasonText})`;
+    }),
   ].join("\n");
 }
 
-/**
- * Render the Complete exit report: every ticket in Scope, closed. A closed
- * ticket still labelled ready-for-human went through Escalation and was
- * finished by a human — worth naming, as those are the tickets the fleet
- * could not do alone. Pure.
- */
-export function renderComplete(tickets: Ticket[]): string {
-  const count = `${tickets.length} ticket${tickets.length === 1 ? "" : "s"}`;
+// ---------------------------------------------------------------------------
+// Complete report
+// ---------------------------------------------------------------------------
+
+export interface CompleteTicketReport {
+  ticket: number;
+  title: string;
+  /** Closed after going through Escalation and being finished by a human. */
+  escalated: boolean;
+}
+
+export interface CompleteReport {
+  tickets: CompleteTicketReport[];
+}
+
+/** Build the Complete exit report's data: every ticket in Scope, closed. Pure. */
+export function buildCompleteReport(tickets: Ticket[]): CompleteReport {
+  return {
+    tickets: tickets.map((ticket) => ({
+      ticket: ticket.number,
+      title: ticket.title,
+      escalated: ticket.labels.includes(READY_FOR_HUMAN),
+    })),
+  };
+}
+
+/** Render the Complete exit report as the familiar unadorned text block. Pure. */
+export function renderCompleteReport(report: CompleteReport): string {
+  const count = `${report.tickets.length} ticket${report.tickets.length === 1 ? "" : "s"}`;
   return [
     `Run Complete: every ticket in Scope is closed (${count}).`,
-    ...tickets.map((ticket) => {
-      const escalated = ticket.labels.includes(READY_FOR_HUMAN)
+    ...report.tickets.map((ticket) => {
+      const escalated = ticket.escalated
         ? " (closed by a human after Escalation)"
         : "";
-      return `  #${ticket.number} — ${ticket.title}${escalated}`;
+      return `  #${ticket.ticket} — ${ticket.title}${escalated}`;
     }),
   ].join("\n");
 }

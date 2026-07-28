@@ -10,6 +10,7 @@ import {
 } from "../core/config.js";
 import type { Log } from "../core/log.js";
 import type { Action, WorldSnapshot } from "../core/types.js";
+import { reportBlockText } from "./console-report.js";
 
 /** Every effect a command handler needs, injected so handlers never import them directly. */
 export interface Context extends CommandContext {
@@ -58,16 +59,28 @@ function nodeProcessAdapter(): StricliProcess {
  * (and `NO_COLOR`/`FORCE_COLOR`) and TTY detection are handled by tslog
  * itself. Constructed only here: `core` and `app` never import the library,
  * they only see the `Log` function type.
+ *
+ * The three report kinds bypass tslog entirely: they print as the familiar
+ * unadorned block straight to the process's stdout, byte-identical to before
+ * structured logging existed — a report is read as a table, not narration,
+ * and a level/timestamp prefix would be bolted onto it.
  */
-function buildLog(): Log {
+function buildLog(cliProcess: StricliProcess): Log {
   const logger = new Logger({ minLevel: "INFO", stack: { capture: "off" } });
-  return (event) => logger[event.level](event.msg);
+  return (event) => {
+    const block = reportBlockText(event);
+    if (block !== null) {
+      cliProcess.stdout.write(`${block}\n`);
+      return;
+    }
+    logger[event.level](event.msg);
+  };
 }
 
 /** The real context: today's collaborators, wired exactly as the entry point wired them before. */
 export function buildRealContext(): Context {
   const cliProcess = nodeProcessAdapter();
-  const log = buildLog();
+  const log = buildLog(cliProcess);
   return {
     process: cliProcess,
     loadConfig: (flags) => resolveConfig(loadConfigFile(process.cwd()), flags),
