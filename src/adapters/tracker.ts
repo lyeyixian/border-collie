@@ -59,9 +59,10 @@ function exitCodeOf(error: unknown): number | null {
 /**
  * Decorates an `Exec` with a `debug` event per call, carrying the command and
  * its exit code — detail that does not exist today, so an operator can see
- * what the Orchestrator actually asked the tracker to do without reproducing
- * the run. Neither `cmd`/`args` nor an exit code ever carries a credential:
- * `gh` and `git` read auth from the environment, never argv.
+ * every `gh`/`git` command the Orchestrator actually issued, and how it
+ * exited, without reproducing the run. Neither `cmd`/`args` nor an exit code
+ * ever carries a credential: `gh` and `git` read auth from the environment,
+ * never argv.
  */
 export function withDebugLogging(exec: Exec, log: Log): Exec {
   return async (cmd, args) => {
