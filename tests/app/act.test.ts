@@ -7,6 +7,7 @@ import {
   type DispatchWorker,
   type OpenPr,
 } from "../../src/app/act.js";
+import type { LogEvent } from "../../src/core/log.js";
 import {
   type AttemptFailure,
   attemptMarker,
@@ -24,6 +25,19 @@ function recordingExec(): { exec: Exec; calls: string[][] } {
     return "";
   };
   return { exec, calls };
+}
+
+/** Records emitted events; `msgs()` mirrors the old narration-line assertions. */
+function recordingLog(): {
+  log: (event: LogEvent) => void;
+  events: LogEvent[];
+} {
+  const events: LogEvent[] = [];
+  return { log: (event) => events.push(event), events };
+}
+
+function msgs(events: LogEvent[]): string[] {
+  return events.map((e) => e.msg);
 }
 
 const noDispatch: DispatchWorker = async (ticket) => {
@@ -86,7 +100,7 @@ describe("act", () => {
   it("executes releases and claims in plan order via the tracker", async () => {
     const { exec, calls } = recordingExec();
     const { openPr } = recordingOpenPr();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
 
     await act(
       [
@@ -98,7 +112,7 @@ describe("act", () => {
         openPr,
         dispatchConflict: noConflict,
         exec,
-        log: (line) => lines.push(line),
+        log,
       },
     );
 
@@ -122,13 +136,18 @@ describe("act", () => {
         expect.stringContaining(CLAIM_MARKER),
       ],
     ]);
-    expect(lines).toEqual(["released #4 (orphaned claim)", "claimed #9"]);
+    expect(events.map((e) => e.kind)).toEqual(["release", "claim"]);
+    expect(events.every((e) => e.level === "info")).toBe(true);
+    expect(msgs(events)).toEqual([
+      "released #4 (orphaned claim)",
+      "claimed #9",
+    ]);
   });
 
   it("closes a merged-but-open ticket via the tracker, linking the PR", async () => {
     const { exec, calls } = recordingExec();
     const { openPr } = recordingOpenPr();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
 
     await act(
       [{ type: "close", ticket: 6, prUrl: "https://github.com/o/r/pull/60" }],
@@ -137,7 +156,7 @@ describe("act", () => {
         openPr,
         dispatchConflict: noConflict,
         exec,
-        log: (line) => lines.push(line),
+        log,
       },
     );
 
@@ -151,8 +170,14 @@ describe("act", () => {
         expect.stringContaining("https://github.com/o/r/pull/60"),
       ],
     ]);
-    expect(lines).toEqual([
-      "closed #6 (merged: https://github.com/o/r/pull/60)",
+    expect(events).toEqual([
+      {
+        kind: "close",
+        level: "info",
+        msg: "closed #6 (merged: https://github.com/o/r/pull/60)",
+        ticket: 6,
+        prUrl: "https://github.com/o/r/pull/60",
+      },
     ]);
   });
 
@@ -174,7 +199,7 @@ describe("act", () => {
   it("runs spawned Workers concurrently, opens a PR per success, and reports each outcome", async () => {
     const { exec } = recordingExec();
     const { openPr, opened } = recordingOpenPr();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const dispatched: number[] = [];
     let bothInFlight!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -207,13 +232,35 @@ describe("act", () => {
         openPr,
         dispatchConflict: noConflict,
         exec,
-        log: (line) => lines.push(line),
+        log,
       },
     );
 
     expect(dispatched).toEqual([2, 4]);
     expect(opened).toEqual([2]); // only the success becomes a PR
-    expect(lines).toEqual([
+    expect(events.map((e) => e.kind)).toEqual([
+      "claim",
+      "spawn",
+      "claim",
+      "spawn",
+      "worker-outcome",
+      "pr-opened",
+      "worker-outcome",
+      "attempt-released",
+    ]);
+    // Success and a Ticket failure that will be retried are both info — the
+    // retry ladder working as designed must not read as an alarm.
+    expect(events.map((e) => e.level)).toEqual([
+      "info",
+      "info",
+      "info",
+      "info",
+      "info",
+      "info",
+      "info",
+      "info",
+    ]);
+    expect(msgs(events)).toEqual([
       "claimed #2",
       "spawned Worker for #2 (attempt 1)",
       "claimed #4",
@@ -292,9 +339,53 @@ describe("act", () => {
     expect(calls).toEqual([]);
   });
 
-  it("escalates: forensic comment, then the ready-for-agent → ready-for-human label swap", async () => {
+  it("assigns worker-outcome levels per the level table: success and a retried Ticket failure are info, an infrastructure failure is warn", async () => {
+    const cases: { outcome: WorkerOutcome; level: "info" | "warn" }[] = [
+      { outcome: outcome(2), level: "info" },
+      {
+        outcome: outcome(4, {
+          exitCode: 1,
+          newCommits: 0,
+          failure: "nonzero-exit",
+          ok: false,
+        }),
+        level: "info",
+      },
+      {
+        outcome: outcome(6, {
+          exitCode: 1,
+          newCommits: 0,
+          infra: "network",
+          ok: false,
+        }),
+        level: "warn",
+      },
+    ];
+
+    for (const { outcome: scriptedOutcome, level } of cases) {
+      const { exec } = recordingExec();
+      const { log, events } = recordingLog();
+      const dispatch: DispatchWorker = async () => scriptedOutcome;
+
+      await act(
+        [{ type: "spawn", ticket: scriptedOutcome.ticket, attempt: 1 }],
+        {
+          dispatch,
+          openPr: recordingOpenPr().openPr,
+          dispatchConflict: noConflict,
+          exec,
+          log,
+        },
+      );
+
+      const workerOutcome = events.find((e) => e.kind === "worker-outcome");
+      expect(workerOutcome?.level).toBe(level);
+    }
+  });
+
+  it("escalates: forensic comment, then the ready-for-agent → ready-for-human label swap, logged at warn", async () => {
     const { exec, calls } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const failures: AttemptFailure[] = [
       {
         attempt: 1,
@@ -310,7 +401,7 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
-      log: (line) => lines.push(line),
+      log,
     });
 
     expect(calls).toEqual([
@@ -333,15 +424,20 @@ describe("act", () => {
         "ready-for-human",
       ],
     ]);
-    expect(lines).toEqual([
-      "escalated #5 to ready-for-human (attempts exhausted)",
+    expect(events).toEqual([
+      {
+        kind: "escalate",
+        level: "warn",
+        msg: "escalated #5 to ready-for-human (attempts exhausted)",
+        ticket: 5,
+      },
     ]);
   });
 
-  it("flags a cost overrun on a finished attempt while still opening its PR", async () => {
+  it("flags a cost overrun on a finished attempt while still opening its PR, logged at warn", async () => {
     const { exec, calls } = recordingExec();
     const { openPr, opened } = recordingOpenPr();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const dispatch: DispatchWorker = async () =>
       outcome(7, { costUsd: 25.5, turns: 80, costOverrun: true });
 
@@ -350,19 +446,21 @@ describe("act", () => {
       openPr,
       dispatchConflict: noConflict,
       exec,
-      log: (line) => lines.push(line),
+      log,
     });
 
     expect(opened).toEqual([7]); // the work is kept — discarding refunds nothing
     expect(calls).toEqual([]); // no tracker writes: not a failure
-    expect(lines).toContain(
+    const costOverrun = events.find((e) => e.kind === "cost-overrun");
+    expect(costOverrun?.level).toBe("warn");
+    expect(costOverrun?.msg).toBe(
       "cost overrun on #7: attempt 1 spent $25.50 — the ticket may be cut too big for one Worker",
     );
   });
 
-  it("voids an infrastructure-classified attempt: comment only, claim held, counted in the report", async () => {
+  it("voids an infrastructure-classified attempt: comment only, claim held, counted in the report, logged at warn", async () => {
     const { exec, calls } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const dispatch: DispatchWorker = async () =>
       outcome(7, {
         exitCode: 1,
@@ -376,7 +474,7 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
-      log: (line) => lines.push(line),
+      log,
     });
 
     expect(calls).toEqual([
@@ -390,12 +488,16 @@ describe("act", () => {
       ],
     ]);
     expect(report).toEqual({ infraFailures: 1 });
-    expect(lines).toContain("voided attempt 1 of #7 (usage-limit); claim held");
+    const voided = events.find((e) => e.kind === "attempt-voided");
+    expect(voided?.level).toBe("warn");
+    expect(voided?.msg).toBe(
+      "voided attempt 1 of #7 (usage-limit); claim held",
+    );
   });
 
   it("reclassifies several Workers failing the same way in one Tick as correlated infrastructure", async () => {
     const { exec, calls } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const dispatch: DispatchWorker = async (ticket) =>
       outcome(ticket, {
         exitCode: 1,
@@ -414,7 +516,7 @@ describe("act", () => {
         openPr: recordingOpenPr().openPr,
         dispatchConflict: noConflict,
         exec,
-        log: (line) => lines.push(line),
+        log,
       },
     );
 
@@ -425,7 +527,9 @@ describe("act", () => {
     ]);
     expect(calls.every((c) => c[5]?.includes(VOID_MARKER))).toBe(true);
     expect(report).toEqual({ infraFailures: 2 });
-    expect(lines.join("\n")).toContain("correlated");
+    const workerOutcomes = events.filter((e) => e.kind === "worker-outcome");
+    expect(workerOutcomes.every((e) => e.level === "warn")).toBe(true);
+    expect(msgs(events).join("\n")).toContain("correlated");
   });
 
   it("reports zero infrastructure failures for a clean Tick", async () => {
@@ -446,7 +550,7 @@ describe("act", () => {
   it("still reports finished Workers when a sibling dispatch throws, then rethrows", async () => {
     const { exec } = recordingExec();
     const { openPr } = recordingOpenPr();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const dispatch: DispatchWorker = async (ticket) => {
       if (ticket === 4) throw new Error("git exploded");
       return outcome(ticket);
@@ -463,19 +567,19 @@ describe("act", () => {
           openPr,
           dispatchConflict: noConflict,
           exec,
-          log: (line) => lines.push(line),
+          log,
         },
       ),
     ).rejects.toThrow("git exploded");
 
-    expect(lines).toContain(
+    expect(msgs(events)).toContain(
       "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
     );
   });
 
   it("still reports the Worker's outcome when PR opening fails, then rethrows", async () => {
     const { exec } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const dispatch: DispatchWorker = async (ticket) => outcome(ticket);
     const openPr: OpenPr = async () => {
       throw new Error("gh pr create exploded");
@@ -487,11 +591,11 @@ describe("act", () => {
         openPr,
         dispatchConflict: noConflict,
         exec,
-        log: (line) => lines.push(line),
+        log,
       }),
     ).rejects.toThrow("gh pr create exploded");
 
-    expect(lines).toContain(
+    expect(msgs(events)).toContain(
       "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
     );
   });
@@ -500,41 +604,53 @@ describe("act", () => {
 describe("act: PR upkeep", () => {
   it("mechanically updates a behind PR's branch via the tracker", async () => {
     const { exec, calls } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
 
     await act([{ type: "update-branch", pr: 30, ticket: 3 }], {
       dispatch: noDispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
-      log: (line) => lines.push(line),
+      log,
     });
 
     expect(calls).toEqual([["gh", "pr", "update-branch", "30", "--rebase"]]);
-    expect(lines).toEqual([
-      "updated PR #30 branch (mechanical rebase onto the base)",
+    expect(events).toEqual([
+      {
+        kind: "update-branch",
+        level: "info",
+        msg: "updated PR #30 branch (mechanical rebase onto the base)",
+        pr: 30,
+      },
     ]);
   });
 
   it("flips a green draft PR to ready for review via the tracker", async () => {
     const { exec, calls } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
 
     await act([{ type: "mark-ready", pr: 30, ticket: 3 }], {
       dispatch: noDispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
-      log: (line) => lines.push(line),
+      log,
     });
 
     expect(calls).toEqual([["gh", "pr", "ready", "30"]]);
-    expect(lines).toEqual(["marked PR #30 ready for review"]);
+    expect(events).toEqual([
+      {
+        kind: "mark-ready",
+        level: "info",
+        msg: "marked PR #30 ready for review",
+        pr: 30,
+      },
+    ]);
   });
 
   it("pushes the branch when the conflict Worker resolves the merge", async () => {
     const { exec, calls } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const dispatchConflict: DispatchConflictWorker = async (
       pr,
       ticket,
@@ -555,23 +671,29 @@ describe("act: PR upkeep", () => {
         openPr: recordingOpenPr().openPr,
         dispatchConflict,
         exec,
-        log: (line) => lines.push(line),
+        log,
       },
     );
 
     expect(calls).toEqual([
       ["git", "push", "--force", "origin", "border-collie/ticket-3-attempt-1"],
     ]);
-    expect(lines).toEqual([
+    expect(events.map((e) => e.kind)).toEqual([
+      "conflict-dispatch",
+      "conflict-outcome",
+      "conflict-pushed",
+    ]);
+    expect(events.every((e) => e.level === "info")).toBe(true);
+    expect(msgs(events)).toEqual([
       "dispatched conflict Worker for PR #30 (ticket #3)",
       "Conflict Worker for PR #30 resolved the conflicts on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
       "pushed the resolved rebase for PR #30",
     ]);
   });
 
-  it("asks for human resolution when the conflict Worker gives up (no push)", async () => {
+  it("asks for human resolution when the conflict Worker gives up (no push), logged at warn", async () => {
     const { exec, calls } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const dispatchConflict: DispatchConflictWorker = async (
       pr,
       ticket,
@@ -592,7 +714,7 @@ describe("act: PR upkeep", () => {
         openPr: recordingOpenPr().openPr,
         dispatchConflict,
         exec,
-        log: (line) => lines.push(line),
+        log,
       },
     );
 
@@ -606,7 +728,13 @@ describe("act: PR upkeep", () => {
         expect.stringContaining(CONFLICT_UNRESOLVED_MARKER),
       ],
     ]);
-    expect(lines).toEqual([
+    expect(events.map((e) => e.kind)).toEqual([
+      "conflict-dispatch",
+      "conflict-outcome",
+      "conflict-unresolved",
+    ]);
+    expect(events.map((e) => e.level)).toEqual(["info", "warn", "warn"]);
+    expect(msgs(events)).toEqual([
       "dispatched conflict Worker for PR #30 (ticket #3)",
       "Conflict Worker for PR #30 could not resolve the conflicts (exit 1) on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
       "asked for human resolution on PR #30",
@@ -615,7 +743,7 @@ describe("act: PR upkeep", () => {
 
   it("runs conflict Workers concurrently with dispatch Workers and reports both", async () => {
     const { exec } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const inFlight: string[] = [];
     let bothInFlight!: () => void;
     const gate = new Promise<void>((resolve) => {
@@ -653,20 +781,20 @@ describe("act: PR upkeep", () => {
         openPr: recordingOpenPr().openPr,
         dispatchConflict,
         exec,
-        log: (line) => lines.push(line),
+        log,
       },
     );
 
     expect(inFlight.sort()).toEqual(["conflict-40", "worker-2"]);
-    expect(lines).toContain("pushed the resolved rebase for PR #40");
-    expect(lines).toContain(
+    expect(msgs(events)).toContain("pushed the resolved rebase for PR #40");
+    expect(msgs(events)).toContain(
       "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
     );
   });
 
   it("reports settled Workers before rethrowing a conflict Worker's infrastructure failure", async () => {
     const { exec } = recordingExec();
-    const lines: string[] = [];
+    const { log, events } = recordingLog();
     const dispatch: DispatchWorker = async (ticket) => outcome(ticket);
     const dispatchConflict: DispatchConflictWorker = async () => {
       throw new Error("claude ENOENT");
@@ -688,12 +816,12 @@ describe("act: PR upkeep", () => {
           openPr: recordingOpenPr().openPr,
           dispatchConflict,
           exec,
-          log: (line) => lines.push(line),
+          log,
         },
       ),
     ).rejects.toThrow("claude ENOENT");
 
-    expect(lines).toContain(
+    expect(msgs(events)).toContain(
       "Worker for #2 succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
     );
   });

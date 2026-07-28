@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type RunDeps, run, runStatus } from "../../src/app/run.js";
 import { BREAKER_BASE_COOLDOWN_MS } from "../../src/core/breaker.js";
+import type { LogEvent } from "../../src/core/log.js";
 import type {
   Action,
   MergedAgentPr,
@@ -138,14 +139,14 @@ function scriptedDeps(
   pausedFlags: boolean[];
   probes: number;
   sleeps: number[];
-  lines: string[];
+  events: LogEvent[];
 } {
   const state = {
     ticks: 0,
     pausedFlags: [] as boolean[],
     probes: 0,
     sleeps: [] as number[],
-    lines: [] as string[],
+    events: [] as LogEvent[],
     deps: {} as RunDeps,
   };
   let nowMs = 0;
@@ -170,8 +171,8 @@ function scriptedDeps(
       state.sleeps.push(ms);
       nowMs += opts.msPerSleep ?? ms;
     },
-    log: (line) => {
-      state.lines.push(line);
+    log: (event) => {
+      state.events.push(event);
     },
   };
   return state;
@@ -206,10 +207,10 @@ describe("run", () => {
 
     expect(outcome).toBe("complete");
     expect(state.sleeps).toEqual([]);
-    expect(state.lines.some((line) => line.includes("Complete"))).toBe(true);
+    expect(state.events.some((e) => e.kind === "complete-report")).toBe(true);
   });
 
-  it("logs a Complete summary report naming every ticket in Scope", async () => {
+  it("logs a Complete summary report naming every ticket in Scope, at info", async () => {
     const state = scriptedDeps([
       {
         world: world([
@@ -227,9 +228,10 @@ describe("run", () => {
 
     await run(30, state.deps);
 
-    const report = state.lines.join("\n");
-    expect(report).toContain("#2 — Walking skeleton");
-    expect(report).toContain("#7 — Hard one");
+    const report = state.events.find((e) => e.kind === "complete-report");
+    expect(report?.level).toBe("info");
+    expect(report?.msg).toContain("#2 — Walking skeleton");
+    expect(report?.msg).toContain("#7 — Hard one");
   });
 
   it("trips the breaker on infrastructure failure, ticks paused, and resumes when the probe passes", async () => {
@@ -258,8 +260,13 @@ describe("run", () => {
     expect(outcome).toBe("complete");
     expect(state.pausedFlags).toEqual([false, true, false]);
     expect(state.probes).toBe(1);
-    expect(state.lines.join("\n")).toContain("circuit breaker open");
-    expect(state.lines.join("\n")).toContain("dispatch resumes");
+    // Infrastructure failure is healthy-but-degraded, warn — not an alarm.
+    const open = state.events.find((e) => e.kind === "breaker-open");
+    expect(open?.level).toBe("warn");
+    expect(open).toMatchObject({ infraFailures: 1 });
+    // Recovery is the loop working again, info.
+    const closed = state.events.find((e) => e.kind === "breaker-closed");
+    expect(closed?.level).toBe("info");
   });
 
   it("re-trips on a failed probe and waits the doubled cooldown before probing again", async () => {
@@ -283,9 +290,12 @@ describe("run", () => {
     // t2; passes at t3 — so exactly two probes and three paused ticks.
     expect(state.probes).toBe(2);
     expect(state.pausedFlags).toEqual([false, true, true, false]);
+    const stillOpen = state.events.find((e) => e.kind === "breaker-still-open");
+    expect(stillOpen?.level).toBe("warn");
+    expect(stillOpen).toMatchObject({ trips: 2 });
   });
 
-  it("exits stuck with a report naming the open tickets", async () => {
+  it("exits stuck with a report naming the open tickets, at warn", async () => {
     const state = scriptedDeps([
       {
         world: world([
@@ -303,8 +313,26 @@ describe("run", () => {
 
     expect(outcome).toBe("stuck");
     expect(state.sleeps).toEqual([]);
-    expect(state.lines.join("\n")).toContain("Stuck");
-    expect(state.lines.join("\n")).toContain("#7");
+    const report = state.events.find((e) => e.kind === "stuck-report");
+    expect(report?.level).toBe("warn");
+    expect(report?.msg).toContain("#7");
+  });
+
+  it("logs the poll wait at info between ticks", async () => {
+    const inFlight = world(
+      [ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })],
+      [2],
+    );
+    const state = scriptedDeps([
+      { world: inFlight, actions: [] },
+      { world: world([ticket({ number: 2, state: "closed" })]), actions: [] },
+    ]);
+
+    await run(45, state.deps);
+
+    const nextTick = state.events.find((e) => e.kind === "next-tick");
+    expect(nextTick?.level).toBe("info");
+    expect(nextTick).toMatchObject({ pollSeconds: 45 });
   });
 
   it("resumes from tracker truth when re-run after a human fixes a Stuck state", async () => {

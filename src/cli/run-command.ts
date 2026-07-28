@@ -22,7 +22,7 @@ async function runHandler(
     probe: () => this.probe(config.model),
     now: this.now,
     sleep: this.sleep,
-    log: (line) => this.process.stdout.write(`${line}\n`),
+    log: this.log,
   });
   if (outcome === "stuck") {
     this.process.exitCode = 1;

@@ -12,6 +12,7 @@ import {
 } from "../adapters/tracker.js";
 import { type ConflictOutcome, pushAgentBranch } from "../adapters/worker.js";
 import { reclassifyCorrelatedFailures } from "../core/classify.js";
+import type { Log } from "../core/log.js";
 import type { Action, WorkerOutcome } from "../core/types.js";
 
 /**
@@ -64,7 +65,7 @@ export interface ActDeps {
   openPr: OpenPr;
   dispatchConflict: DispatchConflictWorker;
   exec: Exec;
-  log: (line: string) => void;
+  log: Log;
 }
 
 function describeConflict(outcome: ConflictOutcome): string {
@@ -104,39 +105,70 @@ export async function act(
     switch (action.type) {
       case "claim":
         await claimTicket(action.ticket, exec);
-        log(`claimed #${action.ticket}`);
+        log({
+          kind: "claim",
+          level: "info",
+          msg: `claimed #${action.ticket}`,
+          ticket: action.ticket,
+        });
         break;
       case "release":
         await releaseTicket(action.ticket, action.assignees, exec);
-        log(`released #${action.ticket} (orphaned claim)`);
+        log({
+          kind: "release",
+          level: "info",
+          msg: `released #${action.ticket} (orphaned claim)`,
+          ticket: action.ticket,
+        });
         break;
       case "escalate":
         await escalateTicket(action.ticket, action.failures, exec);
-        log(
-          `escalated #${action.ticket} to ready-for-human (attempts exhausted)`,
-        );
+        log({
+          kind: "escalate",
+          level: "warn",
+          msg: `escalated #${action.ticket} to ready-for-human (attempts exhausted)`,
+          ticket: action.ticket,
+        });
         break;
       case "close":
         await closeTicket(action.ticket, action.prUrl, exec);
-        log(`closed #${action.ticket} (merged: ${action.prUrl})`);
+        log({
+          kind: "close",
+          level: "info",
+          msg: `closed #${action.ticket} (merged: ${action.prUrl})`,
+          ticket: action.ticket,
+          prUrl: action.prUrl,
+        });
         break;
       case "update-branch":
         await updatePrBranch(action.pr, exec);
-        log(
-          `updated PR #${action.pr} branch (mechanical rebase onto the base)`,
-        );
+        log({
+          kind: "update-branch",
+          level: "info",
+          msg: `updated PR #${action.pr} branch (mechanical rebase onto the base)`,
+          pr: action.pr,
+        });
         break;
       case "mark-ready":
         await markPrReady(action.pr, exec);
-        log(`marked PR #${action.pr} ready for review`);
+        log({
+          kind: "mark-ready",
+          level: "info",
+          msg: `marked PR #${action.pr} ready for review`,
+          pr: action.pr,
+        });
         break;
       case "conflict-worker":
         conflicts.push(
           dispatchConflict(action.pr, action.ticket, action.headRef),
         );
-        log(
-          `dispatched conflict Worker for PR #${action.pr} (ticket #${action.ticket})`,
-        );
+        log({
+          kind: "conflict-dispatch",
+          level: "info",
+          msg: `dispatched conflict Worker for PR #${action.pr} (ticket #${action.ticket})`,
+          pr: action.pr,
+          ticket: action.ticket,
+        });
         break;
       case "spawn":
         workers.push(
@@ -151,7 +183,13 @@ export async function act(
             },
           ),
         );
-        log(`spawned Worker for #${action.ticket} (attempt ${action.attempt})`);
+        log({
+          kind: "spawn",
+          level: "info",
+          msg: `spawned Worker for #${action.ticket} (attempt ${action.attempt})`,
+          ticket: action.ticket,
+          attempt: action.attempt,
+        });
         break;
     }
   }
@@ -171,13 +209,30 @@ export async function act(
     fulfilled.map((spawn) => spawn.outcome),
   ).map((outcome, i) => ({ outcome, prUrl: fulfilled[i]?.prUrl }));
   for (const { outcome, prUrl } of outcomes) {
-    log(describeOutcome(outcome));
-    if (prUrl !== undefined)
-      log(`opened draft PR for #${outcome.ticket}: ${prUrl}`);
+    log({
+      kind: "worker-outcome",
+      level: outcome.infra !== undefined ? "warn" : "info",
+      msg: describeOutcome(outcome),
+      outcome,
+    });
+    if (prUrl !== undefined) {
+      log({
+        kind: "pr-opened",
+        level: "info",
+        msg: `opened draft PR for #${outcome.ticket}: ${prUrl}`,
+        ticket: outcome.ticket,
+        prUrl,
+      });
+    }
     if (outcome.costOverrun && outcome.costUsd !== undefined) {
-      log(
-        `cost overrun on #${outcome.ticket}: attempt ${outcome.attempt} spent $${outcome.costUsd.toFixed(2)} — the ticket may be cut too big for one Worker`,
-      );
+      log({
+        kind: "cost-overrun",
+        level: "warn",
+        msg: `cost overrun on #${outcome.ticket}: attempt ${outcome.attempt} spent $${outcome.costUsd.toFixed(2)} — the ticket may be cut too big for one Worker`,
+        ticket: outcome.ticket,
+        attempt: outcome.attempt,
+        costUsd: outcome.costUsd,
+      });
     }
     if (outcome.infra !== undefined) {
       await voidAttempt(
@@ -190,9 +245,14 @@ export async function act(
         },
         exec,
       );
-      log(
-        `voided attempt ${outcome.attempt} of #${outcome.ticket} (${outcome.infra}); claim held`,
-      );
+      log({
+        kind: "attempt-voided",
+        level: "warn",
+        msg: `voided attempt ${outcome.attempt} of #${outcome.ticket} (${outcome.infra}); claim held`,
+        ticket: outcome.ticket,
+        attempt: outcome.attempt,
+        reason: outcome.infra,
+      });
     } else if (outcome.failure) {
       await releaseFailedTicket(
         outcome.ticket,
@@ -205,9 +265,14 @@ export async function act(
         },
         exec,
       );
-      log(
-        `released #${outcome.ticket} with the attempt record (failed attempt ${outcome.attempt})`,
-      );
+      log({
+        kind: "attempt-released",
+        level: "info",
+        msg: `released #${outcome.ticket} with the attempt record (failed attempt ${outcome.attempt})`,
+        ticket: outcome.ticket,
+        attempt: outcome.attempt,
+        reason: outcome.failure,
+      });
     }
   }
   // Conflict Workers settle alongside the dispatch Workers: a resolved merge is
@@ -218,13 +283,29 @@ export async function act(
   for (const result of settledConflicts) {
     if (result.status !== "fulfilled") continue;
     const outcome = result.value;
-    log(describeConflict(outcome));
+    log({
+      kind: "conflict-outcome",
+      level: outcome.resolved ? "info" : "warn",
+      msg: describeConflict(outcome),
+      pr: outcome.pr,
+      resolved: outcome.resolved,
+    });
     if (outcome.resolved) {
       await pushAgentBranch(outcome.headRef, exec);
-      log(`pushed the resolved rebase for PR #${outcome.pr}`);
+      log({
+        kind: "conflict-pushed",
+        level: "info",
+        msg: `pushed the resolved rebase for PR #${outcome.pr}`,
+        pr: outcome.pr,
+      });
     } else {
       await commentConflictUnresolved(outcome.pr, exec);
-      log(`asked for human resolution on PR #${outcome.pr}`);
+      log({
+        kind: "conflict-unresolved",
+        level: "warn",
+        msg: `asked for human resolution on PR #${outcome.pr}`,
+        pr: outcome.pr,
+      });
     }
   }
 

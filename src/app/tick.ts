@@ -2,6 +2,7 @@ import { openPrForOutcome } from "../adapters/pr.js";
 import { readScope, realExec } from "../adapters/tracker.js";
 import { dispatchConflictWorker, dispatchWorker } from "../adapters/worker.js";
 import { modelForAttempt, type ResolvedConfig } from "../core/config.js";
+import type { Log } from "../core/log.js";
 import { plan } from "../core/plan.js";
 import { renderPlan } from "../core/render.js";
 import type { Action, WorldSnapshot } from "../core/types.js";
@@ -12,7 +13,7 @@ export async function tickOnce(
   config: ResolvedConfig,
   dryRun: boolean,
   dispatchPaused = false,
-  log: (line: string) => void,
+  log: Log,
 ): Promise<{ world: WorldSnapshot; actions: Action[]; infraFailures: number }> {
   const world = await readScope(config.scope);
   const actions = plan(world, {
@@ -20,7 +21,11 @@ export async function tickOnce(
     maxOpenPrs: config.maxOpenPrs,
     dispatchPaused,
   });
-  log(renderPlan(config, world, actions, { dryRun, dispatchPaused }));
+  log({
+    kind: "plan-report",
+    level: "info",
+    msg: renderPlan(config, world, actions, { dryRun, dispatchPaused }),
+  });
   let infraFailures = 0;
   if (!dryRun) {
     const titles = new Map(world.tickets.map((t) => [t.number, t.title]));

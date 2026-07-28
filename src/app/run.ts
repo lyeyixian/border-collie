@@ -4,6 +4,7 @@ import {
   probeDue,
   tripBreaker,
 } from "../core/breaker.js";
+import type { Log } from "../core/log.js";
 import { dispatchableSet } from "../core/plan.js";
 import { renderComplete, renderStuck } from "../core/render.js";
 import type { Action, Ticket, WorldSnapshot } from "../core/types.js";
@@ -73,7 +74,7 @@ export interface RunDeps {
   probe: () => Promise<boolean>;
   now: () => number;
   sleep: (ms: number) => Promise<void>;
-  log: (line: string) => void;
+  log: Log;
 }
 
 export async function run(
@@ -85,14 +86,21 @@ export async function run(
     if (breaker !== undefined && probeDue(breaker, deps.now())) {
       if (await deps.probe()) {
         breaker = undefined;
-        deps.log(
-          "circuit breaker closed: the environment recovered — dispatch resumes.",
-        );
+        deps.log({
+          kind: "breaker-closed",
+          level: "info",
+          msg: "circuit breaker closed: the environment recovered — dispatch resumes.",
+        });
       } else {
         breaker = tripBreaker(breaker, deps.now());
-        deps.log(
-          `circuit breaker still open: the probe failed — next probe in ${Math.round(breakerCooldownMs(breaker.trips) / 60_000)}m.`,
-        );
+        const nextProbeMs = breakerCooldownMs(breaker.trips);
+        deps.log({
+          kind: "breaker-still-open",
+          level: "warn",
+          msg: `circuit breaker still open: the probe failed — next probe in ${Math.round(nextProbeMs / 60_000)}m.`,
+          trips: breaker.trips,
+          nextProbeMs,
+        });
       }
     }
     const { world, actions, infraFailures } = await deps.tick(
@@ -100,20 +108,38 @@ export async function run(
     );
     if (infraFailures > 0) {
       breaker = tripBreaker(breaker, deps.now());
-      deps.log(
-        `circuit breaker open: ${infraFailures} infrastructure failure${infraFailures === 1 ? "" : "s"} this Tick — dispatch paused, claims held, probing in ${Math.round(breakerCooldownMs(breaker.trips) / 60_000)}m.`,
-      );
+      const nextProbeMs = breakerCooldownMs(breaker.trips);
+      deps.log({
+        kind: "breaker-open",
+        level: "warn",
+        msg: `circuit breaker open: ${infraFailures} infrastructure failure${infraFailures === 1 ? "" : "s"} this Tick — dispatch paused, claims held, probing in ${Math.round(nextProbeMs / 60_000)}m.`,
+        infraFailures,
+        nextProbeMs,
+      });
     }
     const status = runStatus(world, actions, breaker !== undefined);
     if (status.state === "complete") {
-      deps.log(renderComplete(world.tickets));
+      deps.log({
+        kind: "complete-report",
+        level: "info",
+        msg: renderComplete(world.tickets),
+      });
       return "complete";
     }
     if (status.state === "stuck") {
-      deps.log(renderStuck(world));
+      deps.log({
+        kind: "stuck-report",
+        level: "warn",
+        msg: renderStuck(world),
+      });
       return "stuck";
     }
-    deps.log(`Next Tick in ${pollSeconds}s.`);
+    deps.log({
+      kind: "next-tick",
+      level: "info",
+      msg: `Next Tick in ${pollSeconds}s.`,
+      pollSeconds,
+    });
     await deps.sleep(pollSeconds * 1000);
   }
 }
