@@ -93,11 +93,13 @@ describe("act", () => {
         { type: "release", ticket: 4, assignees: ["operator"] },
         { type: "claim", ticket: 9 },
       ],
-      noDispatch,
-      openPr,
-      noConflict,
-      exec,
-      (line) => lines.push(line),
+      {
+        dispatch: noDispatch,
+        openPr,
+        dispatchConflict: noConflict,
+        exec,
+        log: (line) => lines.push(line),
+      },
     );
 
     expect(calls).toEqual([
@@ -130,11 +132,13 @@ describe("act", () => {
 
     await act(
       [{ type: "close", ticket: 6, prUrl: "https://github.com/o/r/pull/60" }],
-      noDispatch,
-      openPr,
-      noConflict,
-      exec,
-      (line) => lines.push(line),
+      {
+        dispatch: noDispatch,
+        openPr,
+        dispatchConflict: noConflict,
+        exec,
+        log: (line) => lines.push(line),
+      },
     );
 
     expect(calls).toEqual([
@@ -156,7 +160,13 @@ describe("act", () => {
     const { exec, calls } = recordingExec();
     const { openPr } = recordingOpenPr();
 
-    await act([], noDispatch, openPr, noConflict, exec, () => {});
+    await act([], {
+      dispatch: noDispatch,
+      openPr,
+      dispatchConflict: noConflict,
+      exec,
+      log: () => {},
+    });
 
     expect(calls).toEqual([]);
   });
@@ -192,11 +202,13 @@ describe("act", () => {
         { type: "claim", ticket: 4 },
         { type: "spawn", ticket: 4, attempt: 1 },
       ],
-      dispatch,
-      openPr,
-      noConflict,
-      exec,
-      (line) => lines.push(line),
+      {
+        dispatch,
+        openPr,
+        dispatchConflict: noConflict,
+        exec,
+        log: (line) => lines.push(line),
+      },
     );
 
     expect(dispatched).toEqual([2, 4]);
@@ -221,14 +233,13 @@ describe("act", () => {
       return outcome(ticket);
     };
 
-    await act(
-      [{ type: "spawn", ticket: 7, attempt: 2 }],
+    await act([{ type: "spawn", ticket: 7, attempt: 2 }], {
       dispatch,
-      recordingOpenPr().openPr,
-      noConflict,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
       exec,
-      () => {},
-    );
+      log: () => {},
+    });
 
     expect(attempts).toEqual([[7, 2]]);
   });
@@ -238,14 +249,13 @@ describe("act", () => {
     const dispatch: DispatchWorker = async () =>
       outcome(7, { attempt: 2, exitCode: null, failure: "stall", ok: false });
 
-    await act(
-      [{ type: "spawn", ticket: 7, attempt: 2 }],
+    await act([{ type: "spawn", ticket: 7, attempt: 2 }], {
       dispatch,
-      recordingOpenPr().openPr,
-      noConflict,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
       exec,
-      () => {},
-    );
+      log: () => {},
+    });
 
     const record: AttemptFailure = {
       attempt: 2,
@@ -271,14 +281,13 @@ describe("act", () => {
     const { exec, calls } = recordingExec();
     const dispatch: DispatchWorker = async () => outcome(7);
 
-    await act(
-      [{ type: "spawn", ticket: 7, attempt: 1 }],
+    await act([{ type: "spawn", ticket: 7, attempt: 1 }], {
       dispatch,
-      recordingOpenPr().openPr,
-      noConflict,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
       exec,
-      () => {},
-    );
+      log: () => {},
+    });
 
     expect(calls).toEqual([]);
   });
@@ -296,14 +305,13 @@ describe("act", () => {
       },
     ];
 
-    await act(
-      [{ type: "escalate", ticket: 5, failures }],
-      noDispatch,
-      recordingOpenPr().openPr,
-      noConflict,
+    await act([{ type: "escalate", ticket: 5, failures }], {
+      dispatch: noDispatch,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
       exec,
-      (line) => lines.push(line),
-    );
+      log: (line) => lines.push(line),
+    });
 
     expect(calls).toEqual([
       [
@@ -337,14 +345,13 @@ describe("act", () => {
     const dispatch: DispatchWorker = async () =>
       outcome(7, { costUsd: 25.5, turns: 80, costOverrun: true });
 
-    await act(
-      [{ type: "spawn", ticket: 7, attempt: 1 }],
+    await act([{ type: "spawn", ticket: 7, attempt: 1 }], {
       dispatch,
       openPr,
-      noConflict,
+      dispatchConflict: noConflict,
       exec,
-      (line) => lines.push(line),
-    );
+      log: (line) => lines.push(line),
+    });
 
     expect(opened).toEqual([7]); // the work is kept — discarding refunds nothing
     expect(calls).toEqual([]); // no tracker writes: not a failure
@@ -364,14 +371,13 @@ describe("act", () => {
         ok: false,
       });
 
-    const report = await act(
-      [{ type: "spawn", ticket: 7, attempt: 1 }],
+    const report = await act([{ type: "spawn", ticket: 7, attempt: 1 }], {
       dispatch,
-      recordingOpenPr().openPr,
-      noConflict,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
       exec,
-      (line) => lines.push(line),
-    );
+      log: (line) => lines.push(line),
+    });
 
     expect(calls).toEqual([
       [
@@ -403,11 +409,13 @@ describe("act", () => {
         { type: "spawn", ticket: 2, attempt: 1 },
         { type: "spawn", ticket: 4, attempt: 1 },
       ],
-      dispatch,
-      recordingOpenPr().openPr,
-      noConflict,
-      exec,
-      (line) => lines.push(line),
+      {
+        dispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict: noConflict,
+        exec,
+        log: (line) => lines.push(line),
+      },
     );
 
     // Both attempts voided, none released: no assignee ever removed.
@@ -424,14 +432,13 @@ describe("act", () => {
     const { exec } = recordingExec();
     const dispatch: DispatchWorker = async (ticket) => outcome(ticket);
 
-    const report = await act(
-      [{ type: "spawn", ticket: 2, attempt: 1 }],
+    const report = await act([{ type: "spawn", ticket: 2, attempt: 1 }], {
       dispatch,
-      recordingOpenPr().openPr,
-      noConflict,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
       exec,
-      () => {},
-    );
+      log: () => {},
+    });
 
     expect(report).toEqual({ infraFailures: 0 });
   });
@@ -451,11 +458,13 @@ describe("act", () => {
           { type: "spawn", ticket: 2, attempt: 1 },
           { type: "spawn", ticket: 4, attempt: 1 },
         ],
-        dispatch,
-        openPr,
-        noConflict,
-        exec,
-        (line) => lines.push(line),
+        {
+          dispatch,
+          openPr,
+          dispatchConflict: noConflict,
+          exec,
+          log: (line) => lines.push(line),
+        },
       ),
     ).rejects.toThrow("git exploded");
 
@@ -473,14 +482,13 @@ describe("act", () => {
     };
 
     await expect(
-      act(
-        [{ type: "spawn", ticket: 2, attempt: 1 }],
+      act([{ type: "spawn", ticket: 2, attempt: 1 }], {
         dispatch,
         openPr,
-        noConflict,
+        dispatchConflict: noConflict,
         exec,
-        (line) => lines.push(line),
-      ),
+        log: (line) => lines.push(line),
+      }),
     ).rejects.toThrow("gh pr create exploded");
 
     expect(lines).toContain(
@@ -494,14 +502,13 @@ describe("act: PR upkeep", () => {
     const { exec, calls } = recordingExec();
     const lines: string[] = [];
 
-    await act(
-      [{ type: "update-branch", pr: 30, ticket: 3 }],
-      noDispatch,
-      recordingOpenPr().openPr,
-      noConflict,
+    await act([{ type: "update-branch", pr: 30, ticket: 3 }], {
+      dispatch: noDispatch,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
       exec,
-      (line) => lines.push(line),
-    );
+      log: (line) => lines.push(line),
+    });
 
     expect(calls).toEqual([["gh", "pr", "update-branch", "30", "--rebase"]]);
     expect(lines).toEqual([
@@ -513,14 +520,13 @@ describe("act: PR upkeep", () => {
     const { exec, calls } = recordingExec();
     const lines: string[] = [];
 
-    await act(
-      [{ type: "mark-ready", pr: 30, ticket: 3 }],
-      noDispatch,
-      recordingOpenPr().openPr,
-      noConflict,
+    await act([{ type: "mark-ready", pr: 30, ticket: 3 }], {
+      dispatch: noDispatch,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
       exec,
-      (line) => lines.push(line),
-    );
+      log: (line) => lines.push(line),
+    });
 
     expect(calls).toEqual([["gh", "pr", "ready", "30"]]);
     expect(lines).toEqual(["marked PR #30 ready for review"]);
@@ -544,11 +550,13 @@ describe("act: PR upkeep", () => {
           headRef: "border-collie/ticket-3-attempt-1",
         },
       ],
-      noDispatch,
-      recordingOpenPr().openPr,
-      dispatchConflict,
-      exec,
-      (line) => lines.push(line),
+      {
+        dispatch: noDispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict,
+        exec,
+        log: (line) => lines.push(line),
+      },
     );
 
     expect(calls).toEqual([
@@ -579,11 +587,13 @@ describe("act: PR upkeep", () => {
           headRef: "border-collie/ticket-3-attempt-1",
         },
       ],
-      noDispatch,
-      recordingOpenPr().openPr,
-      dispatchConflict,
-      exec,
-      (line) => lines.push(line),
+      {
+        dispatch: noDispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict,
+        exec,
+        log: (line) => lines.push(line),
+      },
     );
 
     expect(calls).toEqual([
@@ -638,11 +648,13 @@ describe("act: PR upkeep", () => {
         },
         { type: "spawn", ticket: 2, attempt: 1 },
       ],
-      dispatch,
-      recordingOpenPr().openPr,
-      dispatchConflict,
-      exec,
-      (line) => lines.push(line),
+      {
+        dispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict,
+        exec,
+        log: (line) => lines.push(line),
+      },
     );
 
     expect(inFlight.sort()).toEqual(["conflict-40", "worker-2"]);
@@ -671,11 +683,13 @@ describe("act: PR upkeep", () => {
           },
           { type: "spawn", ticket: 2, attempt: 1 },
         ],
-        dispatch,
-        recordingOpenPr().openPr,
-        dispatchConflict,
-        exec,
-        (line) => lines.push(line),
+        {
+          dispatch,
+          openPr: recordingOpenPr().openPr,
+          dispatchConflict,
+          exec,
+          log: (line) => lines.push(line),
+        },
       ),
     ).rejects.toThrow("claude ENOENT");
 

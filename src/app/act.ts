@@ -5,7 +5,6 @@ import {
   type Exec,
   escalateTicket,
   markPrReady,
-  realExec,
   releaseFailedTicket,
   releaseTicket,
   updatePrBranch,
@@ -59,6 +58,15 @@ export interface ActReport {
   infraFailures: number;
 }
 
+/** The act phase's effects, injectable for tests, matching the run loop's pattern. */
+export interface ActDeps {
+  dispatch: DispatchWorker;
+  openPr: OpenPr;
+  dispatchConflict: DispatchConflictWorker;
+  exec: Exec;
+  log: (line: string) => void;
+}
+
 function describeConflict(outcome: ConflictOutcome): string {
   const where = `on ${outcome.headRef} (transcript: ${outcome.transcript})`;
   return outcome.resolved
@@ -87,12 +95,9 @@ function describeConflict(outcome: ConflictOutcome): string {
  */
 export async function act(
   actions: Action[],
-  dispatch: DispatchWorker,
-  openPr: OpenPr,
-  dispatchConflict: DispatchConflictWorker,
-  exec: Exec = realExec,
-  log: (line: string) => void,
+  deps: ActDeps,
 ): Promise<ActReport> {
+  const { dispatch, openPr, dispatchConflict, exec, log } = deps;
   const workers: Promise<SpawnResult>[] = [];
   const conflicts: Promise<ConflictOutcome>[] = [];
   for (const action of actions) {
