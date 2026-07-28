@@ -1,4 +1,5 @@
 import { modelForAttempt, type ResolvedConfig } from "./config.js";
+import type { WorkerHeartbeat } from "./heartbeat.js";
 import { dispatchableSet } from "./plan.js";
 import {
   type Action,
@@ -185,6 +186,28 @@ export function renderPlanReport(report: PlanReport): string {
 
   if (report.dryRun) lines.push("Dry run: no writes performed.");
   return lines.join("\n");
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  return minutes > 0 ? `${minutes}m${seconds}s` : `${seconds}s`;
+}
+
+/**
+ * Render the fleet heartbeat: one line covering every in-flight Worker, each
+ * with its elapsed time and time since its last output — the two signals
+ * that distinguish slow from stuck. Pure.
+ */
+export function renderHeartbeat(workers: WorkerHeartbeat[]): string {
+  const entries = workers
+    .map(
+      (w) =>
+        `#${w.ticket} attempt ${w.attempt} (elapsed ${formatDuration(w.elapsedMs)}, since output ${formatDuration(w.sinceOutputMs)})`,
+    )
+    .join(", ");
+  return `Heartbeat: ${workers.length} Worker${workers.length === 1 ? "" : "s"} in flight — ${entries}`;
 }
 
 // ---------------------------------------------------------------------------

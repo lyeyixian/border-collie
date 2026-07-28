@@ -5,6 +5,7 @@ import {
   act,
   type DispatchConflictWorker,
   type DispatchWorker,
+  type IntervalScheduler,
   type OpenPr,
 } from "../../src/app/act.js";
 import type { Log, LogBindings, LogEvent } from "../../src/core/log.js";
@@ -54,6 +55,27 @@ function noopLog(): Log {
 
 function msgs(events: LogEvent[]): string[] {
   return events.map((e) => e.msg);
+}
+
+/** A fixed clock and a scheduler that never fires, for tests unconcerned with the heartbeat. */
+const now = () => 0;
+const scheduleInterval: IntervalScheduler = () => () => {};
+
+/** Records every (ms, callback) the heartbeat scheduled, letting a test fire ticks manually. */
+function fakeScheduler(): {
+  scheduleInterval: IntervalScheduler;
+  starts: { ms: number; callback: () => void }[];
+  cancelCount: () => number;
+} {
+  const starts: { ms: number; callback: () => void }[] = [];
+  let cancelled = 0;
+  const scheduleInterval: IntervalScheduler = (ms, callback) => {
+    starts.push({ ms, callback });
+    return () => {
+      cancelled += 1;
+    };
+  };
+  return { scheduleInterval, starts, cancelCount: () => cancelled };
 }
 
 const noDispatch: DispatchWorker = async (ticket) => {
@@ -128,6 +150,8 @@ describe("act", () => {
         openPr,
         dispatchConflict: noConflict,
         exec,
+        now,
+        scheduleInterval,
         log,
       },
     );
@@ -172,6 +196,8 @@ describe("act", () => {
         openPr,
         dispatchConflict: noConflict,
         exec,
+        now,
+        scheduleInterval,
         log,
       },
     );
@@ -206,6 +232,8 @@ describe("act", () => {
       openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log: noopLog(),
     });
 
@@ -248,6 +276,8 @@ describe("act", () => {
         openPr,
         dispatchConflict: noConflict,
         exec,
+        now,
+        scheduleInterval,
         log,
       },
     );
@@ -315,6 +345,8 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log: noopLog(),
     });
 
@@ -331,6 +363,8 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log: noopLog(),
     });
 
@@ -363,6 +397,8 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log: noopLog(),
     });
 
@@ -404,6 +440,8 @@ describe("act", () => {
           openPr: recordingOpenPr().openPr,
           dispatchConflict: noConflict,
           exec,
+          now,
+          scheduleInterval,
           log,
         },
       );
@@ -431,6 +469,8 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log,
     });
 
@@ -476,6 +516,8 @@ describe("act", () => {
       openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log,
     });
 
@@ -506,6 +548,8 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log,
     });
 
@@ -548,6 +592,8 @@ describe("act", () => {
         openPr: recordingOpenPr().openPr,
         dispatchConflict: noConflict,
         exec,
+        now,
+        scheduleInterval,
         log,
       },
     );
@@ -573,6 +619,8 @@ describe("act", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log: noopLog(),
     });
 
@@ -599,6 +647,8 @@ describe("act", () => {
           openPr,
           dispatchConflict: noConflict,
           exec,
+          now,
+          scheduleInterval,
           log,
         },
       ),
@@ -623,6 +673,8 @@ describe("act", () => {
         openPr,
         dispatchConflict: noConflict,
         exec,
+        now,
+        scheduleInterval,
         log,
       }),
     ).rejects.toThrow("gh pr create exploded");
@@ -640,6 +692,189 @@ describe("act", () => {
   });
 });
 
+describe("act: heartbeat", () => {
+  it("emits no heartbeat when no Worker is running", async () => {
+    const { exec } = recordingExec();
+    const { log, events } = recordingLog();
+    const scheduler = fakeScheduler();
+
+    await act([{ type: "release", ticket: 4, assignees: ["operator"] }], {
+      dispatch: noDispatch,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
+      exec,
+      now,
+      scheduleInterval: scheduler.scheduleInterval,
+      log,
+    });
+
+    expect(scheduler.starts).toEqual([]);
+    expect(events.some((e) => e.kind === "heartbeat")).toBe(false);
+  });
+
+  it("schedules the heartbeat once a minute, at info, and reports it stops once every Worker settles", async () => {
+    const { exec } = recordingExec();
+    const { log, events } = recordingLog();
+    const scheduler = fakeScheduler();
+    let releaseWorker!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+    const dispatch: DispatchWorker = async () => {
+      await gate;
+      return outcome(7);
+    };
+
+    const pending = act([{ type: "spawn", ticket: 7, attempt: 1 }], {
+      dispatch,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
+      exec,
+      now,
+      scheduleInterval: scheduler.scheduleInterval,
+      log,
+    });
+
+    expect(scheduler.starts).toHaveLength(1);
+    expect(scheduler.starts[0]?.ms).toBe(60_000);
+    expect(scheduler.cancelCount()).toBe(0);
+
+    scheduler.starts[0]?.callback();
+    const heartbeat = events.find((e) => e.kind === "heartbeat");
+    expect(heartbeat?.level).toBe("info");
+    expect(heartbeat).toMatchObject({
+      workers: [{ ticket: 7, attempt: 1, elapsedMs: 0, sinceOutputMs: 0 }],
+    });
+
+    releaseWorker();
+    await pending;
+
+    expect(scheduler.cancelCount()).toBe(1);
+  });
+
+  it("reports elapsed time and time since output independently, updated via the Worker's activity callback", async () => {
+    const { exec } = recordingExec();
+    const { log, events } = recordingLog();
+    const scheduler = fakeScheduler();
+    const clock = { ms: 0 };
+    let activityCallback!: () => void;
+    let releaseWorker!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      releaseWorker = resolve;
+    });
+    const dispatch: DispatchWorker = async (ticket, _attempt, onActivity) => {
+      activityCallback = onActivity;
+      await gate;
+      return outcome(ticket);
+    };
+
+    const pending = act([{ type: "spawn", ticket: 7, attempt: 1 }], {
+      dispatch,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
+      exec,
+      now: () => clock.ms,
+      scheduleInterval: scheduler.scheduleInterval,
+      log,
+    });
+
+    clock.ms = 20_000;
+    activityCallback(); // the Worker produced output at t=20s
+    clock.ms = 90_000;
+    scheduler.starts[0]?.callback(); // the heartbeat fires at t=90s
+
+    const heartbeat = events.find((e) => e.kind === "heartbeat");
+    expect(heartbeat).toMatchObject({
+      workers: [
+        { ticket: 7, attempt: 1, elapsedMs: 90_000, sinceOutputMs: 70_000 },
+      ],
+    });
+
+    releaseWorker();
+    await pending;
+  });
+
+  it("covers the whole fleet on one line and keeps running while any Worker is still in flight", async () => {
+    const { exec } = recordingExec();
+    const { log, events } = recordingLog();
+    const scheduler = fakeScheduler();
+    let releaseSlow!: () => void;
+    const slowGate = new Promise<void>((resolve) => {
+      releaseSlow = resolve;
+    });
+    const dispatch: DispatchWorker = async (ticket) => {
+      if (ticket === 4) return outcome(4);
+      await slowGate;
+      return outcome(ticket);
+    };
+    // openPr runs only after #4's dispatch promise has settled and its
+    // activity entry cleared — awaiting it is a deterministic way to know
+    // #4 dropped out of the fleet before the heartbeat is made to fire.
+    let ticket4Settled!: () => void;
+    const ticket4SettledPromise = new Promise<void>((resolve) => {
+      ticket4Settled = resolve;
+    });
+    const openPr: OpenPr = async (settledOutcome) => {
+      if (settledOutcome.ticket === 4) ticket4Settled();
+      return `https://github.com/o/r/pull/${settledOutcome.ticket}0`;
+    };
+
+    const pending = act(
+      [
+        { type: "spawn", ticket: 2, attempt: 1 },
+        { type: "spawn", ticket: 4, attempt: 1 },
+      ],
+      {
+        dispatch,
+        openPr,
+        dispatchConflict: noConflict,
+        exec,
+        now,
+        scheduleInterval: scheduler.scheduleInterval,
+        log,
+      },
+    );
+    await ticket4SettledPromise;
+
+    scheduler.starts[0]?.callback();
+    const heartbeat = events.find((e) => e.kind === "heartbeat");
+    expect(heartbeat).toMatchObject({
+      workers: [{ ticket: 2, attempt: 1 }],
+    });
+    // Still one Worker in flight (#2): the scheduler is not cancelled yet.
+    expect(scheduler.cancelCount()).toBe(0);
+
+    releaseSlow();
+    await pending;
+
+    expect(scheduler.cancelCount()).toBe(1);
+  });
+
+  it("starts only one heartbeat scheduler for a Tick spawning several Workers", async () => {
+    const { exec } = recordingExec();
+    const dispatch: DispatchWorker = async (ticket) => outcome(ticket);
+    const scheduler = fakeScheduler();
+
+    await act(
+      [
+        { type: "spawn", ticket: 2, attempt: 1 },
+        { type: "spawn", ticket: 4, attempt: 1 },
+      ],
+      {
+        dispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict: noConflict,
+        exec,
+        now,
+        scheduleInterval: scheduler.scheduleInterval,
+        log: noopLog(),
+      },
+    );
+
+    expect(scheduler.starts).toHaveLength(1);
+  });
+});
+
 describe("act: PR upkeep", () => {
   it("mechanically updates a behind PR's branch via the tracker", async () => {
     const { exec, calls } = recordingExec();
@@ -650,6 +885,8 @@ describe("act: PR upkeep", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log,
     });
 
@@ -673,6 +910,8 @@ describe("act: PR upkeep", () => {
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
       exec,
+      now,
+      scheduleInterval,
       log,
     });
 
@@ -710,6 +949,8 @@ describe("act: PR upkeep", () => {
         openPr: recordingOpenPr().openPr,
         dispatchConflict,
         exec,
+        now,
+        scheduleInterval,
         log,
       },
     );
@@ -755,6 +996,8 @@ describe("act: PR upkeep", () => {
         openPr: recordingOpenPr().openPr,
         dispatchConflict,
         exec,
+        now,
+        scheduleInterval,
         log,
       },
     );
@@ -824,6 +1067,8 @@ describe("act: PR upkeep", () => {
         openPr: recordingOpenPr().openPr,
         dispatchConflict,
         exec,
+        now,
+        scheduleInterval,
         log,
       },
     );
@@ -859,6 +1104,8 @@ describe("act: PR upkeep", () => {
           openPr: recordingOpenPr().openPr,
           dispatchConflict,
           exec,
+          now,
+          scheduleInterval,
           log,
         },
       ),

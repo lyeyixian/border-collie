@@ -130,6 +130,7 @@ describe("dispatchWorker", () => {
         stderrPath: ".border-collie/transcripts/ticket-4-attempt-1.stderr.log",
         timeoutMs: 60_000,
         stallMs: 30_000,
+        onActivity: expect.any(Function),
       },
     ]);
   });
@@ -159,6 +160,20 @@ describe("dispatchWorker", () => {
     const { spawn } = fakeSpawn(0);
 
     await expect(dispatchWorker(4, CONFIG, exec, spawn)).resolves.toBeDefined();
+  });
+
+  it("forwards the activity callback onto the process request — the heartbeat rides the existing seam", async () => {
+    const { exec } = fakeExec({ newCommits: "1" });
+    const { spawn, requests } = fakeSpawn(0);
+    const activity: number[] = [];
+
+    await dispatchWorker(4, CONFIG, exec, spawn, undefined, () =>
+      activity.push(1),
+    );
+
+    requests[0]?.onActivity?.();
+    requests[0]?.onActivity?.();
+    expect(activity).toEqual([1, 1]);
   });
 
   it("serializes git phases across concurrent dispatches (repo-level locks), keeping Workers concurrent", async () => {
@@ -773,6 +788,23 @@ describe("realSpawnWorkerProcess", () => {
       stderrTail: "warned\n",
     });
     expect(readFileSync(req.transcriptPath, "utf8")).toContain("event");
+  });
+
+  it("calls onActivity for every stdout chunk — the same observation that re-arms the stall watchdog", async () => {
+    let calls = 0;
+    const req: WorkerProcessRequest = {
+      ...request(`console.log("one"); console.log("two")`, {
+        timeoutMs: 5_000,
+        stallMs: 5_000,
+      }),
+      onActivity: () => {
+        calls += 1;
+      },
+    };
+
+    await realSpawnWorkerProcess(req);
+
+    expect(calls).toBeGreaterThan(0);
   });
 
   it("kills a process that outlives the wall-clock timeout even while it keeps emitting output", async () => {

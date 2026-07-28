@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ResolvedConfig } from "../../src/core/config.js";
+import type { WorkerHeartbeat } from "../../src/core/heartbeat.js";
 import {
   buildCompleteReport,
   buildPlanReport,
@@ -7,6 +8,7 @@ import {
   type CompleteReport,
   type PlanReport,
   renderCompleteReport,
+  renderHeartbeat,
   renderPlanReport,
   renderStuckReport,
   type StuckReport,
@@ -381,6 +383,31 @@ describe("buildStuckReport", () => {
     );
 
     expect(report.tickets[0]?.reasons).toEqual([]);
+  });
+});
+
+describe("renderHeartbeat", () => {
+  it("renders elapsed time and time since output per Worker, on one line", () => {
+    const workers: WorkerHeartbeat[] = [
+      { ticket: 2, attempt: 1, elapsedMs: 125_000, sinceOutputMs: 5_000 },
+      { ticket: 4, attempt: 2, elapsedMs: 60_000, sinceOutputMs: 60_000 },
+    ];
+
+    expect(renderHeartbeat(workers)).toBe(
+      "Heartbeat: 2 Workers in flight — " +
+        "#2 attempt 1 (elapsed 2m5s, since output 5s), " +
+        "#4 attempt 2 (elapsed 1m0s, since output 1m0s)",
+    );
+  });
+
+  it("uses the singular for exactly one Worker", () => {
+    const workers: WorkerHeartbeat[] = [
+      { ticket: 7, attempt: 1, elapsedMs: 30_000, sinceOutputMs: 0 },
+    ];
+
+    expect(renderHeartbeat(workers)).toBe(
+      "Heartbeat: 1 Worker in flight — #7 attempt 1 (elapsed 30s, since output 0s)",
+    );
   });
 });
 

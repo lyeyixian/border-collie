@@ -81,6 +81,12 @@ export interface WorkerProcessRequest {
   timeoutMs: number;
   /** Stall window; the process is killed when stdout goes quiet this long. */
   stallMs: number;
+  /**
+   * Called on every chunk of stdout the process emits — the same
+   * observation that re-arms the stall watchdog, surfaced for the fleet
+   * heartbeat. No new process seam: this rides the existing one.
+   */
+  onActivity?: () => void;
 }
 
 /** How the Worker process ended: on its own, or killed by which watchdog. */
@@ -147,6 +153,7 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
     };
     rearmStallWatchdog();
     child.stdout.on("data", rearmStallWatchdog);
+    child.stdout.on("data", () => request.onActivity?.());
 
     const end = () => {
       clearTimeout(wallTimer);
@@ -268,6 +275,8 @@ export async function dispatchWorker(
   exec: Exec = realExec,
   spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
   log: Log = noopLog,
+  /** Forwarded onto the process request; the fleet heartbeat's activity signal. */
+  onActivity: () => void = () => {},
 ): Promise<WorkerOutcome> {
   const branch = `${AGENT_BRANCH_PREFIX}${ticket}-attempt-${config.attempt}`;
   const worktree = join(RUN_DIR, "worktrees", `ticket-${ticket}`);
@@ -321,6 +330,7 @@ export async function dispatchWorker(
       stderrPath: stderrLog,
       timeoutMs: config.timeoutMs,
       stallMs: config.stallMs,
+      onActivity,
     });
     const newCommits = Number(
       (

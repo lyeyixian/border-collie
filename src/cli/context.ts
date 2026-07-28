@@ -4,6 +4,7 @@ import { Logger } from "tslog";
 import { fileTransport } from "tslog/transports/file";
 import { loadConfigFile } from "../adapters/config-file.js";
 import { probeEnvironment, RUN_DIR } from "../adapters/worker.js";
+import type { IntervalScheduler } from "../app/act.js";
 import { tickOnce } from "../app/tick.js";
 import {
   type Flags,
@@ -30,6 +31,8 @@ export interface Context extends CommandContext {
   readonly probe: (model: string) => Promise<boolean>;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
+  /** The fleet heartbeat's scheduler; see src/app/act.ts. */
+  readonly scheduleInterval: IntervalScheduler;
   /** The single logging seam narration travels through; see src/core/log.ts. */
   readonly log: Log;
   /** The verbosity flag: lowers the console's minimum level to debug. Scoped to the console sink only. */
@@ -164,14 +167,20 @@ function buildLog(
 export function buildRealContext(cwd: string = process.cwd()): Context {
   const cliProcess = nodeProcessAdapter();
   const { log, setVerbose } = buildLog(cliProcess, cwd);
+  const now = () => Date.now();
+  const scheduleInterval: IntervalScheduler = (ms, callback) => {
+    const id = setInterval(callback, ms);
+    return () => clearInterval(id);
+  };
   return {
     process: cliProcess,
     loadConfig: (flags) => resolveConfig(loadConfigFile(cwd), flags),
     tick: (config, dryRun, dispatchPaused) =>
-      tickOnce(config, dryRun, dispatchPaused, log),
+      tickOnce(config, dryRun, dispatchPaused, { log, now, scheduleInterval }),
     probe: (model) => probeEnvironment(model),
-    now: () => Date.now(),
+    now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    scheduleInterval,
     log,
     setVerbose,
   };

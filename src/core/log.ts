@@ -1,3 +1,4 @@
+import type { WorkerHeartbeat } from "./heartbeat.js";
 import type { CompleteReport, PlanReport, StuckReport } from "./render.js";
 import type { FailureReason, InfraReason, WorkerOutcome } from "./types.js";
 
@@ -38,6 +39,7 @@ export type LogEvent = LogEventBase &
     | { kind: "conflict-dispatch"; ticket: number }
     | { kind: "spawn" }
     | { kind: "worker-outcome"; outcome: WorkerOutcome }
+    | { kind: "heartbeat"; workers: WorkerHeartbeat[] }
     | { kind: "pr-opened"; prUrl: string }
     | { kind: "pr-open-failed" }
     | { kind: "cost-overrun"; costUsd: number }
