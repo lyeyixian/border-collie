@@ -22,6 +22,10 @@ interface LogEventBase {
  * event structurally. The console sink (wired in the composition root) reads
  * `level` and `msg` for narration; for the three report kinds it instead
  * renders `report` as the familiar unadorned block, dispatching on `kind`.
+ * Worker-lifecycle kinds (`spawn` through `attempt-released`, and the
+ * `conflict-*` kinds) omit the ticket/attempt/pr they'd otherwise repeat on
+ * every call — a dispatched Worker's sub-logger binds those once; see
+ * {@link Log.child}.
  */
 export type LogEvent = LogEventBase &
   (
@@ -31,27 +35,17 @@ export type LogEvent = LogEventBase &
     | { kind: "close"; ticket: number; prUrl: string }
     | { kind: "update-branch"; pr: number }
     | { kind: "mark-ready"; pr: number }
-    | { kind: "conflict-dispatch"; pr: number; ticket: number }
-    | { kind: "spawn"; ticket: number; attempt: number }
+    | { kind: "conflict-dispatch"; ticket: number }
+    | { kind: "spawn" }
     | { kind: "worker-outcome"; outcome: WorkerOutcome }
-    | { kind: "pr-opened"; ticket: number; prUrl: string }
-    | { kind: "pr-open-failed"; ticket: number }
-    | { kind: "cost-overrun"; ticket: number; attempt: number; costUsd: number }
-    | {
-        kind: "attempt-voided";
-        ticket: number;
-        attempt: number;
-        reason: InfraReason;
-      }
-    | {
-        kind: "attempt-released";
-        ticket: number;
-        attempt: number;
-        reason: FailureReason;
-      }
-    | { kind: "conflict-outcome"; pr: number; resolved: boolean }
-    | { kind: "conflict-pushed"; pr: number }
-    | { kind: "conflict-unresolved"; pr: number }
+    | { kind: "pr-opened"; prUrl: string }
+    | { kind: "pr-open-failed" }
+    | { kind: "cost-overrun"; costUsd: number }
+    | { kind: "attempt-voided"; reason: InfraReason }
+    | { kind: "attempt-released"; reason: FailureReason }
+    | { kind: "conflict-outcome"; resolved: boolean }
+    | { kind: "conflict-pushed" }
+    | { kind: "conflict-unresolved" }
     | { kind: "breaker-closed" }
     | { kind: "breaker-still-open"; trips: number; nextProbeMs: number }
     | { kind: "breaker-open"; infraFailures: number; nextProbeMs: number }
@@ -61,5 +55,22 @@ export type LogEvent = LogEventBase &
     | { kind: "complete-report"; report: CompleteReport }
   );
 
-/** The single logging seam injected into the run loop and the act phase's effects executor. */
-export type Log = (event: LogEvent) => void;
+/** Fields a Worker's (or Conflict Worker's) sub-logger binds onto every event it emits. */
+export interface LogBindings {
+  ticket?: number;
+  attempt?: number;
+  pr?: number;
+}
+
+/**
+ * The single logging seam injected into the run loop and the act phase's
+ * effects executor — a function type per ADR 0005, not a named interface,
+ * with `child` attached for deriving a sub-logger scoped to one dispatched
+ * Worker (bound by ticket and attempt) or Conflict Worker (bound by PR):
+ * every event it emits carries those bindings, tagged in the console and
+ * carried as structured fields, without the call site repeating them.
+ * Bindings are inherited by further children.
+ */
+export type Log = ((event: LogEvent) => void) & {
+  child(bindings: LogBindings): Log;
+};

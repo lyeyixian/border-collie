@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { type RunDeps, run, runStatus } from "../../src/app/run.js";
 import { BREAKER_BASE_COOLDOWN_MS } from "../../src/core/breaker.js";
-import type { LogEvent } from "../../src/core/log.js";
+import type { Log, LogEvent } from "../../src/core/log.js";
 import type {
   Action,
   MergedAgentPr,
@@ -171,11 +171,18 @@ function scriptedDeps(
       state.sleeps.push(ms);
       nowMs += opts.msPerSleep ?? ms;
     },
-    log: (event) => {
-      state.events.push(event);
-    },
+    log: recordingLog(state.events),
   };
   return state;
+}
+
+/** A `Log` recording every event into `events`; the run loop never derives a sub-logger, but the type requires `child`. */
+function recordingLog(events: LogEvent[]): Log {
+  const fn = ((event: LogEvent) => {
+    events.push(event);
+  }) as Log;
+  fn.child = () => recordingLog(events);
+  return fn;
 }
 
 describe("run", () => {

@@ -8,7 +8,7 @@ import {
   type ResolvedConfig,
   resolveConfig,
 } from "../core/config.js";
-import type { Log } from "../core/log.js";
+import type { Log, LogBindings, LogEvent } from "../core/log.js";
 import type { Action, WorldSnapshot } from "../core/types.js";
 import { reportBlockText } from "./console-report.js";
 
@@ -52,6 +52,13 @@ function nodeProcessAdapter(): StricliProcess {
   };
 }
 
+/** The console tag for a Worker's (or Conflict Worker's) sub-logger — what distinguishes its interleaved lines. */
+function tagFor(bindings: LogBindings): string {
+  if (bindings.pr !== undefined) return `PR #${bindings.pr}`;
+  if (bindings.ticket !== undefined) return `#${bindings.ticket}`;
+  return "";
+}
+
 /**
  * Console sink for the Orchestrator's narration: pretty, colored, leveled,
  * timestamped, at a minimum level of `info`. Code-position and stack capture
@@ -63,18 +70,36 @@ function nodeProcessAdapter(): StricliProcess {
  * The three report kinds bypass tslog entirely: they print as the familiar
  * unadorned block straight to the process's stdout, byte-identical to before
  * structured logging existed — a report is read as a table, not narration,
- * and a level/timestamp prefix would be bolted onto it.
+ * and a level/timestamp prefix would be bolted onto it. `child` derives a
+ * tslog sub-logger per dispatched Worker: its `name` tags every console line
+ * so concurrent Workers stay tellable apart, and its `bindings` carry the
+ * Ticket/Attempt (or PR) as real fields once a structured sink exists to
+ * read them.
  */
 function buildLog(cliProcess: StricliProcess): Log {
-  const logger = new Logger({ minLevel: "INFO", stack: { capture: "off" } });
-  return (event) => {
-    const block = reportBlockText(event);
-    if (block !== null) {
-      cliProcess.stdout.write(`${block}\n`);
-      return;
-    }
-    logger[event.level](event.msg);
-  };
+  const rootLogger = new Logger({
+    minLevel: "INFO",
+    stack: { capture: "off" },
+  });
+  function wrap(logger: typeof rootLogger): Log {
+    const log = ((event: LogEvent): void => {
+      const block = reportBlockText(event);
+      if (block !== null) {
+        cliProcess.stdout.write(`${block}\n`);
+        return;
+      }
+      logger[event.level](event.msg);
+    }) as Log;
+    log.child = (bindings) =>
+      wrap(
+        logger.getSubLogger({
+          name: tagFor(bindings),
+          bindings: bindings as Record<string, unknown>,
+        }),
+      );
+    return log;
+  }
+  return wrap(rootLogger);
 }
 
 /** The real context: today's collaborators, wired exactly as the entry point wired them before. */

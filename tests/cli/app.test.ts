@@ -7,8 +7,17 @@ import {
   type Flags,
   type ResolvedConfig,
 } from "../../src/core/config.js";
-import type { LogEvent } from "../../src/core/log.js";
+import type { Log, LogEvent } from "../../src/core/log.js";
 import type { Ticket, WorldSnapshot } from "../../src/core/types.js";
+
+/** A `Log` recording every event into `events`; this fake context never derives a sub-logger, but the type requires `child`. */
+function recordingLog(events: LogEvent[]): Log {
+  const fn = ((event: LogEvent) => {
+    events.push(event);
+  }) as Log;
+  fn.child = () => recordingLog(events);
+  return fn;
+}
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
   return {
@@ -106,9 +115,7 @@ function fakeContext(
     },
     now: () => 0,
     sleep: async () => {},
-    log: (event) => {
-      events.push(event);
-    },
+    log: recordingLog(events),
   };
 
   return {
