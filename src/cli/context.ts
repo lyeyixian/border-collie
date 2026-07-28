@@ -30,6 +30,8 @@ export interface Context extends CommandContext {
   readonly sleep: (ms: number) => Promise<void>;
   /** The single logging seam narration travels through; see src/core/log.ts. */
   readonly log: Log;
+  /** The verbosity flag: lowers the console's minimum level to debug. Never affects the file. */
+  readonly setVerbose: (verbose: boolean) => void;
 }
 
 /**
@@ -61,11 +63,13 @@ function tagFor(bindings: LogBindings): string {
 
 /**
  * Console sink for the Orchestrator's narration: pretty, colored, leveled,
- * timestamped, at a minimum level of `info`. Code-position and stack capture
- * are disabled — this is domain narration, not application debugging. Color
- * (and `NO_COLOR`/`FORCE_COLOR`) and TTY detection are handled by tslog
- * itself. Constructed only here: `core` and `app` never import the library,
- * they only see the `Log` function type.
+ * timestamped, at a minimum level of `info` — lowered to `debug` by the
+ * verbosity flag via `setMinLevel`, tslog's supported way to change a
+ * logger's level after construction. Code-position and stack capture are
+ * disabled — this is domain narration, not application debugging. Color (and
+ * `NO_COLOR`/`FORCE_COLOR`) and TTY detection are handled by tslog itself.
+ * Constructed only here: `core` and `app` never import the library, they
+ * only see the `Log` function type.
  *
  * The three report kinds bypass tslog entirely: they print as the familiar
  * unadorned block straight to the process's stdout, byte-identical to before
@@ -76,7 +80,10 @@ function tagFor(bindings: LogBindings): string {
  * Ticket/Attempt (or PR) as real fields once a structured sink exists to
  * read them.
  */
-function buildLog(cliProcess: StricliProcess): Log {
+function buildLog(cliProcess: StricliProcess): {
+  log: Log;
+  setVerbose: (verbose: boolean) => void;
+} {
   const rootLogger = new Logger({
     minLevel: "INFO",
     stack: { capture: "off" },
@@ -99,13 +106,16 @@ function buildLog(cliProcess: StricliProcess): Log {
       );
     return log;
   }
-  return wrap(rootLogger);
+  return {
+    log: wrap(rootLogger),
+    setVerbose: (verbose) => rootLogger.setMinLevel(verbose ? "DEBUG" : "INFO"),
+  };
 }
 
 /** The real context: today's collaborators, wired exactly as the entry point wired them before. */
 export function buildRealContext(): Context {
   const cliProcess = nodeProcessAdapter();
-  const log = buildLog(cliProcess);
+  const { log, setVerbose } = buildLog(cliProcess);
   return {
     process: cliProcess,
     loadConfig: (flags) => resolveConfig(loadConfigFile(process.cwd()), flags),
@@ -115,5 +125,6 @@ export function buildRealContext(): Context {
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     log,
+    setVerbose,
   };
 }

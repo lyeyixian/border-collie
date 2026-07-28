@@ -350,6 +350,23 @@ describe("run", () => {
     expect(nextTick).toMatchObject({ pollSeconds: 45 });
   });
 
+  it("also logs the inter-Tick wait at debug, so the durable file has it even when the console hides it", async () => {
+    const inFlight = world(
+      [ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })],
+      [2],
+    );
+    const state = scriptedDeps([
+      { world: inFlight, actions: [] },
+      { world: world([ticket({ number: 2, state: "closed" })]), actions: [] },
+    ]);
+
+    await run(45, state.deps);
+
+    const tickWait = state.events.find((e) => e.kind === "tick-wait");
+    expect(tickWait?.level).toBe("debug");
+    expect(tickWait).toMatchObject({ pollSeconds: 45 });
+  });
+
   it("resumes from tracker truth when re-run after a human fixes a Stuck state", async () => {
     // Nothing but GitHub carries state: a run that exits Stuck ...
     const escalated = ticket({ number: 7, labels: ["ready-for-human"] });

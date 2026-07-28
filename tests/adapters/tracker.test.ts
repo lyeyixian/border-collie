@@ -12,7 +12,9 @@ import {
   releaseTicket,
   updatePrBranch,
   voidAttempt,
+  withDebugLogging,
 } from "../../src/adapters/tracker.js";
+import type { Log, LogEvent } from "../../src/core/log.js";
 import {
   type AttemptFailure,
   attemptMarker,
@@ -954,5 +956,76 @@ describe("commentConflictUnresolved", () => {
         expect.stringContaining(CONFLICT_UNRESOLVED_MARKER),
       ],
     ]);
+  });
+});
+
+function recordingLog(): { log: Log; events: LogEvent[] } {
+  const events: LogEvent[] = [];
+  const log = ((event: LogEvent) => {
+    events.push(event);
+  }) as Log;
+  log.child = () => log;
+  return { log, events };
+}
+
+describe("withDebugLogging", () => {
+  it("logs the command and a 0 exit code at debug on success, without altering the result", async () => {
+    const exec: Exec = async () => "stdout output";
+    const { log, events } = recordingLog();
+
+    const result = await withDebugLogging(exec, log)("gh", [
+      "issue",
+      "view",
+      "5",
+    ]);
+
+    expect(result).toBe("stdout output");
+    expect(events).toEqual([
+      {
+        kind: "tracker-command",
+        level: "debug",
+        msg: "gh issue view 5 (exit 0)",
+        cmd: "gh",
+        args: ["issue", "view", "5"],
+        exitCode: 0,
+      },
+    ]);
+  });
+
+  it("logs the command and its exit code at debug on failure, then rethrows", async () => {
+    const error = Object.assign(new Error("exit status 1"), { code: 1 });
+    const exec: Exec = async () => {
+      throw error;
+    };
+    const { log, events } = recordingLog();
+
+    await expect(
+      withDebugLogging(exec, log)("gh", ["issue", "edit", "5"]),
+    ).rejects.toBe(error);
+
+    expect(events).toEqual([
+      {
+        kind: "tracker-command",
+        level: "debug",
+        msg: "gh issue edit 5 (exit 1)",
+        cmd: "gh",
+        args: ["issue", "edit", "5"],
+        exitCode: 1,
+      },
+    ]);
+  });
+
+  it("logs an unknown exit code when the failure carries none (e.g. the process never spawned)", async () => {
+    const exec: Exec = async () => {
+      throw new Error("spawn gh ENOENT");
+    };
+    const { log, events } = recordingLog();
+
+    await expect(
+      withDebugLogging(exec, log)("gh", ["issue", "view", "5"]),
+    ).rejects.toThrow("ENOENT");
+
+    expect(events[0]).toMatchObject({ exitCode: null });
+    expect(events[0]?.msg).toContain("exit unknown");
   });
 });

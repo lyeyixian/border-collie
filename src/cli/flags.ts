@@ -6,7 +6,7 @@ import {
 } from "../core/config.js";
 import type { Context } from "./context.js";
 
-/** The nine-flag set shared by `tick` and `run`; every field optional except the two booleans. */
+/** The ten-flag set shared by `tick` and `run`; every field optional except the three booleans. */
 export interface CliFlags {
   dryRun: boolean;
   parent?: number;
@@ -16,6 +16,8 @@ export interface CliFlags {
   pollSeconds?: number;
   model?: string;
   retryModel?: string;
+  /** CLI-only, like `dryRun`: lowers the console's minimum level to debug, never the file's. */
+  verbose: boolean;
 }
 
 /** The CLI's flags shape narrowed to what config resolution accepts (drops `dryRun`, a CLI-only concern). */
@@ -113,5 +115,11 @@ export const sharedFlags = {
     brief: "model second attempts run on (default opus, overrides config file)",
     placeholder: "name",
     optional: true,
+  },
+  verbose: {
+    kind: "boolean",
+    brief:
+      "lower the console's minimum level to debug (the durable file is already at debug regardless)",
+    default: false,
   },
 } as const satisfies FlagParametersForType<CliFlags, CommandContext>;

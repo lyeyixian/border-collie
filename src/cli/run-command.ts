@@ -9,6 +9,7 @@ async function runHandler(
   this: Context,
   flags: CliFlags,
 ): Promise<undefined | Error> {
+  this.setVerbose(flags.verbose);
   if (flags.dryRun) {
     return new ConfigError(
       "--dry-run only applies to tick: a dry run never progresses the loop",
