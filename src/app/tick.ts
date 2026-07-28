@@ -10,15 +10,23 @@ import type { Log } from "../core/log.js";
 import { plan } from "../core/plan.js";
 import { buildPlanReport } from "../core/render.js";
 import type { Action, WorldSnapshot } from "../core/types.js";
-import { act } from "./act.js";
+import { act, type IntervalScheduler } from "./act.js";
+
+/** The Tick's effects, injectable for tests, matching the run loop's pattern. */
+export interface TickDeps {
+  log: Log;
+  now: () => number;
+  scheduleInterval: IntervalScheduler;
+}
 
 /** One full observe → plan → act pass — the single Tick both commands share. */
 export async function tickOnce(
   config: ResolvedConfig,
   dryRun: boolean,
   dispatchPaused = false,
-  log: Log,
+  deps: TickDeps,
 ): Promise<{ world: WorldSnapshot; actions: Action[]; infraFailures: number }> {
+  const { log, now, scheduleInterval } = deps;
   // Every command this Tick issues through the adapters — gh and git alike
   // — plus its exit code, is narrated at debug through the same seam:
   // detail that does not exist today, hidden from the console unless
@@ -44,7 +52,7 @@ export async function tickOnce(
   if (!dryRun) {
     const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
     const report = await act(actions, {
-      dispatch: (ticket, attempt) =>
+      dispatch: (ticket, attempt, onActivity) =>
         dispatchWorker(
           ticket,
           {
@@ -58,6 +66,7 @@ export async function tickOnce(
           exec,
           realSpawnWorkerProcess,
           log,
+          onActivity,
         ),
       openPr: (outcome) =>
         openPrForOutcome(
@@ -82,6 +91,8 @@ export async function tickOnce(
         ),
       exec,
       log,
+      now,
+      scheduleInterval,
     });
     infraFailures = report.infraFailures;
   }

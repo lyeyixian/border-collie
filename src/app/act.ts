@@ -12,16 +12,36 @@ import {
 } from "../adapters/tracker.js";
 import { type ConflictOutcome, pushAgentBranch } from "../adapters/worker.js";
 import { reclassifyCorrelatedFailures } from "../core/classify.js";
+import { heartbeatSnapshot, type WorkerActivity } from "../core/heartbeat.js";
 import type { Log } from "../core/log.js";
+import { renderHeartbeat } from "../core/render.js";
 import type { Action, WorkerOutcome } from "../core/types.js";
+
+/** How often the fleet heartbeat reports, while any Worker is in flight. */
+const HEARTBEAT_INTERVAL_MS = 60_000;
+
+/**
+ * Starts a recurring callback every `ms`; returns a function that cancels
+ * it. The run loop's existing treatment of time (an injected clock plus an
+ * injected waiter) extended with the one new primitive the heartbeat needs:
+ * something to cancel immediately once the last Worker settles, rather than
+ * waiting out a pending wait.
+ */
+export type IntervalScheduler = (
+  ms: number,
+  callback: () => void,
+) => () => void;
 
 /**
  * Dispatch one Worker against one claimed ticket; the caller binds the
- * attempt number to a model (the retry ladder).
+ * attempt number to a model (the retry ladder). `onActivity` is called
+ * whenever the Worker process produces output — the fleet heartbeat's
+ * activity signal, riding the process adapter's existing observation.
  */
 export type DispatchWorker = (
   ticket: number,
   attempt: number,
+  onActivity: () => void,
 ) => Promise<WorkerOutcome>;
 
 /** Open the draft PR for a successful Attempt; resolves with the PR URL. */
@@ -73,6 +93,75 @@ export interface ActDeps {
   dispatchConflict: DispatchConflictWorker;
   exec: Exec;
   log: Log;
+  /** The heartbeat's clock, following the run loop's existing treatment of time. */
+  now: () => number;
+  /** The heartbeat's scheduler, following the run loop's existing treatment of time. */
+  scheduleInterval: IntervalScheduler;
+}
+
+/** One spawned Worker's handle onto the fleet heartbeat: touch on activity, stop once settled. */
+interface HeartbeatHandle {
+  touch: () => void;
+  stop: () => void;
+}
+
+/**
+ * Tracks every in-flight dispatch Worker's activity and reports the fleet
+ * heartbeat once a minute, starting the scheduler on the first Worker and
+ * cancelling it the moment the last one settles. Kept apart from the
+ * action-dispatch switch below, which only calls `start`/`touch`/`stop` —
+ * the heartbeat's own lifecycle is a separate concern from performing one
+ * planned write.
+ */
+function createHeartbeat(
+  now: () => number,
+  scheduleInterval: IntervalScheduler,
+  log: Log,
+): { start: (ticket: number, attempt: number) => HeartbeatHandle } {
+  const activity = new Map<string, WorkerActivity>();
+  let stopScheduler: (() => void) | undefined;
+
+  function stopIfIdle(): void {
+    if (activity.size === 0 && stopScheduler !== undefined) {
+      stopScheduler();
+      stopScheduler = undefined;
+    }
+  }
+
+  return {
+    start(ticket, attempt) {
+      const key = `${ticket}:${attempt}`;
+      const startedAtMs = now();
+      activity.set(key, {
+        ticket,
+        attempt,
+        startedAtMs,
+        lastActivityAtMs: startedAtMs,
+      });
+      if (stopScheduler === undefined) {
+        stopScheduler = scheduleInterval(HEARTBEAT_INTERVAL_MS, () => {
+          if (activity.size === 0) return;
+          const heartbeats = heartbeatSnapshot([...activity.values()], now());
+          log({
+            kind: "heartbeat",
+            level: "info",
+            msg: renderHeartbeat(heartbeats),
+            workers: heartbeats,
+          });
+        });
+      }
+      return {
+        touch: () => {
+          const entry = activity.get(key);
+          if (entry) entry.lastActivityAtMs = now();
+        },
+        stop: () => {
+          activity.delete(key);
+          stopIfIdle();
+        },
+      };
+    },
+  };
 }
 
 function describeConflict(outcome: ConflictOutcome): string {
@@ -99,15 +188,28 @@ function describeConflict(outcome: ConflictOutcome): string {
  * world and re-plans whatever is still due. PR upkeep runs alongside dispatch:
  * the mechanical branch update and draft→ready flip are immediate tracker
  * writes; a conflict Worker runs concurrently like a spawn, its resolved
- * rebase pushed (or the PR handed to a human) once it settles.
+ * rebase pushed (or the PR handed to a human) once it settles. While any
+ * dispatch Worker is in flight, a fleet heartbeat reports all of them once a
+ * minute — elapsed time and time since last output, independently — and
+ * stops the moment the last one settles.
  */
 export async function act(
   actions: Action[],
   deps: ActDeps,
 ): Promise<ActReport> {
-  const { dispatch, openPr, dispatchConflict, exec, log } = deps;
+  const {
+    dispatch,
+    openPr,
+    dispatchConflict,
+    exec,
+    log,
+    now,
+    scheduleInterval,
+  } = deps;
   const workers: Promise<SpawnResult>[] = [];
   const conflicts: Promise<ConflictSpawnResult>[] = [];
+  const heartbeat = createHeartbeat(now, scheduleInterval, log);
+
   for (const action of actions) {
     switch (action.type) {
       case "claim":
@@ -185,9 +287,11 @@ export async function act(
           ticket: action.ticket,
           attempt: action.attempt,
         });
+        const handle = heartbeat.start(action.ticket, action.attempt);
         workers.push(
-          dispatch(action.ticket, action.attempt).then(
-            async (outcome): Promise<SpawnResult> => {
+          dispatch(action.ticket, action.attempt, handle.touch)
+            .finally(handle.stop)
+            .then(async (outcome): Promise<SpawnResult> => {
               if (!outcome.ok) return { outcome, log: workerLog };
               try {
                 return {
@@ -198,8 +302,7 @@ export async function act(
               } catch (error) {
                 return { outcome, prFailure: error, log: workerLog };
               }
-            },
-          ),
+            }),
         );
         workerLog({
           kind: "spawn",

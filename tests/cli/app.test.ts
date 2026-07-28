@@ -117,6 +117,7 @@ function fakeContext(
     },
     now: () => 0,
     sleep: async () => {},
+    scheduleInterval: () => () => {},
     log: recordingLog(events),
     setVerbose: (verbose) => {
       verbosityCalls.push(verbose);
