@@ -7,6 +7,7 @@ import {
   type Flags,
   type ResolvedConfig,
 } from "../../src/core/config.js";
+import type { LogEvent } from "../../src/core/log.js";
 import type { Ticket, WorldSnapshot } from "../../src/core/types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
@@ -55,6 +56,7 @@ interface FakeContext {
     dispatchPaused: boolean | undefined;
   }[];
   probeCalls: string[];
+  events: LogEvent[];
 }
 
 function fakeContext(
@@ -72,6 +74,7 @@ function fakeContext(
     dispatchPaused: boolean | undefined;
   }[] = [];
   const probeCalls: string[] = [];
+  const events: LogEvent[] = [];
   const tickResults = overrides.tickResults ?? [{ world: CLOSED_WORLD }];
 
   const context: Context = {
@@ -103,6 +106,9 @@ function fakeContext(
     },
     now: () => 0,
     sleep: async () => {},
+    log: (event) => {
+      events.push(event);
+    },
   };
 
   return {
@@ -112,6 +118,7 @@ function fakeContext(
     loadConfigCalls,
     tickCalls,
     probeCalls,
+    events,
   };
 }
 

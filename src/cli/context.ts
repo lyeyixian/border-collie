@@ -1,4 +1,5 @@
 import type { CommandContext, StricliProcess } from "@stricli/core";
+import { Logger } from "tslog";
 import { loadConfigFile } from "../adapters/config-file.js";
 import { probeEnvironment } from "../adapters/worker.js";
 import { tickOnce } from "../app/tick.js";
@@ -7,6 +8,7 @@ import {
   type ResolvedConfig,
   resolveConfig,
 } from "../core/config.js";
+import type { Log } from "../core/log.js";
 import type { Action, WorldSnapshot } from "../core/types.js";
 
 /** Every effect a command handler needs, injected so handlers never import them directly. */
@@ -25,6 +27,8 @@ export interface Context extends CommandContext {
   readonly probe: (model: string) => Promise<boolean>;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
+  /** The single logging seam narration travels through; see src/core/log.ts. */
+  readonly log: Log;
 }
 
 /**
@@ -47,18 +51,31 @@ function nodeProcessAdapter(): StricliProcess {
   };
 }
 
+/**
+ * Console sink for the Orchestrator's narration: pretty, colored, leveled,
+ * timestamped, at a minimum level of `info`. Code-position and stack capture
+ * are disabled — this is domain narration, not application debugging. Color
+ * (and `NO_COLOR`/`FORCE_COLOR`) and TTY detection are handled by tslog
+ * itself. Constructed only here: `core` and `app` never import the library,
+ * they only see the `Log` function type.
+ */
+function buildLog(): Log {
+  const logger = new Logger({ minLevel: "INFO", stack: { capture: "off" } });
+  return (event) => logger[event.level](event.msg);
+}
+
 /** The real context: today's collaborators, wired exactly as the entry point wired them before. */
 export function buildRealContext(): Context {
   const cliProcess = nodeProcessAdapter();
+  const log = buildLog();
   return {
     process: cliProcess,
     loadConfig: (flags) => resolveConfig(loadConfigFile(process.cwd()), flags),
     tick: (config, dryRun, dispatchPaused) =>
-      tickOnce(config, dryRun, dispatchPaused, (line) =>
-        cliProcess.stdout.write(`${line}\n`),
-      ),
+      tickOnce(config, dryRun, dispatchPaused, log),
     probe: (model) => probeEnvironment(model),
     now: () => Date.now(),
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    log,
   };
 }

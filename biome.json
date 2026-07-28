@@ -57,6 +57,10 @@
                   {
                     "group": ["../main.js"],
                     "message": "main is the composition-root entry point; it depends on cli, and nothing depends on it. Whatever you need from main belongs in core already — this shouldn't be an import at all."
+                  },
+                  {
+                    "group": ["tslog"],
+                    "message": "the logging library is constructed only in the composition root (cli/context.ts). core sees only the injected Log function from core/log.ts."
                   }
                 ]
               }
@@ -85,6 +89,10 @@
                   {
                     "group": ["../main.js"],
                     "message": "main is the composition-root entry point; it depends on cli, and nothing depends on it. An adapter has no legitimate reason to reach into main."
+                  },
+                  {
+                    "group": ["tslog"],
+                    "message": "the logging library is constructed only in the composition root (cli/context.ts). An adapter that needs to narrate takes the injected Log function from core/log.ts instead."
                   }
                 ]
               }
@@ -109,6 +117,10 @@
                   {
                     "group": ["../main.js"],
                     "message": "main is the composition-root entry point; it depends on cli, and nothing depends on it. app has no legitimate reason to reach into main."
+                  },
+                  {
+                    "group": ["tslog"],
+                    "message": "the logging library is constructed only in the composition root (cli/context.ts). app sees only the injected Log function from core/log.ts, exactly like every other effect."
                   }
                 ]
               }
