@@ -6,7 +6,7 @@ import {
 } from "../core/breaker.js";
 import type { Log } from "../core/log.js";
 import { dispatchableSet } from "../core/plan.js";
-import { renderComplete, renderStuck } from "../core/render.js";
+import { buildCompleteReport, buildStuckReport } from "../core/render.js";
 import type { Action, Ticket, WorldSnapshot } from "../core/types.js";
 
 /**
@@ -119,18 +119,22 @@ export async function run(
     }
     const status = runStatus(world, actions, breaker !== undefined);
     if (status.state === "complete") {
+      const completeReport = buildCompleteReport(world.tickets);
       deps.log({
         kind: "complete-report",
         level: "info",
-        msg: renderComplete(world.tickets),
+        msg: "run complete",
+        report: completeReport,
       });
       return "complete";
     }
     if (status.state === "stuck") {
+      const stuckReport = buildStuckReport(world);
       deps.log({
         kind: "stuck-report",
         level: "warn",
-        msg: renderStuck(world),
+        msg: "run stuck",
+        report: stuckReport,
       });
       return "stuck";
     }

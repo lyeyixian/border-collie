@@ -1,12 +1,18 @@
 import { describe, expect, it } from "vitest";
 import type { ResolvedConfig } from "../../src/core/config.js";
-import { plan } from "../../src/core/plan.js";
 import {
-  renderComplete,
-  renderPlan,
-  renderStuck,
+  buildCompleteReport,
+  buildPlanReport,
+  buildStuckReport,
+  type CompleteReport,
+  type PlanReport,
+  renderCompleteReport,
+  renderPlanReport,
+  renderStuckReport,
+  type StuckReport,
 } from "../../src/core/render.js";
 import type {
+  Action,
   OpenAgentPr,
   Ticket,
   WorldSnapshot,
@@ -57,7 +63,11 @@ function config(overrides: Partial<ResolvedConfig> = {}): ResolvedConfig {
   };
 }
 
-describe("renderPlan", () => {
+function stuckWorld(tickets: Ticket[]): WorldSnapshot {
+  return { tickets, openAgentPrs: [], mergedAgentPrs: [] };
+}
+
+describe("buildPlanReport", () => {
   const world: WorldSnapshot = {
     tickets: [
       ticket({ number: 2, title: "Walking skeleton" }),
@@ -68,152 +78,188 @@ describe("renderPlan", () => {
     mergedAgentPrs: [],
   };
 
-  it("shows the scope, the dispatchable set, and the planned claims and spawns", () => {
-    const actions = plan(world, { maxWorkers: 3, maxOpenPrs: 5 });
+  it("computes the scope label, ticket totals, the dispatchable set, and carries dryRun", () => {
+    const report = buildPlanReport(config(), world, [], { dryRun: true });
 
-    expect(renderPlan(config(), world, actions, { dryRun: true })).toBe(
-      [
-        "Scope: sub-issues of #1 — 3 tickets (2 open)",
-        "Dispatchable: #2",
-        "Plan (max_workers=3, max_open_prs=5):",
-        "  claim #2 — Walking skeleton",
-        "  spawn Worker for #2 — Walking skeleton (model sonnet, attempt 1)",
-        "Dry run: no writes performed.",
-      ].join("\n"),
-    );
+    expect(report.scopeLabel).toBe("sub-issues of #1");
+    expect(report.totalTickets).toBe(3);
+    expect(report.openTickets).toBe(2);
+    expect(report.dispatchable).toEqual([2]);
+    expect(report.dryRun).toBe(true);
   });
 
-  it("says so when nothing is dispatchable", () => {
+  it("labels repo-wide scope for --all", () => {
     const empty: WorldSnapshot = {
       tickets: [],
       openAgentPrs: [],
       mergedAgentPrs: [],
     };
 
-    expect(
-      renderPlan(config({ scope: { kind: "all" } }), empty, [], {
-        dryRun: true,
-      }),
-    ).toBe(
-      [
-        "Scope: repo-wide (--all) — 0 tickets (0 open)",
-        "Dispatchable: none",
-        "Plan (max_workers=3, max_open_prs=5): nothing to do",
-        "Dry run: no writes performed.",
-      ].join("\n"),
+    const report = buildPlanReport(
+      config({ scope: { kind: "all" } }),
+      empty,
+      [],
+      { dryRun: true },
     );
+
+    expect(report.scopeLabel).toBe("repo-wide (--all)");
   });
 
-  it("shows planned releases and drops the dry-run footer when acting", () => {
-    const orphaned: WorldSnapshot = {
+  it("reports no pause when nothing throttles dispatch", () => {
+    const report = buildPlanReport(config(), world, [], { dryRun: true });
+
+    expect(report.paused).toBeNull();
+  });
+
+  it("reports a breaker pause while the circuit breaker holds dispatch", () => {
+    const report = buildPlanReport(config(), world, [], {
+      dryRun: false,
+      dispatchPaused: true,
+    });
+
+    expect(report.paused).toEqual({ kind: "breaker" });
+  });
+
+  it("reports a max_open_prs pause when dispatchable tickets wait on headroom", () => {
+    const throttled: WorldSnapshot = {
+      ...world,
+      openAgentPrs: [10, 11, 12, 13, 14].map(openPr),
+    };
+
+    const report = buildPlanReport(config(), throttled, [], {
+      dryRun: false,
+    });
+
+    expect(report.paused).toEqual({ kind: "max-open-prs", openCount: 5 });
+  });
+
+  it("does not report a pause when nothing is dispatchable, even at max_open_prs", () => {
+    const noDispatch: WorldSnapshot = {
+      tickets: [ticket({ number: 4, title: "Done already", state: "closed" })],
+      openAgentPrs: [10, 11, 12, 13, 14].map(openPr),
+      mergedAgentPrs: [],
+    };
+
+    const report = buildPlanReport(config(), noDispatch, [], {
+      dryRun: false,
+    });
+
+    expect(report.paused).toBeNull();
+  });
+
+  it("resolves every action kind to a structured line, including the retry-ladder model", () => {
+    const actionWorld: WorldSnapshot = {
       tickets: [
-        ticket({
-          number: 5,
-          title: "Stranded by a crash",
-          assignees: ["operator"],
-          hasAgentClaim: true,
-        }),
+        ticket({ number: 2, title: "Walking skeleton" }),
+        ticket({ number: 3, title: "Stranded" }),
+        ticket({ number: 4, title: "Failed twice" }),
+        ticket({ number: 5, title: "Merged but open" }),
+        ticket({ number: 6, title: "Behind base" }),
+        ticket({ number: 7, title: "Green draft" }),
       ],
       openAgentPrs: [],
       mergedAgentPrs: [],
     };
-    const actions = plan(orphaned, { maxWorkers: 3, maxOpenPrs: 5 });
+    const actions: Action[] = [
+      { type: "claim", ticket: 2 },
+      { type: "release", ticket: 3, assignees: ["operator"] },
+      { type: "spawn", ticket: 2, attempt: 2 },
+      { type: "escalate", ticket: 4, failures: [] },
+      { type: "close", ticket: 5, prUrl: "https://github.com/o/r/pull/50" },
+      { type: "update-branch", pr: 60, ticket: 6 },
+      {
+        type: "conflict-worker",
+        pr: 61,
+        ticket: 6,
+        headRef: "border-collie/ticket-6-attempt-1",
+      },
+      { type: "mark-ready", pr: 70, ticket: 7 },
+    ];
 
-    expect(renderPlan(config(), orphaned, actions, { dryRun: false })).toBe(
-      [
-        "Scope: sub-issues of #1 — 1 tickets (1 open)",
-        "Dispatchable: none",
-        "Plan (max_workers=3, max_open_prs=5):",
-        "  release #5 — Stranded by a crash (orphaned agent claim)",
-      ].join("\n"),
-    );
+    const report = buildPlanReport(config(), actionWorld, actions, {
+      dryRun: true,
+    });
+
+    expect(report.actions).toEqual([
+      { type: "claim", ticket: 2, title: "Walking skeleton" },
+      { type: "release", ticket: 3, title: "Stranded" },
+      {
+        type: "spawn",
+        ticket: 2,
+        title: "Walking skeleton",
+        model: "opus",
+        attempt: 2,
+      },
+      { type: "escalate", ticket: 4, title: "Failed twice" },
+      {
+        type: "close",
+        ticket: 5,
+        title: "Merged but open",
+        prUrl: "https://github.com/o/r/pull/50",
+      },
+      { type: "update-branch", pr: 60, title: "Behind base" },
+      { type: "conflict-worker", pr: 61, title: "Behind base" },
+      { type: "mark-ready", pr: 70, title: "Green draft" },
+    ]);
   });
 
-  it("shows the retry model on second attempts and planned escalations", () => {
-    const laddered: WorldSnapshot = {
-      tickets: [
-        ticket({ number: 6, title: "Failed once", agentClaimCount: 1 }),
-        ticket({ number: 7, title: "Failed twice", agentClaimCount: 2 }),
-      ],
-      openAgentPrs: [],
-      mergedAgentPrs: [],
-    };
-    const actions = plan(laddered, { maxWorkers: 3, maxOpenPrs: 5 });
-
-    expect(renderPlan(config(), laddered, actions, { dryRun: true })).toBe(
-      [
-        "Scope: sub-issues of #1 — 2 tickets (2 open)",
-        "Dispatchable: #6, #7",
-        "Plan (max_workers=3, max_open_prs=5):",
-        "  escalate #7 — Failed twice (attempts exhausted → ready-for-human)",
-        "  claim #6 — Failed once",
-        "  spawn Worker for #6 — Failed once (model opus, attempt 2)",
-        "Dry run: no writes performed.",
-      ].join("\n"),
+  it("falls back to an empty title when a ticket isn't in the world snapshot", () => {
+    const report = buildPlanReport(
+      config(),
+      { tickets: [], openAgentPrs: [], mergedAgentPrs: [] },
+      [{ type: "claim", ticket: 999 }],
+      { dryRun: true },
     );
-  });
 
-  it("shows planned closes with the merged PR", () => {
-    const merged: WorldSnapshot = {
-      tickets: [
-        ticket({
-          number: 6,
+    expect(report.actions).toEqual([{ type: "claim", ticket: 999, title: "" }]);
+  });
+});
+
+describe("renderPlanReport", () => {
+  it("renders the familiar unadorned block: header lines, one line per action kind, the paused notice, the dry-run footer", () => {
+    const report: PlanReport = {
+      scopeLabel: "sub-issues of #1",
+      totalTickets: 5,
+      openTickets: 4,
+      dispatchable: [2, 6],
+      paused: { kind: "max-open-prs", openCount: 5 },
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      actions: [
+        { type: "claim", ticket: 2, title: "Walking skeleton" },
+        { type: "release", ticket: 3, title: "Stranded" },
+        {
+          type: "spawn",
+          ticket: 2,
+          title: "Walking skeleton",
+          model: "sonnet",
+          attempt: 1,
+        },
+        { type: "escalate", ticket: 7, title: "Failed twice" },
+        {
+          type: "close",
+          ticket: 6,
           title: "Merged but open",
-          assignees: ["operator"],
-          hasAgentClaim: true,
-        }),
+          prUrl: "https://github.com/o/r/pull/60",
+        },
+        { type: "update-branch", pr: 50, title: "Behind base" },
+        { type: "conflict-worker", pr: 60, title: "Conflicted" },
+        { type: "mark-ready", pr: 70, title: "Green draft" },
       ],
-      openAgentPrs: [],
-      mergedAgentPrs: [{ ticket: 6, url: "https://github.com/o/r/pull/60" }],
+      dryRun: true,
     };
-    const actions = plan(merged, { maxWorkers: 3, maxOpenPrs: 5 });
 
-    expect(renderPlan(config(), merged, actions, { dryRun: false })).toBe(
+    expect(renderPlanReport(report)).toBe(
       [
-        "Scope: sub-issues of #1 — 1 tickets (1 open)",
-        "Dispatchable: none",
+        "Scope: sub-issues of #1 — 5 tickets (4 open)",
+        "Dispatchable: #2, #6",
+        "Dispatch paused: 5 open agent PRs at max_open_prs (5)",
         "Plan (max_workers=3, max_open_prs=5):",
+        "  claim #2 — Walking skeleton",
+        "  release #3 — Stranded (orphaned agent claim)",
+        "  spawn Worker for #2 — Walking skeleton (model sonnet, attempt 1)",
+        "  escalate #7 — Failed twice (attempts exhausted → ready-for-human)",
         "  close #6 — Merged but open (merged: https://github.com/o/r/pull/60)",
-      ].join("\n"),
-    );
-  });
-
-  it("renders the PR-upkeep actions with the PR number and the ticket title", () => {
-    const upkeep: WorldSnapshot = {
-      tickets: [
-        ticket({
-          number: 5,
-          title: "Behind base",
-          assignees: ["operator"],
-          hasAgentClaim: true,
-        }),
-        ticket({
-          number: 6,
-          title: "Conflicted",
-          assignees: ["operator"],
-          hasAgentClaim: true,
-        }),
-        ticket({
-          number: 7,
-          title: "Green draft",
-          assignees: ["operator"],
-          hasAgentClaim: true,
-        }),
-      ],
-      openAgentPrs: [
-        { ...openPr(5), behind: true },
-        { ...openPr(6), mergeable: "conflicted" },
-        { ...openPr(7), draft: true },
-      ],
-      mergedAgentPrs: [],
-    };
-    const actions = plan(upkeep, { maxWorkers: 3, maxOpenPrs: 5 });
-
-    expect(renderPlan(config(), upkeep, actions, { dryRun: true })).toBe(
-      [
-        "Scope: sub-issues of #1 — 3 tickets (3 open)",
-        "Dispatchable: none",
-        "Plan (max_workers=3, max_open_prs=5):",
         "  update PR #50 — Behind base (behind base, mechanical rebase)",
         "  conflict Worker for PR #60 — Conflicted (resolve merge conflicts)",
         "  mark PR #70 ready — Green draft (CI green)",
@@ -221,108 +267,178 @@ describe("renderPlan", () => {
       ].join("\n"),
     );
   });
+});
 
-  it("notes paused dispatch when dispatchable tickets wait on max_open_prs headroom", () => {
-    const throttled: WorldSnapshot = {
-      ...world,
-      openAgentPrs: [10, 11, 12, 13, 14].map(openPr),
-    };
-    const actions = plan(throttled, { maxWorkers: 3, maxOpenPrs: 5 });
-
-    expect(renderPlan(config(), throttled, actions, { dryRun: false })).toBe(
-      [
-        "Scope: sub-issues of #1 — 3 tickets (2 open)",
-        "Dispatchable: #2",
-        "Dispatch paused: 5 open agent PRs at max_open_prs (5)",
-        "Plan (max_workers=3, max_open_prs=5): nothing to do",
-      ].join("\n"),
+describe("buildStuckReport", () => {
+  it("includes only open tickets", () => {
+    const report = buildStuckReport(
+      stuckWorld([
+        ticket({ number: 2, title: "Open one" }),
+        ticket({ number: 3, title: "Closed one", state: "closed" }),
+      ]),
     );
+
+    expect(report.tickets.map((t) => t.ticket)).toEqual([2]);
   });
 
-  it("notes the open circuit breaker when dispatch is paused for infrastructure failure", () => {
-    const actions = plan(world, {
-      maxWorkers: 3,
-      maxOpenPrs: 5,
-      dispatchPaused: true,
-    });
-
-    expect(
-      renderPlan(config(), world, actions, {
-        dryRun: false,
-        dispatchPaused: true,
-      }),
-    ).toBe(
-      [
-        "Scope: sub-issues of #1 — 3 tickets (2 open)",
-        "Dispatchable: #2",
-        "Dispatch paused: circuit breaker open (infrastructure failure), claims held",
-        "Plan (max_workers=3, max_open_prs=5): nothing to do",
-      ].join("\n"),
+  it("flags a human claim", () => {
+    const report = buildStuckReport(
+      stuckWorld([
+        ticket({
+          number: 9,
+          title: "A colleague's work",
+          assignees: ["some-human"],
+        }),
+      ]),
     );
+
+    expect(report.tickets[0]?.reasons).toEqual([
+      { kind: "human-claim", assignees: ["some-human"] },
+    ]);
+  });
+
+  it("flags labelled ready-for-human distinctly from a missing ready-for-agent label", () => {
+    const escalated = buildStuckReport(
+      stuckWorld([
+        ticket({ number: 7, title: "Escalated", labels: ["ready-for-human"] }),
+      ]),
+    );
+    const untriaged = buildStuckReport(
+      stuckWorld([
+        ticket({ number: 4, title: "Untriaged", labels: ["needs-triage"] }),
+      ]),
+    );
+
+    expect(escalated.tickets[0]?.reasons).toEqual([
+      { kind: "ready-for-human" },
+    ]);
+    expect(untriaged.tickets[0]?.reasons).toEqual([
+      { kind: "not-ready-for-agent" },
+    ]);
+  });
+
+  it("names each blocker, flagging ones outside Scope", () => {
+    const report = buildStuckReport(
+      stuckWorld([
+        ticket({ number: 7, title: "Escalated", labels: ["ready-for-human"] }),
+        ticket({
+          number: 8,
+          title: "Downstream",
+          openBlockers: 2,
+          blockedBy: [7, 99],
+        }),
+      ]),
+    );
+    const downstream = report.tickets.find((t) => t.ticket === 8);
+
+    expect(downstream?.reasons).toEqual([
+      {
+        kind: "blocked-by",
+        blockers: [
+          { ticket: 7, inScope: true },
+          { ticket: 99, inScope: false },
+        ],
+      },
+    ]);
+  });
+
+  it("falls back to the blocker count when the blocker list is missing", () => {
+    const report = buildStuckReport(
+      stuckWorld([
+        ticket({ number: 8, title: "Blocked blind", openBlockers: 2 }),
+      ]),
+    );
+
+    expect(report.tickets[0]?.reasons).toEqual([
+      { kind: "blocked-count", count: 2 },
+    ]);
+  });
+
+  it("combines multiple reasons for one ticket", () => {
+    const report = buildStuckReport(
+      stuckWorld([
+        ticket({
+          number: 9,
+          title: "Multi",
+          assignees: ["operator"],
+          labels: ["needs-triage"],
+          openBlockers: 1,
+          blockedBy: [5],
+        }),
+      ]),
+    );
+
+    expect(report.tickets[0]?.reasons).toEqual([
+      { kind: "human-claim", assignees: ["operator"] },
+      { kind: "not-ready-for-agent" },
+      { kind: "blocked-by", blockers: [{ ticket: 5, inScope: false }] },
+    ]);
+  });
+
+  it("reports no reasons when nothing is found — the renderer's fallback case", () => {
+    const report = buildStuckReport(
+      stuckWorld([ticket({ number: 10, title: "Mystery" })]),
+    );
+
+    expect(report.tickets[0]?.reasons).toEqual([]);
   });
 });
 
-describe("renderStuck", () => {
-  function stuckWorld(tickets: Ticket[]): WorldSnapshot {
-    return { tickets, openAgentPrs: [], mergedAgentPrs: [] };
-  }
+describe("renderStuckReport", () => {
+  it("renders the familiar unadorned block, joining multiple reasons and falling back for none", () => {
+    const report: StuckReport = {
+      tickets: [
+        {
+          ticket: 7,
+          title: "Escalated",
+          reasons: [{ kind: "ready-for-human" }],
+        },
+        {
+          ticket: 8,
+          title: "Downstream",
+          reasons: [
+            {
+              kind: "blocked-by",
+              blockers: [
+                { ticket: 7, inScope: true },
+                { ticket: 99, inScope: false },
+              ],
+            },
+          ],
+        },
+        {
+          ticket: 9,
+          title: "A colleague's work",
+          reasons: [
+            { kind: "human-claim", assignees: ["some-human"] },
+            { kind: "not-ready-for-agent" },
+          ],
+        },
+        {
+          ticket: 10,
+          title: "Blocked blind",
+          reasons: [{ kind: "blocked-count", count: 2 }],
+        },
+        { ticket: 11, title: "Unexplained", reasons: [] },
+      ],
+    };
 
-  it("names each open ticket and exactly what it is stuck on", () => {
-    const open = [
-      ticket({ number: 7, title: "Escalated", labels: ["ready-for-human"] }),
-      ticket({
-        number: 8,
-        title: "Downstream",
-        openBlockers: 2,
-        blockedBy: [7, 99],
-      }),
-      ticket({
-        number: 9,
-        title: "A colleague's work",
-        assignees: ["some-human"],
-      }),
-    ];
-
-    expect(renderStuck(stuckWorld(open))).toBe(
+    expect(renderStuckReport(report)).toBe(
       [
         "Run Stuck: open tickets remain, but every path forward runs through a human.",
         "  #7 — Escalated (labelled ready-for-human)",
         "  #8 — Downstream (blocked by #7, #99 (outside Scope))",
-        "  #9 — A colleague's work (claimed by some-human — a human claim, hands off)",
-      ].join("\n"),
-    );
-  });
-
-  it("falls back to the blocker count when the blocker list is missing", () => {
-    const open = [
-      ticket({ number: 8, title: "Blocked blind", openBlockers: 2 }),
-    ];
-
-    expect(renderStuck(stuckWorld(open))).toBe(
-      [
-        "Run Stuck: open tickets remain, but every path forward runs through a human.",
-        "  #8 — Blocked blind (2 open blockers)",
-      ].join("\n"),
-    );
-  });
-
-  it("notes a missing agent label distinctly from an escalation", () => {
-    const open = [
-      ticket({ number: 4, title: "Untriaged", labels: ["needs-triage"] }),
-    ];
-
-    expect(renderStuck(stuckWorld(open))).toBe(
-      [
-        "Run Stuck: open tickets remain, but every path forward runs through a human.",
-        "  #4 — Untriaged (not labelled ready-for-agent)",
+        "  #9 — A colleague's work (claimed by some-human — a human claim, hands off; not labelled ready-for-agent)",
+        "  #10 — Blocked blind (2 open blockers)",
+        "  #11 — Unexplained (no path forward found)",
       ].join("\n"),
     );
   });
 });
 
-describe("renderComplete", () => {
-  it("summarizes every ticket in Scope, noting human closes after Escalation", () => {
-    const report = renderComplete([
+describe("buildCompleteReport", () => {
+  it("marks a ticket escalated when it carries the ready-for-human label", () => {
+    const report = buildCompleteReport([
       ticket({ number: 2, title: "Walking skeleton", state: "closed" }),
       ticket({
         number: 7,
@@ -332,18 +448,32 @@ describe("renderComplete", () => {
       }),
     ]);
 
-    expect(report).toBe(
+    expect(report.tickets).toEqual([
+      { ticket: 2, title: "Walking skeleton", escalated: false },
+      { ticket: 7, title: "Hard one", escalated: true },
+    ]);
+  });
+
+  it("builds an empty report for an empty Scope", () => {
+    expect(buildCompleteReport([])).toEqual({ tickets: [] });
+  });
+});
+
+describe("renderCompleteReport", () => {
+  it("renders the familiar unadorned block, noting human closes after Escalation", () => {
+    const report: CompleteReport = {
+      tickets: [
+        { ticket: 2, title: "Walking skeleton", escalated: false },
+        { ticket: 7, title: "Hard one", escalated: true },
+      ],
+    };
+
+    expect(renderCompleteReport(report)).toBe(
       [
         "Run Complete: every ticket in Scope is closed (2 tickets).",
         "  #2 — Walking skeleton",
         "  #7 — Hard one (closed by a human after Escalation)",
       ].join("\n"),
-    );
-  });
-
-  it("reports an empty Scope as complete with nothing herded", () => {
-    expect(renderComplete([])).toBe(
-      "Run Complete: every ticket in Scope is closed (0 tickets).",
     );
   });
 });

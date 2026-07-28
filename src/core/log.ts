@@ -1,3 +1,4 @@
+import type { CompleteReport, PlanReport, StuckReport } from "./render.js";
 import type { FailureReason, InfraReason, WorkerOutcome } from "./types.js";
 
 /**
@@ -18,8 +19,9 @@ interface LogEventBase {
  * One line the Orchestrator narrates, travelling through the single logging
  * function injected into the run loop and the act phase's effects executor.
  * The kind plus its per-kind fields exist so a sink can render or query the
- * event structurally; the console sink (wired in the composition root) reads
- * only `level` and `msg`.
+ * event structurally. The console sink (wired in the composition root) reads
+ * `level` and `msg` for narration; for the three report kinds it instead
+ * renders `report` as the familiar unadorned block, dispatching on `kind`.
  */
 export type LogEvent = LogEventBase &
   (
@@ -54,9 +56,9 @@ export type LogEvent = LogEventBase &
     | { kind: "breaker-still-open"; trips: number; nextProbeMs: number }
     | { kind: "breaker-open"; infraFailures: number; nextProbeMs: number }
     | { kind: "next-tick"; pollSeconds: number }
-    | { kind: "plan-report" }
-    | { kind: "stuck-report" }
-    | { kind: "complete-report" }
+    | { kind: "plan-report"; report: PlanReport }
+    | { kind: "stuck-report"; report: StuckReport }
+    | { kind: "complete-report"; report: CompleteReport }
   );
 
 /** The single logging seam injected into the run loop and the act phase's effects executor. */
