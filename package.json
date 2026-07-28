@@ -36,6 +36,7 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "dev": "tsx src/main.ts",
+    "logs:pretty": "node scripts/logs-pretty.mjs",
     "smoke": "scripts/smoke.sh"
   },
   "devDependencies": {
