@@ -21,24 +21,28 @@ export interface TickDeps {
   scheduleInterval: IntervalScheduler;
 }
 
+/**
+ * What one Tick came to, returned to both the standalone command and the
+ * resident loop. `dispatchPaused` is what this Tick actually planned with —
+ * the caller's own `dispatchPaused` OR'd with the tracker-derived breaker
+ * (see `tickOnce` below) — so a caller with no breaker memory of its own, or
+ * one that hasn't caught up yet, can still judge Stuck against what was
+ * really planned rather than against its own memory alone.
+ */
+export interface TickResult {
+  world: WorldSnapshot;
+  actions: Action[];
+  infraFailures: number;
+  dispatchPaused: boolean;
+}
+
 /** One full observe → plan → act pass — the single Tick both commands share. */
 export async function tickOnce(
   config: ResolvedConfig,
   dryRun: boolean,
   dispatchPaused = false,
   deps: TickDeps,
-): Promise<{
-  world: WorldSnapshot;
-  actions: Action[];
-  infraFailures: number;
-  /**
-   * Whether THIS Tick actually planned with dispatch paused — the caller's
-   * `dispatchPaused` OR'd with the tracker-derived breaker, so a caller with
-   * no breaker memory of its own (or one that hasn't caught up yet) can
-   * still judge Stuck correctly against what was really planned.
-   */
-  dispatchPaused: boolean;
-}> {
+): Promise<TickResult> {
   const { log, now, scheduleInterval } = deps;
   // Every command this Tick issues through the adapters — gh and git alike
   // — plus its exit code, is narrated at debug through the same seam:
@@ -49,11 +53,8 @@ export async function tickOnce(
   // Resolved fresh against wall-clock time each Tick (CONTEXT.md "Working
   // hours") — not encoded in a cron expression.
   const withinWorkingHours = isWithinWorkingHours(config.workingHours, now());
-  // The caller's dispatchPaused carries a resident loop's in-memory breaker,
-  // when it has one; the tracker-derived breaker is recomputed fresh every
-  // Tick regardless, so a one-Tick-per-process runner (with no such memory)
-  // still holds dispatch paused across an outage (CONTEXT.md "Infrastructure
-  // failure").
+  // Always derived, regardless of what the caller already knows (see
+  // `deriveBreaker`'s own doc for why this reaches the same verdict either way).
   const derivedBreaker = deriveBreaker(world);
   const derivedPause =
     derivedBreaker !== undefined && !probeDue(derivedBreaker, now());

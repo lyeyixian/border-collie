@@ -8,6 +8,7 @@ import type { Log } from "../core/log.js";
 import { dispatchableSet } from "../core/plan.js";
 import { buildCompleteReport, buildStuckReport } from "../core/render.js";
 import type { Action, Ticket, WorldSnapshot } from "../core/types.js";
+import type { TickResult } from "./tick.js";
 
 /**
  * The resident loop: Tick, judge the world, sleep the poll interval, Tick
@@ -69,18 +70,7 @@ export type RunOutcome = "complete" | "stuck";
 
 /** The loop's effects, injectable for tests; `tick` is one full observe → plan → act pass. */
 export interface RunDeps {
-  tick: (dispatchPaused: boolean) => Promise<{
-    world: WorldSnapshot;
-    actions: Action[];
-    infraFailures: number;
-    /**
-     * Whether the Tick actually planned with dispatch paused — the passed-in
-     * flag OR'd with the tracker-derived breaker, so a fresh loop (or one
-     * whose in-memory breaker hasn't caught up yet) still judges Stuck
-     * against what the Tick really planned, not just its own memory.
-     */
-    dispatchPaused: boolean;
-  }>;
+  tick: (dispatchPaused: boolean) => Promise<TickResult>;
   /** The circuit breaker's recovery probe: true when the environment answers. */
   probe: () => Promise<boolean>;
   now: () => number;

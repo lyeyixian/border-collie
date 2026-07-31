@@ -99,19 +99,43 @@ describe("deriveBreaker", () => {
     expect(deriveBreaker(w)).toBeUndefined();
   });
 
-  it("reaches the same verdict as a live process folding the same voids in order", () => {
+  it("collapses several tickets voided the same way in one Tick into a single trip", () => {
+    // A correlated failure: three Workers die to the same outage within one
+    // Tick's act phase, each voiding its own ticket a moment apart. The live
+    // loop trips once per Tick regardless (CONTEXT.md "Infrastructure
+    // failure" — correlated), so the derivation must match, not one trip per
+    // voided ticket.
     const w = world([
-      ticket({ number: 4, voidedAtMs: 5_000 }),
-      ticket({ number: 7, voidedAtMs: 1_000 }),
-      ticket({ number: 9, voidedAtMs: 9_000 }),
+      ticket({ number: 4, voidedAtMs: 1_000 }),
+      ticket({ number: 7, voidedAtMs: 1_500 }),
+      ticket({ number: 9, voidedAtMs: 2_000 }),
+    ]);
+
+    expect(deriveBreaker(w)).toEqual(tripBreaker(undefined, 2_000));
+  });
+
+  it("reaches the same verdict as a live process folding one trip per separate Tick", () => {
+    // Three genuinely separate outage episodes, spaced well beyond both the
+    // correlated-void window and the base cooldown — as distinct Ticks that
+    // each independently re-tripped the breaker would be.
+    const w = world([
+      ticket({ number: 4, voidedAtMs: 5 * BREAKER_BASE_COOLDOWN_MS }),
+      ticket({ number: 7, voidedAtMs: 1 * BREAKER_BASE_COOLDOWN_MS }),
+      ticket({ number: 9, voidedAtMs: 9 * BREAKER_BASE_COOLDOWN_MS }),
     ]);
 
     const live = tripBreaker(
-      tripBreaker(tripBreaker(undefined, 1_000), 5_000),
-      9_000,
+      tripBreaker(
+        tripBreaker(undefined, 1 * BREAKER_BASE_COOLDOWN_MS),
+        5 * BREAKER_BASE_COOLDOWN_MS,
+      ),
+      9 * BREAKER_BASE_COOLDOWN_MS,
     );
     expect(deriveBreaker(w)).toEqual(live);
-    expect(deriveBreaker(w)).toEqual({ openedAtMs: 9_000, trips: 3 });
+    expect(deriveBreaker(w)).toEqual({
+      openedAtMs: 9 * BREAKER_BASE_COOLDOWN_MS,
+      trips: 3,
+    });
   });
 
   it("a fresh process reaches the same paused verdict as one that watched the void happen", () => {

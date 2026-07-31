@@ -43,7 +43,7 @@ max_open_prs and resumes as merges land.
 ${WORKER_DEATH_PROSE} the tick prints a notice so the operator knows to
 re-run once the environment recovers. A standalone tick keeps no memory of
 its own, but the circuit breaker it derives from the tracker's void markers
-still holds dispatch paused across separate ticks, probing on the same
-backoff, until the environment recovers.`,
+still holds dispatch paused across separate ticks on the same cooldown,
+resuming once it elapses.`,
   },
 });
