@@ -13,8 +13,9 @@
 #
 # With no argument the pasture is <your gh login>/border-collie-pasture.
 # Re-running wipes the target back to a clean seeded state: all issues are
-# deleted, open PRs closed, non-default branches, tags, and non-triage labels
-# deleted, and the default branch force-reset to a fresh seed commit.
+# deleted, open PRs closed, non-default branches, tags, and labels outside
+# border-collie's fixed set deleted, and the default branch force-reset to a
+# fresh seed commit.
 #
 # Refuses to target border-collie's own repo.
 
@@ -142,9 +143,11 @@ EOF
 gh api --method PATCH "repos/$TARGET/git/refs/heads/$default_branch" \
   -f sha="$commit_sha" -F force=true >/dev/null
 
-# --- Labels: exactly the five triage labels ---------------------------------
+# --- Labels: the five triage labels plus border-collie's own claim label ----
 
 TRIAGE_LABELS="needs-triage needs-info ready-for-agent ready-for-human wontfix"
+CLAIM_LABEL="claimed"
+KEEP_LABELS="$TRIAGE_LABELS $CLAIM_LABEL"
 
 log "Ensuring triage labels"
 ensure_label() {
@@ -156,10 +159,13 @@ ensure_label ready-for-agent 0e8a16 "Fully specified, ready for an AFK agent"
 ensure_label ready-for-human 1d76db "Requires human implementation"
 ensure_label wontfix         ffffff "Will not be actioned"
 
-log "Deleting non-triage labels"
+log "Ensuring the claim label"
+ensure_label "$CLAIM_LABEL" 5319e7 "border-collie: an agent Claim is held (CONTEXT.md \"Claim\")"
+
+log "Deleting labels outside the fixed set"
 gh label list --repo "$TARGET" --json name --jq '.[].name' |
   while read -r label; do
-    case " $TRIAGE_LABELS " in
+    case " $KEEP_LABELS " in
       *" $label "*) ;;
       *) gh label delete "$label" --repo "$TARGET" --yes ;;
     esac

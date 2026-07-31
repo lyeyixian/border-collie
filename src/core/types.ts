@@ -6,6 +6,13 @@
 export const READY_FOR_AGENT = "ready-for-agent";
 export const READY_FOR_HUMAN = "ready-for-human";
 
+/**
+ * The label a Claim writes (CONTEXT.md "Claim"): border-collie's own
+ * namespace, never applied by a human, so its presence alone is agent-claim
+ * evidence independent of assignees.
+ */
+export const CLAIM_LABEL = "claimed";
+
 /** A Ticket gets at most this many Attempts before Escalation (CONTEXT.md). */
 export const MAX_ATTEMPTS = 2;
 
@@ -202,7 +209,11 @@ export interface Ticket {
   number: number;
   title: string;
   state: "open" | "closed";
-  /** Assignee logins. Any assignee at all makes the ticket non-dispatchable. */
+  /**
+   * Assignee logins — human claims only, now that an agent Claim writes the
+   * claim label instead (CONTEXT.md "Claim"). Any assignee at all makes the
+   * ticket non-dispatchable.
+   */
   assignees: string[];
   /** Label names. */
   labels: string[];
@@ -306,16 +317,16 @@ export interface PlanConfig {
 
 /**
  * One intended write, produced by the pure plan phase.
- * A discriminated union. `release` carries the observed assignee logins and
- * `escalate` the observed attempt records so the act phase needs no second
- * look at the world. `spawn` carries the attempt number; the caller binds it
- * to a model (the retry ladder). The three PR-upkeep actions carry the PR
- * number plus the ticket (for the human-readable rendering) and, for the
- * conflict Worker, the head branch it works in and pushes back.
+ * A discriminated union. `escalate` carries the observed attempt records so
+ * the act phase needs no second look at the world. `spawn` carries the
+ * attempt number; the caller binds it to a model (the retry ladder). The
+ * three PR-upkeep actions carry the PR number plus the ticket (for the
+ * human-readable rendering) and, for the conflict Worker, the head branch it
+ * works in and pushes back.
  */
 export type Action =
   | { type: "claim"; ticket: number }
-  | { type: "release"; ticket: number; assignees: string[] }
+  | { type: "release"; ticket: number }
   | { type: "spawn"; ticket: number; attempt: number }
   | { type: "escalate"; ticket: number; failures: AttemptFailure[] }
   | { type: "close"; ticket: number; prUrl: string }

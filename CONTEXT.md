@@ -13,12 +13,12 @@ An open issue on the tracker produced by `/to-tickets`: a tracer-bullet vertical
 _Avoid_: task, story
 
 **Dispatchable**:
-A ticket that is open, unassigned, labelled `ready-for-agent`, whose blockers are all closed, and with no merged agent PR (a merged PR means the work is Done and only closure verification is pending) — eligible for dispatch (the concurrency caps decide how many actually go each Tick). The dispatchable set is the only place the Orchestrator takes work from.
+A ticket that is open, unassigned, not labelled `claimed`, labelled `ready-for-agent`, whose blockers are all closed, and with no merged agent PR (a merged PR means the work is Done and only closure verification is pending) — eligible for dispatch (the concurrency caps decide how many actually go each Tick). The dispatchable set is the only place the Orchestrator takes work from.
 _Avoid_: frontier (the upstream mattpocock-skills docs use "frontier" for this same set), ready, grabbable
 
 **Claim**:
-Assigning a ticket to the working identity *before* any work begins, plus a marker comment identifying the claim as border-collie's. An assignee without the marker comment is a human claim — hands off. Releasing a claim appends a release marker comment (never deletes); the latest marker comment decides whether an assignment is agent-held.
-_Avoid_: lock, lease
+Adding the `claimed` label to a ticket *before* any work begins, plus a marker comment identifying the claim as border-collie's — a label rather than an assignment, because a GitHub App identity cannot be an issue assignee. Assignees are unaffected and mean what they always did: an assignee is a human claim, and border-collie hands off regardless of any marker. Releasing a claim removes the `claimed` label and appends a release marker comment (never deletes); the latest marker comment decides whether the label is agent-held.
+_Avoid_: lock, lease, assignment
 
 **Worker**:
 A fresh-context Claude Code agent session dispatched against exactly one Ticket, isolated in its own git worktree and branch. Fed nothing beyond its ticket plus repo context it discovers itself.
@@ -43,7 +43,7 @@ An attempt that failed because of the ticket or the work — crash, no commits, 
 A failure caused by the environment — usage limit, rate limit, auth, network, or several Workers failing the same way within one Tick (correlated). Counts as nothing; voids the attempt (a marker comment uncounts the claim while keeping it held) and trips the circuit breaker (pause dispatch, resume when the environment recovers).
 
 **Escalation**:
-Handing a ticket to a human after its attempts are exhausted: swap `ready-for-agent` → `ready-for-human`, unassign, leave a forensic comment. An escalated ticket stops being Dispatchable by construction; its dependents stay blocked.
+Handing a ticket to a human after its attempts are exhausted: swap `ready-for-agent` → `ready-for-human`, leave a forensic comment. Only an already-unclaimed ticket escalates — every failure or orphan release removes the `claimed` label first. An escalated ticket stops being Dispatchable by construction; its dependents stay blocked.
 
 **PR upkeep**:
 Keeping the open agent PRs a merge left behind current, each Tick: a cleanly-mergeable PR that fell behind the base gets a mechanical rebase onto the base; a green (or CI-less) draft flips to ready-for-review; a conflicted PR gets a Conflict Worker.

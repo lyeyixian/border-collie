@@ -18,6 +18,7 @@ import type { Log, LogEvent } from "../../src/core/log.js";
 import {
   type AttemptFailure,
   attemptMarker,
+  CLAIM_LABEL,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
   RELEASE_MARKER,
@@ -261,12 +262,15 @@ describe("readScope", () => {
     expect(world.tickets[0]?.openBlockers).toBe(0);
   });
 
-  it("reads comments for assigned tickets and unassigned dispatch candidates, detecting the claim marker", async () => {
+  it("reads comments for claim-labelled tickets and unassigned dispatch candidates, detecting the claim marker", async () => {
     const { exec, calls } = fakeExec({
       api: {
         [SUB_ISSUES]: [
           [
-            issue({ number: 5, assignees: [{ login: "operator" }] }),
+            issue({
+              number: 5,
+              labels: [{ name: "ready-for-agent" }, { name: CLAIM_LABEL }],
+            }),
             issue({ number: 6 }),
           ],
         ],
@@ -289,7 +293,32 @@ describe("readScope", () => {
     expect(calls.map(op)).toContain(comments(6));
   });
 
-  it("skips comment reads for closed, blocked, and non-agent unassigned tickets", async () => {
+  it("reads comments for a claim-labelled ticket even while blocked, so an orphan release can still fire", async () => {
+    const { exec, calls } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [
+          [
+            issue({
+              number: 5,
+              labels: [{ name: "ready-for-agent" }, { name: CLAIM_LABEL }],
+              issue_dependencies_summary: { blocked_by: 1 },
+            }),
+          ],
+        ],
+        [comments(5)]: [[{ body: `${CLAIM_MARKER}\n🐕 claimed` }]],
+        [blockedBy(5)]: [[{ number: 2, state: "open" }]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]?.hasAgentClaim).toBe(true);
+    expect(calls.map(op)).toContain(comments(5));
+  });
+
+  it("skips comment reads for closed, blocked, non-agent, and human-assigned tickets with no claim label", async () => {
     const { exec, calls } = fakeExec({
       api: {
         [SUB_ISSUES]: [
@@ -297,9 +326,15 @@ describe("readScope", () => {
             issue({ number: 3, state: "closed" }),
             issue({ number: 4, issue_dependencies_summary: { blocked_by: 1 } }),
             issue({ number: 8, labels: [] }),
+            issue({
+              number: 9,
+              issue_dependencies_summary: { blocked_by: 1 },
+              assignees: [{ login: "operator" }],
+            }),
           ],
         ],
         [blockedBy(4)]: [[{ number: 2, state: "open" }]],
+        [blockedBy(9)]: [[{ number: 2, state: "open" }]],
         [CLOSED_PULLS]: [[]],
       },
       prList: [],
@@ -310,10 +345,11 @@ describe("readScope", () => {
     expect(calls.map(op)).toEqual([
       SUB_ISSUES,
       blockedBy(4),
+      blockedBy(9),
       "pr-list",
       CLOSED_PULLS,
     ]);
-    expect(world.tickets.map((t) => t.agentClaimCount)).toEqual([0, 0, 0]);
+    expect(world.tickets.map((t) => t.agentClaimCount)).toEqual([0, 0, 0, 0]);
   });
 
   it("names the open blockers of an open blocked ticket, dropping closed ones", async () => {
@@ -404,7 +440,12 @@ describe("readScope", () => {
     const { exec } = fakeExec({
       api: {
         [SUB_ISSUES]: [
-          [issue({ number: 5, assignees: [{ login: "operator" }] })],
+          [
+            issue({
+              number: 5,
+              labels: [{ name: "ready-for-agent" }, { name: CLAIM_LABEL }],
+            }),
+          ],
         ],
         [comments(5)]: [
           [
@@ -715,13 +756,13 @@ function recordingExec(): { exec: Exec; calls: string[][] } {
 }
 
 describe("claimTicket", () => {
-  it("assigns @me first, then posts the claim marker comment", async () => {
+  it("adds the claim label first, then posts the claim marker comment", async () => {
     const { exec, calls } = recordingExec();
 
     await claimTicket(5, exec);
 
     expect(calls).toEqual([
-      ["gh", "issue", "edit", "5", "--add-assignee", "@me"],
+      ["gh", "issue", "edit", "5", "--add-label", CLAIM_LABEL],
       [
         "gh",
         "issue",
@@ -735,13 +776,13 @@ describe("claimTicket", () => {
 });
 
 describe("releaseTicket", () => {
-  it("unassigns the observed assignees first, then posts the release marker comment", async () => {
+  it("removes the claim label first, then posts the release marker comment", async () => {
     const { exec, calls } = recordingExec();
 
-    await releaseTicket(5, ["operator", "other"], exec);
+    await releaseTicket(5, exec);
 
     expect(calls).toEqual([
-      ["gh", "issue", "edit", "5", "--remove-assignee", "operator,other"],
+      ["gh", "issue", "edit", "5", "--remove-label", CLAIM_LABEL],
       [
         "gh",
         "issue",
@@ -809,13 +850,13 @@ describe("createDraftPr", () => {
 });
 
 describe("releaseFailedTicket", () => {
-  it("unassigns @me first, then posts a release comment carrying the attempt record", async () => {
+  it("removes the claim label first, then posts a release comment carrying the attempt record", async () => {
     const { exec, calls } = recordingExec();
 
     await releaseFailedTicket(5, FAILURE, exec);
 
     expect(calls).toEqual([
-      ["gh", "issue", "edit", "5", "--remove-assignee", "@me"],
+      ["gh", "issue", "edit", "5", "--remove-label", CLAIM_LABEL],
       [
         "gh",
         "issue",

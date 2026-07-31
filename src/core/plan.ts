@@ -1,5 +1,6 @@
 import {
   type Action,
+  CLAIM_LABEL,
   MAX_ATTEMPTS,
   type PlanConfig,
   READY_FOR_AGENT,
@@ -8,14 +9,17 @@ import {
 } from "./types.js";
 
 /**
- * Dispatchable: open, unassigned, labelled ready-for-agent, all blockers
- * closed. The dispatchable set is the only place the Orchestrator takes
- * work from; the concurrency caps decide how many actually go each Tick.
+ * Dispatchable: open, unassigned (no human claim), unlabelled with the claim
+ * label (no live or crashed-mid-write agent claim), labelled ready-for-agent,
+ * all blockers closed. The dispatchable set is the only place the
+ * Orchestrator takes work from; the concurrency caps decide how many
+ * actually go each Tick.
  */
 export function isDispatchable(ticket: Ticket): boolean {
   return (
     ticket.state === "open" &&
     ticket.assignees.length === 0 &&
+    !ticket.labels.includes(CLAIM_LABEL) &&
     ticket.labels.includes(READY_FOR_AGENT) &&
     ticket.openBlockers === 0
   );
@@ -31,13 +35,17 @@ export function dispatchableSet(world: WorldSnapshot): Ticket[] {
 }
 
 /**
- * Orphaned agent claim: an open ticket carrying the claim marker but with no
- * agent PR, open or merged — leftover from a crashed run. (No live-Worker
- * check yet: the stateless Orchestrator has no Workers at Tick start until
- * spawning lands with a later ticket. A merged-PR claim is not orphaned:
- * that ticket is done and merely awaiting closure verification.) Released
- * back to unassigned; it rejoins the dispatchable set on the next Tick's
- * recomputed snapshot.
+ * Orphaned agent claim: an open ticket carrying both the claim label and the
+ * claim marker but with no agent PR, open or merged — leftover from a
+ * crashed run. (No live-Worker check yet: the stateless Orchestrator has no
+ * Workers at Tick start until spawning lands with a later ticket. A
+ * merged-PR claim is not orphaned: that ticket is done and merely awaiting
+ * closure verification. Requiring the marker too — not just the label —
+ * fails safe on a crash between the two claim writes: a labelled ticket with
+ * no marker looks like an interrupted claim rather than a crashed run's
+ * leftover, so it is left for a human to notice instead of auto-released.)
+ * Released back to unclaimed; it rejoins the dispatchable set on the next
+ * Tick's recomputed snapshot.
  */
 /** True when a ticket has an open agent PR — the work may still land. */
 function hasOpenAgentPr(world: WorldSnapshot, ticket: number): boolean {
@@ -52,7 +60,7 @@ function hasMergedAgentPr(world: WorldSnapshot, ticket: number): boolean {
 function isOrphanedClaim(ticket: Ticket, world: WorldSnapshot): boolean {
   return (
     ticket.state === "open" &&
-    ticket.assignees.length > 0 &&
+    ticket.labels.includes(CLAIM_LABEL) &&
     ticket.hasAgentClaim &&
     !hasOpenAgentPr(world, ticket.number) &&
     !hasMergedAgentPr(world, ticket.number)
@@ -64,14 +72,17 @@ function isOrphanedClaim(ticket: Ticket, world: WorldSnapshot): boolean {
  * already counts MAX_ATTEMPTS claims (each Attempt is preceded by exactly one
  * claim — the stateless attempt counter). Escalated instead of dispatched;
  * the label swap then removes it from the dispatchable set for good, so its
- * dependents stay blocked. An open agent PR vetoes: the work may still land.
- * A merged agent PR vetoes too: the work did land, and the ticket is merely
- * awaiting closure verification.
+ * dependents stay blocked. Unassigned and unlabelled with the claim label:
+ * a currently-held claim (human or agent) is released or hands off before
+ * escalation is ever judged. An open agent PR vetoes: the work may still
+ * land. A merged agent PR vetoes too: the work did land, and the ticket is
+ * merely awaiting closure verification.
  */
 function isEscalationDue(ticket: Ticket, world: WorldSnapshot): boolean {
   return (
     ticket.state === "open" &&
     ticket.assignees.length === 0 &&
+    !ticket.labels.includes(CLAIM_LABEL) &&
     ticket.labels.includes(READY_FOR_AGENT) &&
     ticket.agentClaimCount >= MAX_ATTEMPTS &&
     !hasOpenAgentPr(world, ticket.number) &&
@@ -152,11 +163,7 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   const releases: Action[] = world.tickets
     .filter((ticket) => isOrphanedClaim(ticket, world))
     .sort((a, b) => a.number - b.number)
-    .map((ticket) => ({
-      type: "release",
-      ticket: ticket.number,
-      assignees: ticket.assignees,
-    }));
+    .map((ticket) => ({ type: "release", ticket: ticket.number }));
 
   const escalations: Action[] = world.tickets
     .filter((ticket) => isEscalationDue(ticket, world))
