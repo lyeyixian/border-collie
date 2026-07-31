@@ -1069,4 +1069,24 @@ describe("withDebugLogging", () => {
     expect(events[0]).toMatchObject({ exitCode: null });
     expect(events[0]?.msg).toContain("exit unknown");
   });
+
+  it("scrubs credential-shaped content out of the captured command log", async () => {
+    const token = `ghp_${"A".repeat(36)}`;
+    const secretUrl = `https://x-access-token:${token}@github.com/o/r.git`;
+    const exec: Exec = async (_cmd, actualArgs) => {
+      // The real subprocess call must still see the unscrubbed URL: scrubbing
+      // is a logging concern only, never a behavior change.
+      expect(actualArgs).toContain(secretUrl);
+      return "";
+    };
+    const { log, events } = recordingLog();
+
+    await withDebugLogging(exec, log)("git", ["push", secretUrl]);
+
+    const event = events[0];
+    expect(event?.msg).not.toContain(token);
+    expect(event).toMatchObject({
+      args: ["push", "https://<redacted>@github.com/o/r.git"],
+    });
+  });
 });
