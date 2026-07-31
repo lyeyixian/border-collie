@@ -534,6 +534,115 @@ describe("plan: circuit breaker", () => {
   });
 });
 
+describe("plan: working hours", () => {
+  it("plans no claim or spawn for a dispatchable ticket within working hours", () => {
+    const actions = plan(world([ticket({ number: 7 })]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      withinWorkingHours: true,
+    });
+
+    expect(actions).toEqual([]);
+  });
+
+  it("still closes, releases, and escalates within working hours", () => {
+    const actions = plan(
+      world(
+        [
+          ticket({ number: 9 }),
+          ticket({ number: 6, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({
+            number: 5,
+            agentClaimCount: 2,
+            attemptFailures: [failure(1), failure(2)],
+          }),
+        ],
+        [],
+        [mergedPr(9)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, withinWorkingHours: true },
+    );
+
+    expect(actions).toEqual([
+      { type: "close", ticket: 9, prUrl: "https://github.com/o/r/pull/90" },
+      { type: "release", ticket: 6, assignees: ["operator"] },
+      { type: "escalate", ticket: 5, failures: [failure(1), failure(2)] },
+    ]);
+  });
+
+  it("still mechanically updates a behind PR and flips a green draft ready within working hours", () => {
+    const actions = plan(
+      worldWithPrs(
+        [
+          ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({ number: 4, assignees: ["operator"], hasAgentClaim: true }),
+        ],
+        [
+          openPr(3, { number: 30, behind: true }),
+          openPr(4, { number: 40, draft: true, ci: "passing" }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, withinWorkingHours: true },
+    );
+
+    expect(actions).toEqual([
+      { type: "update-branch", pr: 30, ticket: 3 },
+      { type: "mark-ready", pr: 40, ticket: 4 },
+    ]);
+  });
+
+  it("suppresses the Conflict Worker within working hours, without touching update or ready", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, mergeable: "conflicted" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, withinWorkingHours: true },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("is independent of the circuit breaker: both suppress dispatch, but the breaker also suppresses PR upkeep and releases", () => {
+    const held = ticket({
+      number: 4,
+      assignees: ["operator"],
+      hasAgentClaim: true,
+    });
+    const bothGated = plan(world([held]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      withinWorkingHours: true,
+      dispatchPaused: true,
+    });
+    const workingHoursOnly = plan(world([held]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      withinWorkingHours: true,
+    });
+
+    // Breaker open wins: only closes, even with the working-hours gate also active.
+    expect(bothGated).toEqual([]);
+    // Working hours alone still releases the orphaned claim.
+    expect(workingHoursOnly).toEqual([
+      { type: "release", ticket: 4, assignees: ["operator"] },
+    ]);
+  });
+
+  it("dispatches normally once outside working hours", () => {
+    const actions = plan(world([ticket({ number: 7 })]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      withinWorkingHours: false,
+    });
+
+    expect(actions).toEqual([
+      { type: "claim", ticket: 7 },
+      { type: "spawn", ticket: 7, attempt: 1 },
+    ]);
+  });
+});
+
 describe("plan: PR upkeep", () => {
   it("plans no upkeep for a clean, current, non-draft PR", () => {
     const actions = plan(

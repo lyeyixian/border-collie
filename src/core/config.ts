@@ -1,3 +1,5 @@
+import { isValidTimeZone, type WorkingHours } from "./work-hours.js";
+
 /** File name looked up at the target repo's root. */
 export const CONFIG_FILE = "border-collie.json";
 
@@ -47,6 +49,12 @@ export interface ResolvedConfig {
   maxTurns: number;
   /** Budget alarm: spend in USD above which a finished Attempt is flagged, not failed. */
   maxCostUsd: number;
+  /**
+   * The working-hours gate (CONTEXT.md "Working hours"): confines dispatch
+   * to an off-hours window. Absent means the gate never applies — dispatch
+   * runs at every hour, today's default.
+   */
+  workingHours?: WorkingHours;
 }
 
 function asPositiveInt(value: unknown, name: string): number {
@@ -75,6 +83,51 @@ function asNonEmptyString(value: unknown, name: string): string {
     );
   }
   return value;
+}
+
+/** An hour of day: an integer in [0,24). */
+function asHour(value: unknown, name: string): number {
+  if (
+    typeof value !== "number" ||
+    !Number.isInteger(value) ||
+    value < 0 ||
+    value > 23
+  ) {
+    throw new ConfigError(
+      `${name} must be an integer from 0 to 23, got ${JSON.stringify(value)}`,
+    );
+  }
+  return value;
+}
+
+/**
+ * The working-hours gate's window (CONTEXT.md "Working hours"): timezone,
+ * work_start_hour, work_end_hour. All three or none — a partial window has
+ * no sensible default. Undefined means the gate never applies.
+ */
+function resolveWorkingHours(
+  file: Record<string, unknown>,
+): WorkingHours | undefined {
+  const { timezone, work_start_hour, work_end_hour } = file;
+  if (
+    timezone === undefined &&
+    work_start_hour === undefined &&
+    work_end_hour === undefined
+  ) {
+    return undefined;
+  }
+  const resolvedTimezone = asNonEmptyString(timezone, "timezone");
+  if (!isValidTimeZone(resolvedTimezone)) {
+    throw new ConfigError(
+      `timezone must be a valid IANA time zone, got ${JSON.stringify(timezone)}`,
+    );
+  }
+  const startHour = asHour(work_start_hour, "work_start_hour");
+  const endHour = asHour(work_end_hour, "work_end_hour");
+  if (startHour === endHour) {
+    throw new ConfigError("work_start_hour and work_end_hour must differ");
+  }
+  return { timezone: resolvedTimezone, startHour, endHour };
 }
 
 /**
@@ -132,7 +185,8 @@ export function resolveConfig(
     file.worker_max_cost_usd ?? DEFAULT_MAX_COST_USD,
     "worker_max_cost_usd",
   );
-  const shared = {
+  const workingHours = resolveWorkingHours(file);
+  const shared: Omit<ResolvedConfig, "scope"> = {
     maxWorkers,
     maxOpenPrs,
     pollSeconds,
@@ -143,6 +197,7 @@ export function resolveConfig(
     maxTurns,
     maxCostUsd,
   };
+  if (workingHours !== undefined) shared.workingHours = workingHours;
 
   if (flags.all) {
     if (flags.parent !== undefined) {

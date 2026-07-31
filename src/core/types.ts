@@ -302,6 +302,18 @@ export interface PlanConfig {
    * Omitted means closed (dispatch flows).
    */
   dispatchPaused?: boolean;
+  /**
+   * True while now falls within the operator's configured working hours
+   * (CONTEXT.md "Working hours"): claims, spawns, and Conflict Workers are
+   * suppressed so the fleet doesn't compete for the quota the operator is
+   * using interactively. Closures, releases, Escalations, mechanical
+   * rebases, and the draft-to-ready flip still run. Independent of
+   * `dispatchPaused` — the circuit breaker's pause means the environment is
+   * broken, not that the operator is awake, and either or both may apply.
+   * Omitted means outside the window (dispatch flows), including when no
+   * window is configured at all.
+   */
+  withinWorkingHours?: boolean;
 }
 
 /**

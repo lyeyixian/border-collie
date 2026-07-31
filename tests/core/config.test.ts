@@ -215,6 +215,82 @@ describe("resolveConfig", () => {
     );
   });
 
+  it("resolves the working-hours window from the config file", () => {
+    const resolved = resolveConfig(
+      {
+        parent: 1,
+        timezone: "Europe/London",
+        work_start_hour: 9,
+        work_end_hour: 18,
+      },
+      {},
+    );
+
+    expect(resolved.workingHours).toEqual({
+      timezone: "Europe/London",
+      startHour: 9,
+      endHour: 18,
+    });
+  });
+
+  it("leaves the working-hours gate unconfigured when the file omits it", () => {
+    const resolved = resolveConfig({ parent: 1 }, {});
+
+    expect(resolved.workingHours).toBeUndefined();
+  });
+
+  it("rejects a partial working-hours window", () => {
+    expect(() =>
+      resolveConfig({ parent: 1, timezone: "Europe/London" }, {}),
+    ).toThrow(ConfigError);
+    expect(() =>
+      resolveConfig({ parent: 1, work_start_hour: 9, work_end_hour: 18 }, {}),
+    ).toThrow(ConfigError);
+  });
+
+  it("rejects an unrecognized timezone", () => {
+    expect(() =>
+      resolveConfig(
+        {
+          parent: 1,
+          timezone: "Not/AZone",
+          work_start_hour: 9,
+          work_end_hour: 18,
+        },
+        {},
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it("rejects an out-of-range or non-integer working hour", () => {
+    expect(() =>
+      resolveConfig(
+        { parent: 1, timezone: "UTC", work_start_hour: 24, work_end_hour: 18 },
+        {},
+      ),
+    ).toThrow(ConfigError);
+    expect(() =>
+      resolveConfig(
+        {
+          parent: 1,
+          timezone: "UTC",
+          work_start_hour: 9.5,
+          work_end_hour: 18,
+        },
+        {},
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it("rejects equal start and end working hours", () => {
+    expect(() =>
+      resolveConfig(
+        { parent: 1, timezone: "UTC", work_start_hour: 9, work_end_hour: 9 },
+        {},
+      ),
+    ).toThrow(ConfigError);
+  });
+
   it("rejects a malformed config file", () => {
     expect(() => resolveConfig("not an object", {})).toThrow(ConfigError);
     expect(() => resolveConfig({ parent: "one" }, {})).toThrow(ConfigError);
