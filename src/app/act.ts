@@ -5,10 +5,8 @@ import {
   type Exec,
   escalateTicket,
   markPrReady,
-  releaseFailedTicket,
   releaseTicket,
   updatePrBranch,
-  voidAttempt,
 } from "../adapters/tracker.js";
 import { type ConflictOutcome, pushAgentBranch } from "../adapters/worker.js";
 import { reclassifyCorrelatedFailures } from "../core/classify.js";
@@ -16,6 +14,7 @@ import { heartbeatSnapshot, type WorkerActivity } from "../core/heartbeat.js";
 import type { Log } from "../core/log.js";
 import { renderHeartbeat } from "../core/render.js";
 import type { Action, WorkerOutcome } from "../core/types.js";
+import { settleAttempt } from "./settle.js";
 
 /** How often the fleet heartbeat reports, while any Worker is in flight. */
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -68,16 +67,6 @@ interface SpawnResult {
 interface ConflictSpawnResult {
   outcome: ConflictOutcome;
   log: Log;
-}
-
-function describeOutcome(outcome: WorkerOutcome): string {
-  const commits = `${outcome.newCommits} new commit${outcome.newCommits === 1 ? "" : "s"}`;
-  const where = `on ${outcome.branch} (transcript: ${outcome.transcript})`;
-  if (outcome.ok) return `Worker succeeded: ${commits} ${where}`;
-  if (outcome.infra !== undefined) {
-    return `Worker hit an infrastructure failure (${outcome.infra}): attempt ${outcome.attempt} voided, exit ${outcome.exitCode} ${where}`;
-  }
-  return `Worker failed attempt ${outcome.attempt} (${outcome.failure}): exit ${outcome.exitCode}, ${commits} ${where}`;
 }
 
 /** What one Tick's act phase reports back to the loop. */
@@ -176,22 +165,20 @@ function describeConflict(outcome: ConflictOutcome): string {
  * at a time, narrating each as it lands. Spawns are the exception: each
  * Worker starts as its action is reached but runs concurrently, its branch
  * becoming a draft PR the moment it succeeds, and the Tick waits for all of
- * them before reporting outcomes. A failed attempt is then released with its
- * forensic record — the write that makes attempt history live on the
- * tracker, where the next Tick's retry ladder and a later Escalation read it
- * back. An infrastructure-classified failure is voided instead: a comment
- * that uncounts the claim while keeping it held, so an outage burns no
- * Attempts — and the same-way-same-Tick heuristic reclassifies correlated
- * deaths once every Worker has settled. The report's infra count is what
- * trips the caller's circuit breaker. A tracker failure mid-way throws — the
- * stateless recovery story is re-running the Tick, which recomputes the
- * world and re-plans whatever is still due. PR upkeep runs alongside dispatch:
- * the mechanical branch update and draft→ready flip are immediate tracker
- * writes; a conflict Worker runs concurrently like a spawn, its resolved
- * rebase pushed (or the PR handed to a human) once it settles. While any
- * dispatch Worker is in flight, a fleet heartbeat reports all of them once a
- * minute — elapsed time and time since last output, independently — and
- * stops the moment the last one settles.
+ * them before reporting outcomes. The same-way-same-Tick heuristic
+ * reclassifies correlated deaths once every Worker has settled, then each
+ * outcome's write — the forensic release for a Ticket failure, the void for
+ * an Infrastructure failure — is delegated to `settleAttempt`, the unit a
+ * Worker settling its own Attempt will one day share. The report's infra
+ * count is what trips the caller's circuit breaker. A tracker failure
+ * mid-way throws — the stateless recovery story is re-running the Tick,
+ * which recomputes the world and re-plans whatever is still due. PR upkeep
+ * runs alongside dispatch: the mechanical branch update and draft→ready flip
+ * are immediate tracker writes; a conflict Worker runs concurrently like a
+ * spawn, its resolved rebase pushed (or the PR handed to a human) once it
+ * settles. While any dispatch Worker is in flight, a fleet heartbeat reports
+ * all of them once a minute — elapsed time and time since last output,
+ * independently — and stops the moment the last one settles.
  */
 export async function act(
   actions: Action[],
@@ -334,64 +321,7 @@ export async function act(
     log: spawn.log,
   }));
   for (const { outcome, prUrl, log: workerLog } of outcomes) {
-    workerLog({
-      kind: "worker-outcome",
-      level: outcome.infra !== undefined ? "warn" : "info",
-      msg: describeOutcome(outcome),
-      outcome,
-    });
-    if (prUrl !== undefined) {
-      workerLog({
-        kind: "pr-opened",
-        level: "info",
-        msg: `opened draft PR: ${prUrl}`,
-        prUrl,
-      });
-    }
-    if (outcome.costOverrun && outcome.costUsd !== undefined) {
-      workerLog({
-        kind: "cost-overrun",
-        level: "warn",
-        msg: `cost overrun: attempt ${outcome.attempt} spent $${outcome.costUsd.toFixed(2)} — the ticket may be cut too big for one Worker`,
-        costUsd: outcome.costUsd,
-      });
-    }
-    if (outcome.infra !== undefined) {
-      await voidAttempt(
-        outcome.ticket,
-        {
-          attempt: outcome.attempt,
-          reason: outcome.infra,
-          model: outcome.model,
-          transcript: outcome.transcript,
-        },
-        exec,
-      );
-      workerLog({
-        kind: "attempt-voided",
-        level: "warn",
-        msg: `voided attempt ${outcome.attempt} (${outcome.infra}); claim held`,
-        reason: outcome.infra,
-      });
-    } else if (outcome.failure) {
-      await releaseFailedTicket(
-        outcome.ticket,
-        {
-          attempt: outcome.attempt,
-          reason: outcome.failure,
-          model: outcome.model,
-          branch: outcome.branch,
-          transcript: outcome.transcript,
-        },
-        exec,
-      );
-      workerLog({
-        kind: "attempt-released",
-        level: "info",
-        msg: `released with the attempt record (failed attempt ${outcome.attempt})`,
-        reason: outcome.failure,
-      });
-    }
+    await settleAttempt(outcome, prUrl, workerLog, exec);
   }
   // Conflict Workers settle alongside the dispatch Workers: a resolved merge is
   // pushed to the PR's branch, an unresolved one handed to a human with the

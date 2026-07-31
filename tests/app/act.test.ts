@@ -11,7 +11,6 @@ import {
 import type { Log, LogBindings, LogEvent } from "../../src/core/log.js";
 import {
   type AttemptFailure,
-  attemptMarker,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
   RELEASE_MARKER,
@@ -241,7 +240,7 @@ describe("act", () => {
   });
 
   it("runs spawned Workers concurrently, opens a PR per success, and reports each outcome", async () => {
-    const { exec } = recordingExec();
+    const { exec, calls } = recordingExec();
     const { openPr, opened } = recordingOpenPr();
     const { log, events } = recordingLog();
     const dispatched: number[] = [];
@@ -284,6 +283,39 @@ describe("act", () => {
 
     expect(dispatched).toEqual([2, 4]);
     expect(opened).toEqual([2]); // only the success becomes a PR
+    // Wiring check: act() reaches the tracker through settleAttempt with the
+    // right ticket per outcome — a success writes nothing beyond its claim,
+    // a Ticket failure is released with its forensic record. Exact write
+    // content is settleAttempt's own tests' job.
+    expect(calls).toEqual([
+      ["gh", "issue", "edit", "2", "--add-assignee", "@me"],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "2",
+        "--body",
+        expect.stringContaining(CLAIM_MARKER),
+      ],
+      ["gh", "issue", "edit", "4", "--add-assignee", "@me"],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "4",
+        "--body",
+        expect.stringContaining(CLAIM_MARKER),
+      ],
+      ["gh", "issue", "edit", "4", "--remove-assignee", "@me"],
+      [
+        "gh",
+        "issue",
+        "comment",
+        "4",
+        "--body",
+        expect.stringContaining(RELEASE_MARKER),
+      ],
+    ]);
     expect(events.map((e) => e.kind)).toEqual([
       "claim",
       "spawn",
@@ -353,104 +385,6 @@ describe("act", () => {
     expect(attempts).toEqual([[7, 2]]);
   });
 
-  it("releases a failed attempt with its forensic record after Workers settle", async () => {
-    const { exec, calls } = recordingExec();
-    const dispatch: DispatchWorker = async () =>
-      outcome(7, { attempt: 2, exitCode: null, failure: "stall", ok: false });
-
-    await act([{ type: "spawn", ticket: 7, attempt: 2 }], {
-      dispatch,
-      openPr: recordingOpenPr().openPr,
-      dispatchConflict: noConflict,
-      exec,
-      now,
-      scheduleInterval,
-      log: noopLog(),
-    });
-
-    const record: AttemptFailure = {
-      attempt: 2,
-      reason: "stall",
-      model: "sonnet",
-      branch: "border-collie/ticket-7",
-      transcript: ".border-collie/transcripts/ticket-7.jsonl",
-    };
-    expect(calls).toEqual([
-      ["gh", "issue", "edit", "7", "--remove-assignee", "@me"],
-      [
-        "gh",
-        "issue",
-        "comment",
-        "7",
-        "--body",
-        expect.stringContaining(attemptMarker(record)),
-      ],
-    ]);
-  });
-
-  it("performs no tracker writes for a successful attempt", async () => {
-    const { exec, calls } = recordingExec();
-    const dispatch: DispatchWorker = async () => outcome(7);
-
-    await act([{ type: "spawn", ticket: 7, attempt: 1 }], {
-      dispatch,
-      openPr: recordingOpenPr().openPr,
-      dispatchConflict: noConflict,
-      exec,
-      now,
-      scheduleInterval,
-      log: noopLog(),
-    });
-
-    expect(calls).toEqual([]);
-  });
-
-  it("assigns worker-outcome levels per the level table: success and a retried Ticket failure are info, an infrastructure failure is warn", async () => {
-    const cases: { outcome: WorkerOutcome; level: "info" | "warn" }[] = [
-      { outcome: outcome(2), level: "info" },
-      {
-        outcome: outcome(4, {
-          exitCode: 1,
-          newCommits: 0,
-          failure: "nonzero-exit",
-          ok: false,
-        }),
-        level: "info",
-      },
-      {
-        outcome: outcome(6, {
-          exitCode: 1,
-          newCommits: 0,
-          infra: "network",
-          ok: false,
-        }),
-        level: "warn",
-      },
-    ];
-
-    for (const { outcome: scriptedOutcome, level } of cases) {
-      const { exec } = recordingExec();
-      const { log, events } = recordingLog();
-      const dispatch: DispatchWorker = async () => scriptedOutcome;
-
-      await act(
-        [{ type: "spawn", ticket: scriptedOutcome.ticket, attempt: 1 }],
-        {
-          dispatch,
-          openPr: recordingOpenPr().openPr,
-          dispatchConflict: noConflict,
-          exec,
-          now,
-          scheduleInterval,
-          log,
-        },
-      );
-
-      const workerOutcome = events.find((e) => e.kind === "worker-outcome");
-      expect(workerOutcome?.level).toBe(level);
-    }
-  });
-
   it("escalates: forensic comment, then the ready-for-agent → ready-for-human label swap, logged at warn", async () => {
     const { exec, calls } = recordingExec();
     const { log, events } = recordingLog();
@@ -504,10 +438,9 @@ describe("act", () => {
     ]);
   });
 
-  it("flags a cost overrun on a finished attempt while still opening its PR, logged at warn", async () => {
+  it("still opens the PR for a cost-overrun Attempt (the write settleAttempt performs is unaffected)", async () => {
     const { exec, calls } = recordingExec();
     const { openPr, opened } = recordingOpenPr();
-    const { log, events } = recordingLog();
     const dispatch: DispatchWorker = async () =>
       outcome(7, { costUsd: 25.5, turns: 80, costOverrun: true });
 
@@ -518,23 +451,15 @@ describe("act", () => {
       exec,
       now,
       scheduleInterval,
-      log,
+      log: noopLog(),
     });
 
     expect(opened).toEqual([7]); // the work is kept — discarding refunds nothing
     expect(calls).toEqual([]); // no tracker writes: not a failure
-    const costOverrun = events.find((e) => e.kind === "cost-overrun");
-    expect(costOverrun?.level).toBe("warn");
-    expect(costOverrun?.msg).toBe(
-      "cost overrun: attempt 1 spent $25.50 — the ticket may be cut too big for one Worker",
-    );
-    // Bound by the Worker's sub-logger, not repeated per call site.
-    expect(costOverrun).toMatchObject({ ticket: 7, attempt: 1 });
   });
 
-  it("voids an infrastructure-classified attempt: comment only, claim held, counted in the report, logged at warn", async () => {
+  it("reaches the tracker for an infrastructure-voided attempt and counts it in the report", async () => {
     const { exec, calls } = recordingExec();
-    const { log, events } = recordingLog();
     const dispatch: DispatchWorker = async () =>
       outcome(7, {
         exitCode: 1,
@@ -550,9 +475,11 @@ describe("act", () => {
       exec,
       now,
       scheduleInterval,
-      log,
+      log: noopLog(),
     });
 
+    // Wiring check: act() reaches the tracker through settleAttempt for this
+    // ticket. Exact write content is settleAttempt's own tests' job.
     expect(calls).toEqual([
       [
         "gh",
@@ -564,11 +491,6 @@ describe("act", () => {
       ],
     ]);
     expect(report).toEqual({ infraFailures: 1 });
-    const voided = events.find((e) => e.kind === "attempt-voided");
-    expect(voided?.level).toBe("warn");
-    expect(voided?.msg).toBe("voided attempt 1 (usage-limit); claim held");
-    // Bound by the Worker's sub-logger, not repeated per call site.
-    expect(voided).toMatchObject({ ticket: 7, attempt: 1 });
   });
 
   it("reclassifies several Workers failing the same way in one Tick as correlated infrastructure", async () => {
