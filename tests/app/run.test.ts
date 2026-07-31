@@ -22,6 +22,7 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],
+    voidedAtMs: undefined,
     ...overrides,
   };
 }
@@ -148,7 +149,13 @@ describe("runStatus", () => {
  * exercised in fake time; probe answers shift off `probeAnswers`.
  */
 function scriptedDeps(
-  script: { world: WorldSnapshot; actions: Action[]; infraFailures?: number }[],
+  script: {
+    world: WorldSnapshot;
+    actions: Action[];
+    infraFailures?: number;
+    /** Overrides the echoed dispatchPaused — a Tick's own tracker-derived verdict, independent of the flag it was called with. */
+    dispatchPaused?: boolean;
+  }[],
   opts: { probeAnswers?: boolean[]; msPerSleep?: number } = {},
 ): {
   deps: RunDeps;
@@ -174,7 +181,7 @@ function scriptedDeps(
         throw new Error("tick called past the end of the script");
       state.ticks += 1;
       state.pausedFlags.push(dispatchPaused);
-      return { infraFailures: 0, ...next };
+      return { infraFailures: 0, dispatchPaused, ...next };
     },
     probe: async () => {
       state.probes += 1;
@@ -336,6 +343,28 @@ describe("run", () => {
     const stillOpen = state.events.find((e) => e.kind === "breaker-still-open");
     expect(stillOpen?.level).toBe("warn");
     expect(stillOpen).toMatchObject({ trips: 2 });
+  });
+
+  it("is never stuck on a freshly started loop that has no memory of an outage the tick derives from the tracker", async () => {
+    // This loop's own in-memory breaker never trips (infraFailures stays 0,
+    // so it never calls probe) — as a fresh process would look right after
+    // restarting mid-outage. The Tick still reports dispatchPaused: true,
+    // derived from void markers already on the tracker (CONTEXT.md
+    // "Infrastructure failure"), and that alone must be enough to keep the
+    // loop running rather than declaring Stuck.
+    const held = world([
+      ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true }),
+    ]);
+    const state = scriptedDeps([
+      { world: held, actions: [], dispatchPaused: true },
+      { world: held, actions: [], dispatchPaused: true },
+      { world: world([ticket({ number: 2, state: "closed" })]), actions: [] },
+    ]);
+
+    const outcome = await run(30, state.deps);
+
+    expect(outcome).toBe("complete");
+    expect(state.probes).toBe(0);
   });
 
   it("exits stuck with a report naming the open tickets, at warn", async () => {

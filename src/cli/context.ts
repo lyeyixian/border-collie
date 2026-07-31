@@ -32,6 +32,7 @@ export interface Context extends CommandContext {
     world: WorldSnapshot;
     actions: Action[];
     infraFailures: number;
+    dispatchPaused: boolean;
   }>;
   readonly probe: (model: string) => Promise<boolean>;
   readonly now: () => number;

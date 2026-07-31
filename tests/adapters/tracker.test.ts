@@ -452,6 +452,7 @@ describe("readScope", () => {
             { body: `${CLAIM_MARKER}\n🐕 claimed` },
             {
               body: `${VOID_MARKER}\n🐕 Attempt 1 voided: the account usage limit was reached`,
+              created_at: "2026-01-01T00:05:00.000Z",
             },
           ],
         ],
@@ -466,17 +467,47 @@ describe("readScope", () => {
       hasAgentClaim: true,
       agentClaimCount: 0,
       attemptFailures: [],
+      voidedAtMs: Date.parse("2026-01-01T00:05:00.000Z"),
     });
   });
 
-  it("counts a fresh claim after a voided one as the first Attempt again", async () => {
+  it("resolves the held void once a later release lands, even without a reclaim yet", async () => {
     const { exec } = fakeExec({
       api: {
         [SUB_ISSUES]: [[issue({ number: 5 })]],
         [comments(5)]: [
           [
             { body: `${CLAIM_MARKER}\n🐕 claimed` },
-            { body: `${VOID_MARKER}\n🐕 Attempt 1 voided` },
+            {
+              body: `${VOID_MARKER}\n🐕 Attempt 1 voided`,
+              created_at: "2026-01-01T00:05:00.000Z",
+            },
+            {
+              body: `${RELEASE_MARKER}\n🐕 released (orphaned after the outage)`,
+            },
+          ],
+        ],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]).toMatchObject({ voidedAtMs: undefined });
+  });
+
+  it("counts a fresh claim after a voided one as the first Attempt again, and resolves the void", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [
+          [
+            { body: `${CLAIM_MARKER}\n🐕 claimed` },
+            {
+              body: `${VOID_MARKER}\n🐕 Attempt 1 voided`,
+              created_at: "2026-01-01T00:05:00.000Z",
+            },
             {
               body: `${RELEASE_MARKER}\n🐕 released (orphaned after the outage)`,
             },
@@ -493,7 +524,33 @@ describe("readScope", () => {
     expect(world.tickets[0]).toMatchObject({
       hasAgentClaim: true,
       agentClaimCount: 1,
+      voidedAtMs: undefined,
     });
+  });
+
+  it("leaves voidedAtMs undefined when the void comment's timestamp is missing or unparseable", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [
+          [issue({ number: 5, assignees: [{ login: "operator" }] })],
+        ],
+        [comments(5)]: [
+          [
+            { body: `${CLAIM_MARKER}\n🐕 claimed` },
+            {
+              body: `${VOID_MARKER}\n🐕 Attempt 1 voided`,
+              created_at: "not-a-date",
+            },
+          ],
+        ],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]).toMatchObject({ voidedAtMs: undefined });
   });
 
   it("maps open agent-branch PRs with their upkeep signals, ignoring other branches", async () => {

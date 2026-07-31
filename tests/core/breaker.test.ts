@@ -3,9 +3,31 @@ import {
   BREAKER_BASE_COOLDOWN_MS,
   BREAKER_MAX_COOLDOWN_MS,
   breakerCooldownMs,
+  deriveBreaker,
   probeDue,
   tripBreaker,
 } from "../../src/core/breaker.js";
+import type { Ticket, WorldSnapshot } from "../../src/core/types.js";
+
+function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
+  return {
+    title: `Ticket #${overrides.number}`,
+    state: "open",
+    assignees: [],
+    labels: ["ready-for-agent"],
+    openBlockers: 0,
+    blockedBy: [],
+    hasAgentClaim: false,
+    agentClaimCount: 0,
+    attemptFailures: [],
+    voidedAtMs: undefined,
+    ...overrides,
+  };
+}
+
+function world(tickets: Ticket[]): WorldSnapshot {
+  return { tickets, openAgentPrs: [], mergedAgentPrs: [] };
+}
 
 describe("tripBreaker", () => {
   it("opens a closed breaker with one trip", () => {
@@ -52,5 +74,55 @@ describe("probeDue", () => {
 
     expect(probeDue(breaker, 1_000 + BREAKER_BASE_COOLDOWN_MS)).toBe(false);
     expect(probeDue(breaker, 1_000 + 2 * BREAKER_BASE_COOLDOWN_MS)).toBe(true);
+  });
+});
+
+describe("deriveBreaker", () => {
+  it("stays closed when no in-Scope ticket carries a held void", () => {
+    const w = world([ticket({ number: 1 }), ticket({ number: 2 })]);
+
+    expect(deriveBreaker(w)).toBeUndefined();
+  });
+
+  it("opens from a single held void, matching one live trip", () => {
+    const w = world([ticket({ number: 4, voidedAtMs: 1_000 })]);
+
+    expect(deriveBreaker(w)).toEqual(tripBreaker(undefined, 1_000));
+  });
+
+  it("ignores a ticket whose void was superseded by a later claim or release", () => {
+    const w = world([
+      ticket({ number: 4, voidedAtMs: undefined }),
+      ticket({ number: 5 }),
+    ]);
+
+    expect(deriveBreaker(w)).toBeUndefined();
+  });
+
+  it("reaches the same verdict as a live process folding the same voids in order", () => {
+    const w = world([
+      ticket({ number: 4, voidedAtMs: 5_000 }),
+      ticket({ number: 7, voidedAtMs: 1_000 }),
+      ticket({ number: 9, voidedAtMs: 9_000 }),
+    ]);
+
+    const live = tripBreaker(
+      tripBreaker(tripBreaker(undefined, 1_000), 5_000),
+      9_000,
+    );
+    expect(deriveBreaker(w)).toEqual(live);
+    expect(deriveBreaker(w)).toEqual({ openedAtMs: 9_000, trips: 3 });
+  });
+
+  it("a fresh process reaches the same paused verdict as one that watched the void happen", () => {
+    const w = world([ticket({ number: 4, voidedAtMs: 0 })]);
+
+    expect(deriveBreaker(w)).toEqual({ openedAtMs: 0, trips: 1 });
+    expect(
+      probeDue({ openedAtMs: 0, trips: 1 }, BREAKER_BASE_COOLDOWN_MS - 1),
+    ).toBe(false);
+    expect(
+      probeDue({ openedAtMs: 0, trips: 1 }, BREAKER_BASE_COOLDOWN_MS),
+    ).toBe(true);
   });
 });

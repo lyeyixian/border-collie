@@ -16,7 +16,11 @@ import type { Action, Ticket, WorldSnapshot } from "../core/types.js";
  * the circuit breaker — the one piece of state that is genuinely about this
  * process's environment, not the world, so it lives here in memory and not
  * on the tracker (ADR 0001). Killing a run and re-running later loses
- * nothing: a lost breaker merely re-trips at worst one voided Attempt later.
+ * nothing: a lost breaker merely re-trips at worst one voided Attempt later
+ * — and even that gap is narrow, since the Tick itself also derives a
+ * breaker from the tracker's void markers (`core/breaker.ts`), so a fresh
+ * loop still plans (and reports Stuck) correctly against an outage it never
+ * saw happen.
  */
 
 export type RunStatus =
@@ -69,6 +73,13 @@ export interface RunDeps {
     world: WorldSnapshot;
     actions: Action[];
     infraFailures: number;
+    /**
+     * Whether the Tick actually planned with dispatch paused — the passed-in
+     * flag OR'd with the tracker-derived breaker, so a fresh loop (or one
+     * whose in-memory breaker hasn't caught up yet) still judges Stuck
+     * against what the Tick really planned, not just its own memory.
+     */
+    dispatchPaused: boolean;
   }>;
   /** The circuit breaker's recovery probe: true when the environment answers. */
   probe: () => Promise<boolean>;
@@ -103,9 +114,12 @@ export async function run(
         });
       }
     }
-    const { world, actions, infraFailures } = await deps.tick(
-      breaker !== undefined,
-    );
+    const {
+      world,
+      actions,
+      infraFailures,
+      dispatchPaused: tickDispatchPaused,
+    } = await deps.tick(breaker !== undefined);
     if (infraFailures > 0) {
       breaker = tripBreaker(breaker, deps.now());
       const nextProbeMs = breakerCooldownMs(breaker.trips);
@@ -117,7 +131,16 @@ export async function run(
         nextProbeMs,
       });
     }
-    const status = runStatus(world, actions, breaker !== undefined);
+    // Either source suppresses Stuck: this Tick's own fresh infra failure
+    // (just folded into `breaker`, above, but too late for the Tick's own
+    // plan to have known it) or the Tick's tracker-derived verdict (which
+    // catches an outage this loop's memory hasn't — or no longer — knows
+    // about).
+    const status = runStatus(
+      world,
+      actions,
+      breaker !== undefined || tickDispatchPaused,
+    );
     if (status.state === "complete") {
       const completeReport = buildCompleteReport(world.tickets);
       deps.log({
