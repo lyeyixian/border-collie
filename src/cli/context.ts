@@ -11,7 +11,12 @@ import {
   type ResolvedConfig,
   resolveConfig,
 } from "../core/config.js";
-import type { Log, LogBindings, LogEvent } from "../core/log.js";
+import {
+  type Log,
+  type LogBindings,
+  type LogEvent,
+  scrubCredentials,
+} from "../core/log.js";
 import type { Action, WorldSnapshot } from "../core/types.js";
 import { reportBlockText } from "./console-report.js";
 
@@ -89,7 +94,11 @@ function tagFor(bindings: LogBindings): string {
  *   append mode; a sink failure (permissions, full disk) is contained and
  *   reported rather than fatal; the buffered tail is flushed on normal exit
  *   and on crash. Records use tslog's native shape, not its pino-compatible
- *   preset.
+ *   preset. Every formatted line is scrubbed for credential-shaped content
+ *   (`scrubCredentials`) before it reaches disk — the console isn't, since
+ *   GitHub Actions already masks registered secrets in the workflow log,
+ *   but nothing masks a file this process writes itself, and this file is
+ *   the artifact a Worker job uploads.
  *
  * The root logger binds a run identifier matching the file's name, so every
  * record — console or file — carries it.
@@ -130,13 +139,15 @@ function buildLog(
       cliProcess.stdout.write(`${line}\n`);
     },
   });
-  rootLogger.attachTransport(
-    fileTransport({
-      path: join(cwd, RUN_DIR, "logs", `${runId}.jsonl`),
-      format: "json",
-      minLevel: "DEBUG",
-    }),
-  );
+  const fileSink = fileTransport({
+    path: join(cwd, RUN_DIR, "logs", `${runId}.jsonl`),
+    format: "json",
+    minLevel: "DEBUG",
+  });
+  rootLogger.attachTransport({
+    ...fileSink,
+    write: (record, line) => fileSink.write(record, scrubCredentials(line)),
+  });
   function wrap(logger: typeof rootLogger): Log {
     const log = ((event: LogEvent): void => {
       const block = reportBlockText(event);

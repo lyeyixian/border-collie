@@ -77,6 +77,31 @@ export type LogEvent = LogEventBase &
       }
   );
 
+/**
+ * Credential-shaped substrings redacted from anything that might reach a log:
+ * a GitHub token (classic or fine-grained), or the userinfo segment of a URL
+ * (`https://token@host` or `https://user:token@host` — the common CI pattern
+ * of authenticating `git`/`gh` through a remote URL rather than the
+ * environment). A plain `git@github.com:owner/repo.git` SSH remote has no
+ * `://` and is left alone, since `git` there is a fixed username, not a
+ * credential.
+ */
+const CREDENTIAL_PATTERNS: ReadonlyArray<readonly [RegExp, string]> = [
+  [/gh[pousr]_[A-Za-z0-9]{36,}/g, "<redacted>"],
+  [/github_pat_[A-Za-z0-9_]{22,}/g, "<redacted>"],
+  [/:\/\/[^/\s@]+@/g, "://<redacted>@"],
+  [/\bBearer\s+[A-Za-z0-9\-._~+/]+=*/gi, "Bearer <redacted>"],
+];
+
+/** Redacts credential-shaped content from `text`, defensively — the last line of defense before a log reaches a file. */
+export function scrubCredentials(text: string): string {
+  return CREDENTIAL_PATTERNS.reduce(
+    (scrubbed, [pattern, replacement]) =>
+      scrubbed.replace(pattern, replacement),
+    text,
+  );
+}
+
 /** Fields a Worker's (or Conflict Worker's) sub-logger binds onto every event it emits. */
 export interface LogBindings {
   ticket?: number;

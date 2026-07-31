@@ -1,7 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type { Scope } from "../core/config.js";
-import type { Log } from "../core/log.js";
+import { type Log, scrubCredentials } from "../core/log.js";
 import {
   type AttemptFailure,
   attemptMarker,
@@ -61,20 +61,25 @@ function exitCodeOf(error: unknown): number | null {
  * Decorates an `Exec` with a `debug` event per call, carrying the command and
  * its exit code — detail that does not exist today, so an operator can see
  * every `gh`/`git` command the Orchestrator actually issued, and how it
- * exited, without reproducing the run. Neither `cmd`/`args` nor an exit code
- * ever carries a credential: `gh` and `git` read auth from the environment,
- * never argv.
+ * exited, without reproducing the run. `gh` and `git` read auth from the
+ * environment, never argv, so `cmd`/`args` never carry a credential in
+ * practice — but the logged form is scrubbed defensively anyway (see
+ * `scrubCredentials`, verified by the "withDebugLogging" tests below) rather
+ * than resting on that as an unverified claim. The real `exec` call below
+ * still receives the unscrubbed `args`, so scrubbing never changes what
+ * actually runs.
  */
 export function withDebugLogging(exec: Exec, log: Log): Exec {
   return async (cmd, args) => {
+    const safeArgs = args.map(scrubCredentials);
     try {
       const stdout = await exec(cmd, args);
       log({
         kind: "tracker-command",
         level: "debug",
-        msg: `${cmd} ${args.join(" ")} (exit 0)`,
+        msg: `${cmd} ${safeArgs.join(" ")} (exit 0)`,
         cmd,
-        args,
+        args: safeArgs,
         exitCode: 0,
       });
       return stdout;
@@ -83,9 +88,9 @@ export function withDebugLogging(exec: Exec, log: Log): Exec {
       log({
         kind: "tracker-command",
         level: "debug",
-        msg: `${cmd} ${args.join(" ")} (exit ${exitCode ?? "unknown"})`,
+        msg: `${cmd} ${safeArgs.join(" ")} (exit ${exitCode ?? "unknown"})`,
         cmd,
-        args,
+        args: safeArgs,
         exitCode,
       });
       throw error;
