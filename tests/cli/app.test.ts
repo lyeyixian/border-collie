@@ -30,6 +30,7 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],
+    voidedAtMs: undefined,
     ...overrides,
   };
 }
@@ -109,6 +110,7 @@ function fakeContext(
         world: next.world,
         actions: [],
         infraFailures: next.infraFailures ?? 0,
+        dispatchPaused: dispatchPaused ?? false,
       };
     },
     probe: async (model) => {

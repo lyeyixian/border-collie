@@ -32,6 +32,7 @@ function ticket(
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],
+    voidedAtMs: undefined,
     ...overrides,
   };
 }

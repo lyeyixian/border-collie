@@ -1,10 +1,13 @@
+import type { WorldSnapshot } from "./types.js";
+
 /**
  * The circuit breaker (CONTEXT.md "Infrastructure failure"): pause dispatch
  * while the environment is down, resume when it recovers. Pure state
- * machine; the run loop owns the instance and the probe. Breaker state is
- * deliberately in-memory only — losing it to a crash is safe (the next run
- * dispatches immediately and re-trips at worst one voided Attempt later),
- * so it never belongs in the tracker (ADR 0001).
+ * machine. The resident run loop still owns its own instance in memory
+ * across Ticks (losing it to a crash is safe there — the next run dispatches
+ * immediately and re-trips at worst one voided Attempt later). A one-Tick-
+ * per-process runner has no such memory, so `deriveBreaker` below
+ * reconstructs the same state fresh from the tracker every Tick instead.
  */
 
 /** Open breaker: dispatch is paused since `openedAtMs`, after `trips` consecutive trips. */
@@ -39,4 +42,24 @@ export function breakerCooldownMs(trips: number): number {
 /** Whether the cooldown has elapsed and the environment should be probed. */
 export function probeDue(breaker: OpenBreaker, nowMs: number): boolean {
   return nowMs - breaker.openedAtMs >= breakerCooldownMs(breaker.trips);
+}
+
+/**
+ * Derive the breaker fresh from the world snapshot: every in-Scope ticket's
+ * still-held void marker (`Ticket.voidedAtMs`, undefined once a later claim
+ * or release resolves it) is one trip, folded through `tripBreaker` in
+ * chronological order — exactly the sequence a live process would have
+ * applied as each void landed. A fresh process therefore reaches the same
+ * verdict as one that watched the failures happen, with no store beyond the
+ * tracker's own comments.
+ */
+export function deriveBreaker(world: WorldSnapshot): Breaker {
+  const voidTimestampsMs = world.tickets
+    .map((ticket) => ticket.voidedAtMs)
+    .filter((ms): ms is number => ms !== undefined)
+    .sort((a, b) => a - b);
+  return voidTimestampsMs.reduce<Breaker>(
+    (breaker, ms) => tripBreaker(breaker, ms),
+    undefined,
+  );
 }

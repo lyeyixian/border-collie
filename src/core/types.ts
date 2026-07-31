@@ -239,6 +239,15 @@ export interface Ticket {
   agentClaimCount: number;
   /** Attempt records parsed from release comments, in comment order. */
   attemptFailures: AttemptFailure[];
+  /**
+   * Timestamp (ms) of the ticket's most recent void marker, when it is still
+   * the latest border-collie marker on the ticket — an infrastructure
+   * failure voided the claim and it has not yet been reclaimed or released.
+   * Undefined once superseded by a later claim or release, or when the
+   * ticket was never voided. The circuit breaker derives its state from
+   * these across in-Scope tickets (CONTEXT.md "Infrastructure failure").
+   */
+  voidedAtMs: number | undefined;
 }
 
 /**

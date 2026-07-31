@@ -120,7 +120,15 @@ function toTicket(issue: GithubIssue): Ticket {
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],
+    voidedAtMs: undefined,
   };
+}
+
+/** A comment's `created_at`, parsed to epoch ms — undefined when absent or unparseable. */
+function commentTimestamp(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const ms = Date.parse(raw);
+  return Number.isNaN(ms) ? undefined : ms;
 }
 
 async function readPages<T>(endpoint: string, exec: Exec): Promise<T[]> {
@@ -133,6 +141,7 @@ interface ClaimHistory {
   hasAgentClaim: boolean;
   agentClaimCount: number;
   attemptFailures: AttemptFailure[];
+  voidedAtMs: number | undefined;
 }
 
 /**
@@ -143,13 +152,16 @@ interface ClaimHistory {
  * marker uncounts the claim it follows (an infrastructure death burns
  * nothing) while leaving the claim held, and release comments carry the
  * failed attempts' forensic records. All append-only, so history stays
- * auditable and attempt state needs no local store.
+ * auditable and attempt state needs no local store. `voidedAtMs` tracks
+ * whether a void marker is still the latest one — a later claim or release
+ * resolves it — so the circuit breaker can be derived from it fresh each Tick
+ * (CONTEXT.md "Infrastructure failure").
  */
 async function readClaimHistory(
   ticket: number,
   exec: Exec,
 ): Promise<ClaimHistory> {
-  const comments = await readPages<{ body?: string }>(
+  const comments = await readPages<{ body?: string; created_at?: string }>(
     `repos/{owner}/{repo}/issues/${ticket}/comments?per_page=100`,
     exec,
   );
@@ -157,15 +169,19 @@ async function readClaimHistory(
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],
+    voidedAtMs: undefined,
   };
   for (const comment of comments) {
     if (comment.body?.includes(CLAIM_MARKER)) {
       history.hasAgentClaim = true;
       history.agentClaimCount += 1;
+      history.voidedAtMs = undefined;
     } else if (comment.body?.includes(VOID_MARKER)) {
       history.agentClaimCount = Math.max(0, history.agentClaimCount - 1);
+      history.voidedAtMs = commentTimestamp(comment.created_at);
     } else if (comment.body?.includes(RELEASE_MARKER)) {
       history.hasAgentClaim = false;
+      history.voidedAtMs = undefined;
       const failure = parseAttemptMarker(comment.body);
       if (failure) history.attemptFailures.push(failure);
     }
@@ -388,6 +404,7 @@ export async function readScope(
       ticket.hasAgentClaim = history.hasAgentClaim;
       ticket.agentClaimCount = history.agentClaimCount;
       ticket.attemptFailures = history.attemptFailures;
+      ticket.voidedAtMs = history.voidedAtMs;
     }
     if (ticket.openBlockers > 0) {
       ticket.blockedBy = await readOpenBlockers(ticket.number, exec);

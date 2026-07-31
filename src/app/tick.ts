@@ -5,6 +5,7 @@ import {
   dispatchWorker,
   realSpawnWorkerProcess,
 } from "../adapters/worker.js";
+import { deriveBreaker, probeDue } from "../core/breaker.js";
 import { modelForAttempt, type ResolvedConfig } from "../core/config.js";
 import type { Log } from "../core/log.js";
 import { plan } from "../core/plan.js";
@@ -26,7 +27,18 @@ export async function tickOnce(
   dryRun: boolean,
   dispatchPaused = false,
   deps: TickDeps,
-): Promise<{ world: WorldSnapshot; actions: Action[]; infraFailures: number }> {
+): Promise<{
+  world: WorldSnapshot;
+  actions: Action[];
+  infraFailures: number;
+  /**
+   * Whether THIS Tick actually planned with dispatch paused — the caller's
+   * `dispatchPaused` OR'd with the tracker-derived breaker, so a caller with
+   * no breaker memory of its own (or one that hasn't caught up yet) can
+   * still judge Stuck correctly against what was really planned.
+   */
+  dispatchPaused: boolean;
+}> {
   const { log, now, scheduleInterval } = deps;
   // Every command this Tick issues through the adapters — gh and git alike
   // — plus its exit code, is narrated at debug through the same seam:
@@ -37,15 +49,24 @@ export async function tickOnce(
   // Resolved fresh against wall-clock time each Tick (CONTEXT.md "Working
   // hours") — not encoded in a cron expression.
   const withinWorkingHours = isWithinWorkingHours(config.workingHours, now());
+  // The caller's dispatchPaused carries a resident loop's in-memory breaker,
+  // when it has one; the tracker-derived breaker is recomputed fresh every
+  // Tick regardless, so a one-Tick-per-process runner (with no such memory)
+  // still holds dispatch paused across an outage (CONTEXT.md "Infrastructure
+  // failure").
+  const derivedBreaker = deriveBreaker(world);
+  const derivedPause =
+    derivedBreaker !== undefined && !probeDue(derivedBreaker, now());
+  const effectiveDispatchPaused = dispatchPaused || derivedPause;
   const actions = plan(world, {
     maxWorkers: config.maxWorkers,
     maxOpenPrs: config.maxOpenPrs,
-    dispatchPaused,
+    dispatchPaused: effectiveDispatchPaused,
     withinWorkingHours,
   });
   const planReport = buildPlanReport(config, world, actions, {
     dryRun,
-    dispatchPaused,
+    dispatchPaused: effectiveDispatchPaused,
     withinWorkingHours,
   });
   log({
@@ -102,5 +123,10 @@ export async function tickOnce(
     });
     infraFailures = report.infraFailures;
   }
-  return { world, actions, infraFailures };
+  return {
+    world,
+    actions,
+    infraFailures,
+    dispatchPaused: effectiveDispatchPaused,
+  };
 }

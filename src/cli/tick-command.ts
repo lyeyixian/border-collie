@@ -13,8 +13,9 @@ async function tickHandler(
 
   const { infraFailures } = await this.tick(config, flags.dryRun);
   if (infraFailures > 0) {
-    // A standalone tick has no resident breaker to hold open; the voided
-    // claims stay held on the tracker, so the operator just re-ticks later.
+    // A standalone tick has no resident breaker of its own, but the next one
+    // derives the same paused verdict from the void markers this Tick just
+    // left on the tracker — so the operator can simply re-tick later.
     this.process.stdout.write(
       "Infrastructure failure detected: attempts voided, claims held. Re-run tick when the environment recovers.\n",
     );
@@ -40,6 +41,9 @@ ticket + commit subjects). Dispatch pauses while open agent PRs sit at
 max_open_prs and resumes as merges land.
 
 ${WORKER_DEATH_PROSE} the tick prints a notice so the operator knows to
-re-run once the environment recovers.`,
+re-run once the environment recovers. A standalone tick keeps no memory of
+its own, but the circuit breaker it derives from the tracker's void markers
+still holds dispatch paused across separate ticks, probing on the same
+backoff, until the environment recovers.`,
   },
 });

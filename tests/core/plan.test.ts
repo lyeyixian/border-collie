@@ -20,6 +20,7 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
     hasAgentClaim: false,
     agentClaimCount: 0,
     attemptFailures: [],
+    voidedAtMs: undefined,
     ...overrides,
   };
 }
