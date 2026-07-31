@@ -634,7 +634,11 @@ describe("plan: working hours", () => {
       world(
         [
           ticket({ number: 9 }),
-          ticket({ number: 6, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({
+            number: 6,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
           ticket({
             number: 5,
             agentClaimCount: 2,
@@ -649,7 +653,7 @@ describe("plan: working hours", () => {
 
     expect(actions).toEqual([
       { type: "close", ticket: 9, prUrl: "https://github.com/o/r/pull/90" },
-      { type: "release", ticket: 6, assignees: ["operator"] },
+      { type: "release", ticket: 6 },
       { type: "escalate", ticket: 5, failures: [failure(1), failure(2)] },
     ]);
   });
@@ -690,7 +694,7 @@ describe("plan: working hours", () => {
   it("is independent of the circuit breaker: both suppress dispatch, but the breaker also suppresses PR upkeep and releases", () => {
     const held = ticket({
       number: 4,
-      assignees: ["operator"],
+      labels: ["ready-for-agent", CLAIM_LABEL],
       hasAgentClaim: true,
     });
     const bothGated = plan(world([held]), {
@@ -708,9 +712,7 @@ describe("plan: working hours", () => {
     // Breaker open wins: only closes, even with the working-hours gate also active.
     expect(bothGated).toEqual([]);
     // Working hours alone still releases the orphaned claim.
-    expect(workingHoursOnly).toEqual([
-      { type: "release", ticket: 4, assignees: ["operator"] },
-    ]);
+    expect(workingHoursOnly).toEqual([{ type: "release", ticket: 4 }]);
   });
 
   it("dispatches normally once outside working hours", () => {
