@@ -209,7 +209,7 @@ export async function act(
         });
         break;
       case "release":
-        await releaseTicket(action.ticket, action.assignees, exec);
+        await releaseTicket(action.ticket, exec);
         log({
           kind: "release",
           level: "info",

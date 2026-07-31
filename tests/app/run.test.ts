@@ -2,12 +2,13 @@ import { describe, expect, it } from "vitest";
 import { type RunDeps, run, runStatus } from "../../src/app/run.js";
 import { BREAKER_BASE_COOLDOWN_MS } from "../../src/core/breaker.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
-import type {
-  Action,
-  MergedAgentPr,
-  OpenAgentPr,
-  Ticket,
-  WorldSnapshot,
+import {
+  type Action,
+  CLAIM_LABEL,
+  type MergedAgentPr,
+  type OpenAgentPr,
+  type Ticket,
+  type WorldSnapshot,
 } from "../../src/core/types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
@@ -80,7 +81,13 @@ describe("runStatus", () => {
 
   it("keeps running while agent PRs await human merge, even with nothing planned", () => {
     const snapshot = world(
-      [ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })],
+      [
+        ticket({
+          number: 2,
+          labels: ["ready-for-agent", CLAIM_LABEL],
+          hasAgentClaim: true,
+        }),
+      ],
       [2],
     );
 
@@ -116,7 +123,7 @@ describe("runStatus", () => {
   it("is never stuck while the circuit breaker holds dispatch paused — recovery is the path forward", () => {
     const held = ticket({
       number: 2,
-      assignees: ["operator"],
+      labels: ["ready-for-agent", CLAIM_LABEL],
       hasAgentClaim: true,
     });
 
@@ -188,7 +195,13 @@ function recordingLog(events: LogEvent[]): Log {
 describe("run", () => {
   it("ticks, sleeps the poll interval, and ticks again until a terminal state", async () => {
     const inFlight = world(
-      [ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })],
+      [
+        ticket({
+          number: 2,
+          labels: ["ready-for-agent", CLAIM_LABEL],
+          hasAgentClaim: true,
+        }),
+      ],
       [2],
     );
     const done = world([ticket({ number: 2, state: "closed" })]);
@@ -248,7 +261,11 @@ describe("run", () => {
 
   it("trips the breaker on infrastructure failure, ticks paused, and resumes when the probe passes", async () => {
     const held = world([
-      ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true }),
+      ticket({
+        number: 2,
+        labels: ["ready-for-agent", CLAIM_LABEL],
+        hasAgentClaim: true,
+      }),
     ]);
     const state = scriptedDeps(
       [
@@ -283,7 +300,11 @@ describe("run", () => {
 
   it("re-trips on a failed probe and waits the doubled cooldown before probing again", async () => {
     const held = world([
-      ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true }),
+      ticket({
+        number: 2,
+        labels: ["ready-for-agent", CLAIM_LABEL],
+        hasAgentClaim: true,
+      }),
     ]);
     const state = scriptedDeps(
       [
@@ -335,7 +356,13 @@ describe("run", () => {
 
   it("logs the poll wait at info between ticks", async () => {
     const inFlight = world(
-      [ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })],
+      [
+        ticket({
+          number: 2,
+          labels: ["ready-for-agent", CLAIM_LABEL],
+          hasAgentClaim: true,
+        }),
+      ],
       [2],
     );
     const state = scriptedDeps([
@@ -352,7 +379,13 @@ describe("run", () => {
 
   it("also logs the inter-Tick wait at debug, hidden from the console by default", async () => {
     const inFlight = world(
-      [ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true })],
+      [
+        ticket({
+          number: 2,
+          labels: ["ready-for-agent", CLAIM_LABEL],
+          hasAgentClaim: true,
+        }),
+      ],
       [2],
     );
     const state = scriptedDeps([

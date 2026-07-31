@@ -11,6 +11,7 @@ import {
 import type { Log, LogBindings, LogEvent } from "../../src/core/log.js";
 import {
   type AttemptFailure,
+  CLAIM_LABEL,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
   RELEASE_MARKER,
@@ -141,7 +142,7 @@ describe("act", () => {
 
     await act(
       [
-        { type: "release", ticket: 4, assignees: ["operator"] },
+        { type: "release", ticket: 4 },
         { type: "claim", ticket: 9 },
       ],
       {
@@ -156,7 +157,7 @@ describe("act", () => {
     );
 
     expect(calls).toEqual([
-      ["gh", "issue", "edit", "4", "--remove-assignee", "operator"],
+      ["gh", "issue", "edit", "4", "--remove-label", CLAIM_LABEL],
       [
         "gh",
         "issue",
@@ -165,7 +166,7 @@ describe("act", () => {
         "--body",
         expect.stringContaining(RELEASE_MARKER),
       ],
-      ["gh", "issue", "edit", "9", "--add-assignee", "@me"],
+      ["gh", "issue", "edit", "9", "--add-label", CLAIM_LABEL],
       [
         "gh",
         "issue",
@@ -288,7 +289,7 @@ describe("act", () => {
     // a Ticket failure is released with its forensic record. Exact write
     // content is settleAttempt's own tests' job.
     expect(calls).toEqual([
-      ["gh", "issue", "edit", "2", "--add-assignee", "@me"],
+      ["gh", "issue", "edit", "2", "--add-label", CLAIM_LABEL],
       [
         "gh",
         "issue",
@@ -297,7 +298,7 @@ describe("act", () => {
         "--body",
         expect.stringContaining(CLAIM_MARKER),
       ],
-      ["gh", "issue", "edit", "4", "--add-assignee", "@me"],
+      ["gh", "issue", "edit", "4", "--add-label", CLAIM_LABEL],
       [
         "gh",
         "issue",
@@ -306,7 +307,7 @@ describe("act", () => {
         "--body",
         expect.stringContaining(CLAIM_MARKER),
       ],
-      ["gh", "issue", "edit", "4", "--remove-assignee", "@me"],
+      ["gh", "issue", "edit", "4", "--remove-label", CLAIM_LABEL],
       [
         "gh",
         "issue",
@@ -520,7 +521,7 @@ describe("act", () => {
       },
     );
 
-    // Both attempts voided, none released: no assignee ever removed.
+    // Both attempts voided, none released: no claim label ever removed.
     expect(calls.map((c) => c.slice(0, 3))).toEqual([
       ["gh", "issue", "comment"],
       ["gh", "issue", "comment"],
@@ -620,7 +621,7 @@ describe("act: heartbeat", () => {
     const { log, events } = recordingLog();
     const scheduler = fakeScheduler();
 
-    await act([{ type: "release", ticket: 4, assignees: ["operator"] }], {
+    await act([{ type: "release", ticket: 4 }], {
       dispatch: noDispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,

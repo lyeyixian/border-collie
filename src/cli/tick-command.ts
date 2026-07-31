@@ -31,8 +31,8 @@ directory: close tickets whose agent PR merged without closing them, keep the
 remaining open agent PRs current (mechanical branch update for clean ones that
 fell behind, a one-shot conflict-resolution Worker for conflicted ones, and a
 draft→ready flip once CI is green), release orphaned agent claims, claim
-dispatchable tickets (assign + marker comment), then dispatch one Worker per
-claim — an isolated worktree on an agent branch, running headless claude
+dispatchable tickets (claim label + marker comment), then dispatch one Worker
+per claim — an isolated worktree on an agent branch, running headless claude
 against exactly that ticket — and report each Worker's outcome. A successful
 Worker's branch is pushed and opened as a draft PR that closes its ticket on
 merge, its body taken from the Worker's final message (mechanical fallback:

@@ -1,11 +1,12 @@
 import { describe, expect, it } from "vitest";
 import { plan } from "../../src/core/plan.js";
-import type {
-  AttemptFailure,
-  MergedAgentPr,
-  OpenAgentPr,
-  Ticket,
-  WorldSnapshot,
+import {
+  type AttemptFailure,
+  CLAIM_LABEL,
+  type MergedAgentPr,
+  type OpenAgentPr,
+  type Ticket,
+  type WorldSnapshot,
 } from "../../src/core/types.js";
 
 function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
@@ -110,6 +111,15 @@ describe("plan", () => {
     expect(actions).toEqual([]);
   });
 
+  it("excludes tickets carrying the claim label, even unassigned", () => {
+    const actions = plan(
+      world([ticket({ number: 1, labels: ["ready-for-agent", CLAIM_LABEL] })]),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
   it("excludes tickets without the ready-for-agent label", () => {
     const actions = plan(
       world([
@@ -131,23 +141,31 @@ describe("plan", () => {
     expect(actions).toEqual([]);
   });
 
-  it("releases an orphaned agent claim: assigned with marker, no open agent PR", () => {
+  it("releases an orphaned agent claim: claim-labelled with marker, no open agent PR", () => {
     const actions = plan(
       world([
-        ticket({ number: 5, assignees: ["operator"], hasAgentClaim: true }),
+        ticket({
+          number: 5,
+          labels: ["ready-for-agent", CLAIM_LABEL],
+          hasAgentClaim: true,
+        }),
       ]),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
-    expect(actions).toEqual([
-      { type: "release", ticket: 5, assignees: ["operator"] },
-    ]);
+    expect(actions).toEqual([{ type: "release", ticket: 5 }]);
   });
 
   it("keeps an agent claim whose ticket has an open agent PR", () => {
     const actions = plan(
       world(
-        [ticket({ number: 5, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 5,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [5],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
@@ -171,7 +189,7 @@ describe("plan", () => {
         ticket({
           number: 5,
           state: "closed",
-          assignees: ["operator"],
+          labels: ["ready-for-agent", CLAIM_LABEL],
           hasAgentClaim: true,
         }),
       ]),
@@ -185,13 +203,17 @@ describe("plan", () => {
     const actions = plan(
       world([
         ticket({ number: 9 }),
-        ticket({ number: 4, assignees: ["operator"], hasAgentClaim: true }),
+        ticket({
+          number: 4,
+          labels: ["ready-for-agent", CLAIM_LABEL],
+          hasAgentClaim: true,
+        }),
       ]),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
     expect(actions).toEqual([
-      { type: "release", ticket: 4, assignees: ["operator"] },
+      { type: "release", ticket: 4 },
       { type: "claim", ticket: 9 },
       { type: "spawn", ticket: 9, attempt: 1 },
     ]);
@@ -257,6 +279,22 @@ describe("plan: retry ladder and Escalation", () => {
     ]);
   });
 
+  it("self-heals from a crash between the two release writes: label already off, stale claim marker still says held", () => {
+    // The label goes first on release too, so a crash after it but before the
+    // release marker leaves the ticket unlabelled with a marker history that
+    // still reads hasAgentClaim — indistinguishable from a fresh dispatchable
+    // ticket, so it just claims afresh at the next rung.
+    const actions = plan(
+      world([ticket({ number: 7, hasAgentClaim: true, agentClaimCount: 1 })]),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([
+      { type: "claim", ticket: 7 },
+      { type: "spawn", ticket: 7, attempt: 2 },
+    ]);
+  });
+
   it("escalates instead of dispatching once attempts are exhausted, citing the failure records", () => {
     const failures = [failure(1), failure(2)];
     const actions = plan(
@@ -284,6 +322,24 @@ describe("plan: retry ladder and Escalation", () => {
     expect(actions).toEqual([
       { type: "escalate", ticket: 7, failures: [failure(2)] },
     ]);
+  });
+
+  it("releases an exhausted orphaned claim instead of also escalating it the same tick", () => {
+    // Still claim-labelled: releases before escalations, and the claim label
+    // is what vetoes escalation until the release actually lands next Tick.
+    const actions = plan(
+      world([
+        ticket({
+          number: 7,
+          labels: ["ready-for-agent", CLAIM_LABEL],
+          hasAgentClaim: true,
+          agentClaimCount: 2,
+        }),
+      ]),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([{ type: "release", ticket: 7 }]);
   });
 
   it("never escalates an already-escalated ticket (label swap removed ready-for-agent)", () => {
@@ -317,12 +373,12 @@ describe("plan: retry ladder and Escalation", () => {
     ]);
   });
 
-  it("does not escalate an assigned ticket this tick: the orphan release goes first", () => {
+  it("does not escalate an orphaned claim this tick: the orphan release goes first", () => {
     const actions = plan(
       world([
         ticket({
           number: 7,
-          assignees: ["operator"],
+          labels: ["ready-for-agent", CLAIM_LABEL],
           hasAgentClaim: true,
           agentClaimCount: 2,
         }),
@@ -330,9 +386,7 @@ describe("plan: retry ladder and Escalation", () => {
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
-    expect(actions).toEqual([
-      { type: "release", ticket: 7, assignees: ["operator"] },
-    ]);
+    expect(actions).toEqual([{ type: "release", ticket: 7 }]);
   });
 
   it("orders escalations after releases and before dispatches, without consuming Worker slots", () => {
@@ -344,13 +398,17 @@ describe("plan: retry ladder and Escalation", () => {
           agentClaimCount: 2,
           attemptFailures: [failure(1), failure(2)],
         }),
-        ticket({ number: 6, assignees: ["operator"], hasAgentClaim: true }),
+        ticket({
+          number: 6,
+          labels: ["ready-for-agent", CLAIM_LABEL],
+          hasAgentClaim: true,
+        }),
       ]),
       { maxWorkers: 1, maxOpenPrs: 5 },
     );
 
     expect(actions).toEqual([
-      { type: "release", ticket: 6, assignees: ["operator"] },
+      { type: "release", ticket: 6 },
       { type: "escalate", ticket: 5, failures: [failure(1), failure(2)] },
       { type: "claim", ticket: 3 },
       { type: "spawn", ticket: 3, attempt: 1 },
@@ -360,7 +418,13 @@ describe("plan: retry ladder and Escalation", () => {
   it("closes an open ticket whose agent PR merged, with the PR linked", () => {
     const actions = plan(
       world(
-        [ticket({ number: 6, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 6,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [],
         [mergedPr(6)],
       ),
@@ -399,9 +463,21 @@ describe("plan: retry ladder and Escalation", () => {
       world(
         [
           ticket({ number: 9 }),
-          ticket({ number: 7, assignees: ["operator"], hasAgentClaim: true }),
-          ticket({ number: 4, assignees: ["operator"], hasAgentClaim: true }),
-          ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({
+            number: 7,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+          ticket({
+            number: 4,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+          ticket({
+            number: 2,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
         ],
         [],
         [mergedPr(4), mergedPr(2)],
@@ -412,7 +488,7 @@ describe("plan: retry ladder and Escalation", () => {
     expect(actions).toEqual([
       { type: "close", ticket: 2, prUrl: "https://github.com/o/r/pull/20" },
       { type: "close", ticket: 4, prUrl: "https://github.com/o/r/pull/40" },
-      { type: "release", ticket: 7, assignees: ["operator"] },
+      { type: "release", ticket: 7 },
       { type: "claim", ticket: 9 },
       { type: "spawn", ticket: 9, attempt: 1 },
     ]);
@@ -447,8 +523,16 @@ describe("plan: retry ladder and Escalation", () => {
       world(
         [
           ticket({ number: 6 }),
-          ticket({ number: 7, assignees: ["operator"], hasAgentClaim: true }),
-          ticket({ number: 8, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({
+            number: 7,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+          ticket({
+            number: 8,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
         ],
         [1, 2, 3, 4, 5],
         [mergedPr(8)],
@@ -458,7 +542,7 @@ describe("plan: retry ladder and Escalation", () => {
 
     expect(actions).toEqual([
       { type: "close", ticket: 8, prUrl: "https://github.com/o/r/pull/80" },
-      { type: "release", ticket: 7, assignees: ["operator"] },
+      { type: "release", ticket: 7 },
     ]);
   });
 });
@@ -492,7 +576,7 @@ describe("plan: circuit breaker", () => {
   it("keeps claims held while paused: no orphan releases mid-outage", () => {
     const held = ticket({
       number: 4,
-      assignees: ["operator"],
+      labels: ["ready-for-agent", CLAIM_LABEL],
       hasAgentClaim: true,
       agentClaimCount: 1,
     });
@@ -538,7 +622,13 @@ describe("plan: PR upkeep", () => {
   it("plans no upkeep for a clean, current, non-draft PR", () => {
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [openPr(3)],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
@@ -550,7 +640,13 @@ describe("plan: PR upkeep", () => {
   it("mechanically updates a cleanly-mergeable PR that has fallen behind the base", () => {
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [openPr(3, { number: 30, behind: true })],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
@@ -562,7 +658,13 @@ describe("plan: PR upkeep", () => {
   it("dispatches one conflict Worker for a conflicted PR with no human ask yet", () => {
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [openPr(3, { number: 30, mergeable: "conflicted" })],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
@@ -581,7 +683,13 @@ describe("plan: PR upkeep", () => {
   it("never re-dispatches a conflict Worker once one has asked for a human", () => {
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [
           openPr(3, {
             number: 30,
@@ -599,7 +707,13 @@ describe("plan: PR upkeep", () => {
   it("neither updates nor readies a conflicted PR (conflict handling is exclusive)", () => {
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [
           openPr(3, {
             number: 30,
@@ -621,7 +735,13 @@ describe("plan: PR upkeep", () => {
     // it is behind, so neither update nor ready is due — leave it for next Tick.
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [openPr(3, { number: 30, mergeable: "unknown", draft: false })],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
@@ -635,7 +755,13 @@ describe("plan: PR upkeep", () => {
     // GitHub to finish computing whether it is behind.
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [
           openPr(3, {
             number: 30,
@@ -654,7 +780,13 @@ describe("plan: PR upkeep", () => {
   it("flips a green draft to ready for review", () => {
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [openPr(3, { number: 30, draft: true, ci: "passing" })],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
@@ -666,7 +798,13 @@ describe("plan: PR upkeep", () => {
   it("flips a draft immediately when the repo has no CI configured", () => {
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [openPr(3, { number: 30, draft: true, ci: "none" })],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
@@ -679,8 +817,16 @@ describe("plan: PR upkeep", () => {
     const actions = plan(
       worldWithPrs(
         [
-          ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true }),
-          ticket({ number: 4, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+          ticket({
+            number: 4,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
         ],
         [
           openPr(3, { number: 30, draft: true, ci: "pending" }),
@@ -696,7 +842,13 @@ describe("plan: PR upkeep", () => {
   it("updates a behind draft this tick and defers the ready flip to the next", () => {
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [openPr(3, { number: 30, draft: true, behind: true, ci: "passing" })],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
@@ -708,7 +860,13 @@ describe("plan: PR upkeep", () => {
   it("does not mark a non-draft (already ready) PR ready again", () => {
     const actions = plan(
       worldWithPrs(
-        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [
+          ticket({
+            number: 3,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+        ],
         [openPr(3, { number: 30, draft: false, ci: "passing" })],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
@@ -721,9 +879,21 @@ describe("plan: PR upkeep", () => {
     const actions = plan(
       {
         tickets: [
-          ticket({ number: 2, assignees: ["operator"], hasAgentClaim: true }),
-          ticket({ number: 5, assignees: ["operator"], hasAgentClaim: true }),
-          ticket({ number: 7, assignees: ["operator"], hasAgentClaim: true }),
+          ticket({
+            number: 2,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+          ticket({
+            number: 5,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+          ticket({
+            number: 7,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
         ],
         openAgentPrs: [
           openPr(7, { number: 70, behind: true }),

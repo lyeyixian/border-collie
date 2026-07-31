@@ -6,6 +6,7 @@ import {
   type AttemptFailure,
   attemptMarker,
   type CiState,
+  CLAIM_LABEL,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
   FAILURE_DESCRIPTIONS,
@@ -368,15 +369,16 @@ export async function readScope(
     .filter((issue) => issue.pull_request === undefined)
     .map(toTicket);
 
-  // Claim history is read where it can matter: assigned tickets (claim
-  // ownership) and unassigned dispatch candidates (the Attempt counter that
-  // picks the retry rung or triggers Escalation). Blocker lists are read for
-  // open blocked tickets — the Stuck report names them.
+  // Claim history is read where it can matter: claim-labelled tickets (claim
+  // ownership, even a blocked one) and unassigned dispatch candidates (the
+  // Attempt counter that picks the retry rung or triggers Escalation).
+  // Blocker lists are read for open blocked tickets — the Stuck report names
+  // them.
   for (const ticket of tickets) {
     if (ticket.state !== "open") continue;
     const isDispatchCandidate =
       ticket.labels.includes(READY_FOR_AGENT) && ticket.openBlockers === 0;
-    if (ticket.assignees.length > 0 || isDispatchCandidate) {
+    if (ticket.labels.includes(CLAIM_LABEL) || isDispatchCandidate) {
       const history = await readClaimHistory(ticket.number, exec);
       ticket.hasAgentClaim = history.hasAgentClaim;
       ticket.agentClaimCount = history.agentClaimCount;
@@ -401,21 +403,30 @@ export async function readScope(
   return { tickets, openAgentPrs, mergedAgentPrs };
 }
 
-const CLAIM_COMMENT = `${CLAIM_MARKER}\n🐕 Claimed by border-collie: a Worker will be dispatched against this ticket. This assignment is agent-held — see CONTEXT.md "Claim".`;
+const CLAIM_COMMENT = `${CLAIM_MARKER}\n🐕 Claimed by border-collie: a Worker will be dispatched against this ticket. This claim is agent-held — see CONTEXT.md "Claim".`;
 
 const RELEASE_COMMENT = `${RELEASE_MARKER}\n🐕 border-collie released an orphaned claim (no live Worker, no open agent PR). The ticket is dispatchable again.`;
 
 /**
- * Act phase: claim a ticket — assign the working identity, then post the
- * marker comment, as the first writes against the ticket. Assignment goes
- * first (the wayfinder protocol border-collie inherits); a crash in between
- * leaves the ticket looking human-claimed, which fails safe: hands off.
+ * Act phase: claim a ticket — add the claim label, then post the marker
+ * comment, as the first writes against the ticket. The label goes first (an
+ * App identity can still hold a label even though it cannot be an issue
+ * assignee); a crash in between leaves the ticket labelled with no marker,
+ * which fails safe: not dispatchable, but not recognized as an orphan either
+ * (CONTEXT.md "Claim" — the marker is what proves the label agent-held), so
+ * it is parked for a human to notice rather than silently released.
  */
 export async function claimTicket(
   ticket: number,
   exec: Exec = realExec,
 ): Promise<void> {
-  await exec("gh", ["issue", "edit", String(ticket), "--add-assignee", "@me"]);
+  await exec("gh", [
+    "issue",
+    "edit",
+    String(ticket),
+    "--add-label",
+    CLAIM_LABEL,
+  ]);
   await exec("gh", [
     "issue",
     "comment",
@@ -426,14 +437,14 @@ export async function claimTicket(
 }
 
 /**
- * The shared release shape: unassign first — a crash in between leaves the
- * ticket unassigned with a stale claim marker, which the next Tick claims
- * afresh (self-healing). The release marker then neutralizes the claim
- * marker so a later human assignment is never misread as agent-held.
+ * The shared release shape: remove the claim label first — a crash in
+ * between leaves the ticket unlabelled with a stale claim marker, which the
+ * next Tick claims afresh (self-healing). The release marker then
+ * neutralizes the claim marker so a later human assignment is never misread
+ * as agent-held.
  */
 async function release(
   ticket: number,
-  assignees: string,
   body: string,
   exec: Exec,
 ): Promise<void> {
@@ -441,19 +452,18 @@ async function release(
     "issue",
     "edit",
     String(ticket),
-    "--remove-assignee",
-    assignees,
+    "--remove-label",
+    CLAIM_LABEL,
   ]);
   await exec("gh", ["issue", "comment", String(ticket), "--body", body]);
 }
 
-/** Act phase: release an orphaned claim back to unassigned. */
+/** Act phase: release an orphaned claim back to unclaimed. */
 export async function releaseTicket(
   ticket: number,
-  assignees: string[],
   exec: Exec = realExec,
 ): Promise<void> {
-  await release(ticket, assignees.join(","), RELEASE_COMMENT, exec);
+  await release(ticket, RELEASE_COMMENT, exec);
 }
 
 const closeComment = (prUrl: string) =>
@@ -517,7 +527,7 @@ export async function releaseFailedTicket(
     `🐕 Attempt ${failure.attempt} failed: ${FAILURE_DESCRIPTIONS[failure.reason]} (model ${failure.model}).`,
     `Worktree torn down; branch \`${failure.branch}\` abandoned; transcript at \`${failure.transcript}\`.`,
   ].join("\n");
-  await release(ticket, "@me", body, exec);
+  await release(ticket, body, exec);
 }
 
 /** What a voided Attempt leaves behind, cited in the void comment for humans. */
@@ -554,9 +564,9 @@ export async function voidAttempt(
  * comment first, then the label swap that removes it from the dispatchable
  * set for good. A crash in between re-escalates next Tick (worst case a
  * duplicate comment); the swap first would strand the forensics unwritten
- * with no trigger left to write them. The glossary's "unassign" is already
- * done: only unassigned tickets escalate (every failure or orphan release
- * unassigns first), so no assignee write belongs here.
+ * with no trigger left to write them. The claim label is already off: only
+ * unclaimed, unassigned tickets escalate (every failure or orphan release
+ * removes the claim label first), so no claim-label write belongs here.
  */
 export async function escalateTicket(
   ticket: number,

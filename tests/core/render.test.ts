@@ -164,7 +164,7 @@ describe("buildPlanReport", () => {
     };
     const actions: Action[] = [
       { type: "claim", ticket: 2 },
-      { type: "release", ticket: 3, assignees: ["operator"] },
+      { type: "release", ticket: 3 },
       { type: "spawn", ticket: 2, attempt: 2 },
       { type: "escalate", ticket: 4, failures: [] },
       { type: "close", ticket: 5, prUrl: "https://github.com/o/r/pull/50" },

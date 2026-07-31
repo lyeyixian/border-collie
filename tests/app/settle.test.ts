@@ -5,6 +5,7 @@ import type { Log, LogBindings, LogEvent } from "../../src/core/log.js";
 import {
   type AttemptFailure,
   attemptMarker,
+  CLAIM_LABEL,
   VOID_MARKER,
   type WorkerOutcome,
 } from "../../src/core/types.js";
@@ -121,7 +122,7 @@ describe("settleAttempt", () => {
       transcript: ".border-collie/transcripts/ticket-7.jsonl",
     };
     expect(calls).toEqual([
-      ["gh", "issue", "edit", "7", "--remove-assignee", "@me"],
+      ["gh", "issue", "edit", "7", "--remove-label", CLAIM_LABEL],
       [
         "gh",
         "issue",
