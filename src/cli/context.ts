@@ -5,7 +5,7 @@ import { fileTransport } from "tslog/transports/file";
 import { loadConfigFile } from "../adapters/config-file.js";
 import { probeEnvironment, RUN_DIR } from "../adapters/worker.js";
 import type { IntervalScheduler } from "../app/act.js";
-import { tickOnce } from "../app/tick.js";
+import { type TickResult, tickOnce } from "../app/tick.js";
 import {
   type Flags,
   type ResolvedConfig,
@@ -17,7 +17,6 @@ import {
   type LogEvent,
   scrubCredentials,
 } from "../core/log.js";
-import type { Action, WorldSnapshot } from "../core/types.js";
 import { reportBlockText } from "./console-report.js";
 
 /** Every effect a command handler needs, injected so handlers never import them directly. */
@@ -28,12 +27,7 @@ export interface Context extends CommandContext {
     config: ResolvedConfig,
     dryRun: boolean,
     dispatchPaused?: boolean,
-  ) => Promise<{
-    world: WorldSnapshot;
-    actions: Action[];
-    infraFailures: number;
-    dispatchPaused: boolean;
-  }>;
+  ) => Promise<TickResult>;
   readonly probe: (model: string) => Promise<boolean>;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
