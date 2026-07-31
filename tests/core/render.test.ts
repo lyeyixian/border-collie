@@ -122,6 +122,40 @@ describe("buildPlanReport", () => {
     expect(report.paused).toEqual({ kind: "breaker" });
   });
 
+  it("reports a working-hours pause when a dispatchable ticket waits on the off-hours window", () => {
+    const report = buildPlanReport(config(), world, [], {
+      dryRun: false,
+      withinWorkingHours: true,
+    });
+
+    expect(report.paused).toEqual({ kind: "working-hours" });
+  });
+
+  it("does not report a working-hours pause when nothing is dispatchable", () => {
+    const noDispatch: WorldSnapshot = {
+      tickets: [ticket({ number: 4, title: "Done already", state: "closed" })],
+      openAgentPrs: [],
+      mergedAgentPrs: [],
+    };
+
+    const report = buildPlanReport(config(), noDispatch, [], {
+      dryRun: false,
+      withinWorkingHours: true,
+    });
+
+    expect(report.paused).toBeNull();
+  });
+
+  it("prefers the breaker pause over working hours when both apply", () => {
+    const report = buildPlanReport(config(), world, [], {
+      dryRun: false,
+      dispatchPaused: true,
+      withinWorkingHours: true,
+    });
+
+    expect(report.paused).toEqual({ kind: "breaker" });
+  });
+
   it("reports a max_open_prs pause when dispatchable tickets wait on headroom", () => {
     const throttled: WorldSnapshot = {
       ...world,
@@ -218,6 +252,29 @@ describe("buildPlanReport", () => {
 });
 
 describe("renderPlanReport", () => {
+  it("renders the working-hours pause notice, distinct from the breaker's", () => {
+    const report: PlanReport = {
+      scopeLabel: "sub-issues of #1",
+      totalTickets: 2,
+      openTickets: 1,
+      dispatchable: [2],
+      paused: { kind: "working-hours" },
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      actions: [],
+      dryRun: false,
+    };
+
+    expect(renderPlanReport(report)).toBe(
+      [
+        "Scope: sub-issues of #1 — 2 tickets (1 open)",
+        "Dispatchable: #2",
+        "Dispatch paused: within working hours — claims, spawns, and Conflict Workers wait for the off-hours window",
+        "Plan (max_workers=3, max_open_prs=5): nothing to do",
+      ].join("\n"),
+    );
+  });
+
   it("renders the familiar unadorned block: header lines, one line per action kind, the paused notice, the dry-run footer", () => {
     const report: PlanReport = {
       scopeLabel: "sub-issues of #1",

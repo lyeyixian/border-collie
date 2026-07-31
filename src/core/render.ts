@@ -16,6 +16,7 @@ import {
 /** Why dispatch is paused this Tick, or absent when it isn't. */
 export type PlanPausedReason =
   | { kind: "breaker" }
+  | { kind: "working-hours" }
   | { kind: "max-open-prs"; openCount: number };
 
 /** One planned action, resolved to exactly the fields its console line needs. */
@@ -92,7 +93,12 @@ export function buildPlanReport(
   {
     dryRun,
     dispatchPaused = false,
-  }: { dryRun: boolean; dispatchPaused?: boolean },
+    withinWorkingHours = false,
+  }: {
+    dryRun: boolean;
+    dispatchPaused?: boolean;
+    withinWorkingHours?: boolean;
+  },
 ): PlanReport {
   const { scope, maxWorkers, maxOpenPrs } = config;
   const scopeLabel =
@@ -104,6 +110,8 @@ export function buildPlanReport(
   let paused: PlanPausedReason | null = null;
   if (dispatchPaused) {
     paused = { kind: "breaker" };
+  } else if (withinWorkingHours && dispatchable.length > 0) {
+    paused = { kind: "working-hours" };
   } else if (
     dispatchable.length > 0 &&
     world.openAgentPrs.length >= maxOpenPrs
@@ -166,6 +174,10 @@ export function renderPlanReport(report: PlanReport): string {
   if (report.paused?.kind === "breaker") {
     lines.push(
       "Dispatch paused: circuit breaker open (infrastructure failure), claims held",
+    );
+  } else if (report.paused?.kind === "working-hours") {
+    lines.push(
+      "Dispatch paused: within working hours — claims, spawns, and Conflict Workers wait for the off-hours window",
     );
   } else if (report.paused?.kind === "max-open-prs") {
     lines.push(

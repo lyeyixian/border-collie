@@ -42,6 +42,10 @@ An attempt that failed because of the ticket or the work — crash, no commits, 
 **Infrastructure failure**:
 A failure caused by the environment — usage limit, rate limit, auth, network, or several Workers failing the same way within one Tick (correlated). Counts as nothing; voids the attempt (a marker comment uncounts the claim while keeping it held) and trips the circuit breaker (pause dispatch, resume when the environment recovers).
 
+**Working hours**:
+The operator's configured off-hours window — a timezone plus start/end hour, resolved fresh each Tick against wall-clock time rather than encoded in a cron expression. While now falls inside it, only the quota-consuming actions (claims, spawns, Conflict Workers) are suppressed; closures, releases, Escalations, mechanical rebases, and the draft-to-ready flip still run every hour, so the world is current when the fleet wakes. Independent of the circuit breaker's pause, which means the environment is broken, not that the operator is awake — either or both may apply at once.
+_Avoid_: quiet hours, breaker, dispatch pause (that phrase names the circuit breaker's wider suppression, not this narrower one)
+
 **Escalation**:
 Handing a ticket to a human after its attempts are exhausted: swap `ready-for-agent` → `ready-for-human`, leave a forensic comment. Only an already-unclaimed ticket escalates — every failure or orphan release removes the `claimed` label first. An escalated ticket stops being Dispatchable by construction; its dependents stay blocked.
 

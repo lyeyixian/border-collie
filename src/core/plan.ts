@@ -100,15 +100,18 @@ function isEscalationDue(ticket: Ticket, world: WorldSnapshot): boolean {
  * updated head (the update re-runs CI). Draft→ready is otherwise decided on CI
  * alone — a green draft, or one in a repo with no CI configured, flips to
  * ready-for-review — and independent of mergeability, so a fresh no-CI draft
- * surfaces even while GitHub is still computing whether it is behind.
+ * surfaces even while GitHub is still computing whether it is behind. The
+ * Conflict Worker is quota-consuming, so the working-hours gate (CONTEXT.md
+ * "Working hours") suppresses it; the mechanical update and the ready flip
+ * are not, and run regardless.
  */
-function prUpkeep(world: WorldSnapshot): Action[] {
+function prUpkeep(world: WorldSnapshot, withinWorkingHours: boolean): Action[] {
   const actions: Action[] = [];
   for (const pr of [...world.openAgentPrs].sort(
     (a, b) => a.number - b.number,
   )) {
     if (pr.mergeable === "conflicted") {
-      if (!pr.conflictWorkerAsked) {
+      if (!pr.conflictWorkerAsked && !withinWorkingHours) {
         actions.push({
           type: "conflict-worker",
           pr: pr.number,
@@ -142,7 +145,12 @@ function prUpkeep(world: WorldSnapshot): Action[] {
  * fleet to human review bandwidth, resuming as merges land. PR upkeep sits
  * between closure and recovery: it keeps the PRs a merge just left behind
  * current, and consumes no Worker slots (the conflict Worker aside). While the
- * circuit breaker is open (dispatchPaused) only closes are planned.
+ * circuit breaker is open (dispatchPaused) only closes are planned. The
+ * working-hours gate (CONTEXT.md "Working hours", withinWorkingHours) is a
+ * narrower, independent suppression: only the quota-consuming actions —
+ * claims, spawns, the conflict Worker — drop out, so closes, releases,
+ * escalations, and the rest of PR upkeep keep the world current while the
+ * fleet is quiet.
  */
 export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   const openTickets = new Set(
@@ -159,6 +167,8 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   // escalations wait for a healthy environment rather than judging tickets
   // during one.
   if (config.dispatchPaused) return closes;
+
+  const withinWorkingHours = config.withinWorkingHours ?? false;
 
   const releases: Action[] = world.tickets
     .filter((ticket) => isOrphanedClaim(ticket, world))
@@ -178,21 +188,23 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   // models the human reviewer's bandwidth, and every agent PR occupies it
   // whichever run opened it.
   const headroom = Math.max(0, config.maxOpenPrs - world.openAgentPrs.length);
-  const dispatches: Action[] = dispatchableSet(world)
-    .filter((ticket) => ticket.agentClaimCount < MAX_ATTEMPTS)
-    .slice(0, Math.max(0, Math.min(config.maxWorkers, headroom)))
-    .flatMap((ticket) => [
-      { type: "claim", ticket: ticket.number },
-      {
-        type: "spawn",
-        ticket: ticket.number,
-        attempt: ticket.agentClaimCount + 1,
-      },
-    ]);
+  const dispatches: Action[] = withinWorkingHours
+    ? []
+    : dispatchableSet(world)
+        .filter((ticket) => ticket.agentClaimCount < MAX_ATTEMPTS)
+        .slice(0, Math.max(0, Math.min(config.maxWorkers, headroom)))
+        .flatMap((ticket) => [
+          { type: "claim", ticket: ticket.number },
+          {
+            type: "spawn",
+            ticket: ticket.number,
+            attempt: ticket.agentClaimCount + 1,
+          },
+        ]);
 
   return [
     ...closes,
-    ...prUpkeep(world),
+    ...prUpkeep(world, withinWorkingHours),
     ...releases,
     ...escalations,
     ...dispatches,

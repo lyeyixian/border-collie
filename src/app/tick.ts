@@ -10,6 +10,7 @@ import type { Log } from "../core/log.js";
 import { plan } from "../core/plan.js";
 import { buildPlanReport } from "../core/render.js";
 import type { Action, WorldSnapshot } from "../core/types.js";
+import { isWithinWorkingHours } from "../core/work-hours.js";
 import { act, type IntervalScheduler } from "./act.js";
 
 /** The Tick's effects, injectable for tests, matching the run loop's pattern. */
@@ -33,14 +34,19 @@ export async function tickOnce(
   // --verbose is passed.
   const exec = withDebugLogging(realExec, log);
   const world = await readScope(config.scope, exec);
+  // Resolved fresh against wall-clock time each Tick (CONTEXT.md "Working
+  // hours") — not encoded in a cron expression.
+  const withinWorkingHours = isWithinWorkingHours(config.workingHours, now());
   const actions = plan(world, {
     maxWorkers: config.maxWorkers,
     maxOpenPrs: config.maxOpenPrs,
     dispatchPaused,
+    withinWorkingHours,
   });
   const planReport = buildPlanReport(config, world, actions, {
     dryRun,
     dispatchPaused,
+    withinWorkingHours,
   });
   log({
     kind: "plan-report",

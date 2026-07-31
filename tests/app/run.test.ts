@@ -129,6 +129,16 @@ describe("runStatus", () => {
 
     expect(runStatus(world([held]), [], true)).toEqual({ state: "running" });
   });
+
+  it("is never stuck while a ticket sits dispatchable but suppressed by the working-hours gate", () => {
+    // The gate suppresses the claim/spawn Actions (empty actions, as plan()
+    // would produce), but dispatchableSet is gate-blind — the ticket becomes
+    // claimable the moment the off-hours window opens, so this is throttled,
+    // not Stuck (CONTEXT.md "Working hours").
+    expect(runStatus(world([ticket({ number: 2 })]), [])).toEqual({
+      state: "running",
+    });
+  });
 });
 
 /**
