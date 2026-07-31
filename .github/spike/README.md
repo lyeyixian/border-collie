@@ -52,11 +52,17 @@ chosen, and each difference is itself an observation: Job B needs a
 wall-clock ceiling from a step timeout rather than `timeout(1)`, and gives back
 no separate stderr stream at all.
 
-The prompt is a three-pass read-only analysis of `src/` and `tests/` — around
+The prompt is a four-pass read-only analysis of `src/` and `tests/` — around
 forty files and ten thousand lines. It is chosen to generate continuous tool
 activity well past the 10–15 minute danger zone without editing a file, making
 a network call, running a writing `git` command, or touching the tracker, all
 of which it forbids explicitly.
+
+It also forbids batching: one tool call per step, one file at a time. The first
+run of this spike covered all thirty-nine files in forty-three turns and
+finished in nine minutes, answering nothing — the session was never the
+constraint, the work was. Serialising the reads and adding the cross-reference
+pass is what makes the run long enough to be worth measuring.
 
 `spike-observe.ts` deliberately reuses the Orchestrator's own
 `classifyInfrastructure`, `parseResultEvent`, and `lastResultLine` from
@@ -120,7 +126,7 @@ question, because the token lasted the whole time. `elapsedSeconds` next to
 timeout at 45.
 
 `tokenSurvival` is three-valued, and `inconclusive` is not a failure. A session
-that simply finished its three passes in fifteen minutes never tested the token;
+that simply finished its four passes in fifteen minutes never tested the token;
 lengthen the prompt or raise the turn cap and run it again rather than reading
 it as a dead substrate. `model` and `maxTurns` are recorded next to the verdict
 for the same reason — a pass measured under weakened dispatch inputs does not

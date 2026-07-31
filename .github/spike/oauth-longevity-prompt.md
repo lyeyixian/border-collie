@@ -25,28 +25,50 @@ Breaking any of these invalidates the run.
   is nobody to answer, and stopping early is the one outcome that makes the
   measurement worthless.
 
+## Pace
+
+One tool call per message, always. Do not batch reads, do not issue tool calls
+in parallel, and do not read two files in one step. Work one file at a time and
+report on it before moving to the next.
+
+This is not a style preference. The measurement needs a session that stays busy
+for a long stretch of wall-clock time, and batching collapses that stretch to
+nothing. A first run of this prompt covered thirty-nine files in forty-three
+turns and finished in nine minutes, which answered nothing.
+
 ## Work
 
-Do three passes, in order, over the same file list.
+Do four passes, in order, over the same file list.
 
 **Pass 1 — inventory.** List every file under `src/` and `tests/`, sorted
-lexically by path. Report the list. This ordering is the spine of the next two
-passes; use it unchanged.
+lexically by path. Report the list. This ordering is the spine of every pass
+that follows; use it unchanged.
 
-**Pass 2 — describe.** Walk the list in order. Read each file in full, then for
-every symbol it exports — function, type, interface, constant, class — write
-two to four sentences covering: what it does, what it assumes about its inputs
-and about the environment around it, and how it fails. Report each file's
-descriptions as you finish it, rather than saving them all for the end.
+**Pass 2 — describe.** Walk the list in order, one file per step. Read each file
+in full, then for every symbol it exports — function, type, interface, constant,
+class — write two to four sentences covering: what it does, what it assumes
+about its inputs and about the environment around it, and how it fails. Report
+each file's descriptions as you finish it, rather than saving them all for the
+end.
 
-**Pass 3 — verify.** Walk the same list again in the same order. Re-read each
-file and check every description you wrote in pass 2 against the code it
-describes. For each one, report either that it holds or what specifically is
-wrong with it and what the corrected description is. Do not take pass 2 on
-trust; the point of this pass is to look again.
+**Pass 3 — verify.** Walk the same list again in the same order, one file per
+step. Re-read each file and check every description you wrote in pass 2 against
+the code it describes. For each one, report either that it holds or what
+specifically is wrong with it and what the corrected description is. Do not take
+pass 2 on trust; the point of this pass is to look again.
 
-Keep every description and correction in your replies. Write nothing to disk.
+**Pass 4 — cross-reference.** Go through every exported symbol you catalogued in
+pass 2, in the same file order, one symbol per step. Search the repository for
+its call sites, and report: how many there are, which layers they sit in
+(`core`, `adapters`, `app`, `cli`, or tests), whether the symbol is covered by a
+test that exercises it directly, and whether any call site contradicts the
+description you settled on in pass 3. Keep going until every symbol has been
+looked up. Do not sample, do not stop at the interesting ones, and do not
+shorten the pass because it is repetitive — the repetition is the point.
 
-When all three passes are complete, close with one paragraph on what the three
-passes together say about how this codebase separates its pure core from its
-I/O adapters.
+Keep every description, correction, and cross-reference in your replies. Write
+nothing to disk.
+
+If you complete all four passes, close with one paragraph on what they together
+say about how this codebase separates its pure core from its I/O adapters. It is
+expected and fine to be stopped before you get there.
