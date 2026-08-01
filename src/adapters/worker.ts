@@ -400,6 +400,8 @@ export async function dispatchWorker(
       infra,
       costUsd: result?.totalCostUsd,
       turns: result?.numTurns,
+      durationMs: result?.durationMs,
+      subtype: result?.subtype,
       costOverrun:
         result?.totalCostUsd !== undefined &&
         result.totalCostUsd > config.maxCostUsd,

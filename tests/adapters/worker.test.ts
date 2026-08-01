@@ -335,7 +335,7 @@ describe("dispatchWorker", () => {
     const { exec } = fakeExec({ newCommits: "2" });
     const { spawn } = fakeSpawn(1, "exit", {
       stdoutTail:
-        '{"type":"result","subtype":"error_max_turns","total_cost_usd":3.2,"num_turns":200}',
+        '{"type":"result","subtype":"error_max_turns","total_cost_usd":3.2,"num_turns":200,"duration_ms":615000}',
     });
 
     const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
@@ -346,6 +346,8 @@ describe("dispatchWorker", () => {
       infra: undefined,
       costUsd: 3.2,
       turns: 200,
+      durationMs: 615000,
+      subtype: "error_max_turns",
     });
   });
 

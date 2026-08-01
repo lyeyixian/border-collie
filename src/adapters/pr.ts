@@ -14,7 +14,7 @@ import { branchCommitSubjects, pushAgentBranch } from "./worker.js";
 /** File-read half of the transcript seam, injectable for tests. */
 export type ReadFile = (path: string) => Promise<string>;
 
-const realReadFile: ReadFile = (path) => readFile(path, "utf8");
+export const realReadFile: ReadFile = (path) => readFile(path, "utf8");
 
 /**
  * GitHub caps issue/PR bodies at 65536 characters; a Worker body beyond this

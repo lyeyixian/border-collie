@@ -6,6 +6,7 @@ import {
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
   type Ticket,
+  type WorkerOutcome,
   type WorldSnapshot,
 } from "./types.js";
 
@@ -382,4 +383,219 @@ export function renderCompleteReport(report: CompleteReport): string {
       return `  #${ticket.ticket} — ${ticket.title}${escalated}`;
     }),
   ].join("\n");
+}
+
+// ---------------------------------------------------------------------------
+// Forensic comment (failed Attempt evidence)
+// ---------------------------------------------------------------------------
+
+/** One tool name's whole-session call count, most-called first. */
+export interface ToolTally {
+  name: string;
+  count: number;
+}
+
+/** One assistant turn near the end of the session, rendered readable. */
+export interface ForensicTurn {
+  /** 1-based position among every assistant turn in the whole session. */
+  index: number;
+  text: string | undefined;
+  /** Rendered as `name(input summary)`, e.g. `Bash({"command":"npm test"})`. */
+  toolCalls: string[];
+}
+
+/** The result facts a survived transcript's result event carries, echoed from the outcome so the comment needs no re-parse. */
+export interface ForensicFacts {
+  turns: number | undefined;
+  costUsd: number | undefined;
+  durationMs: number | undefined;
+  subtype: string | undefined;
+}
+
+export interface ForensicReport {
+  facts: ForensicFacts;
+  /** Every tool call in the whole session, not just the tail — a Worker that burned its turn cap did so by looping, and only a whole-session view shows that. */
+  histogram: ToolTally[];
+  /** The session's last few assistant turns, readable rather than raw stream-json. */
+  finalTurns: ForensicTurn[];
+}
+
+/** How many of the session's final assistant turns are rendered in full. */
+export const FORENSIC_FINAL_TURNS = 8;
+
+/** How much of one turn's text survives before truncation. */
+const FORENSIC_TEXT_LIMIT = 600;
+
+/** How much of one tool call's input summary survives before truncation. */
+const FORENSIC_INPUT_LIMIT = 200;
+
+/**
+ * The forensic section's hard ceiling — comfortably under GitHub's
+ * 65536-character comment limit once the release marker and one-liner join
+ * it. The per-turn limits above already keep a normal comment far under this;
+ * it exists as a backstop against a pathological single turn, not the
+ * mechanism that makes a long session's comment fit.
+ */
+export const MAX_FORENSIC_LENGTH = 50_000;
+
+/** Truncates to at most `limit` characters total, ellipsis included. */
+function truncateText(text: string, limit: number): string {
+  return text.length <= limit ? text : `${text.slice(0, limit - 1)}…`;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Every `text` content block's text, joined — empty for a tool-only turn. */
+function textOf(content: unknown): string {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .filter(isRecord)
+    .filter((block) => block.type === "text" && typeof block.text === "string")
+    .map((block) => block.text as string)
+    .join("\n");
+}
+
+/** Every `tool_use` content block, name plus raw input. */
+function toolCallsOf(content: unknown): { name: string; input: unknown }[] {
+  if (!Array.isArray(content)) return [];
+  return content
+    .filter(isRecord)
+    .filter(
+      (block) => block.type === "tool_use" && typeof block.name === "string",
+    )
+    .map((block) => ({ name: block.name as string, input: block.input }));
+}
+
+interface AssistantTurn {
+  text: string;
+  toolCalls: { name: string; input: unknown }[];
+}
+
+/**
+ * Every assistant turn in a transcript, in order. Tolerant of stray non-JSON
+ * lines and malformed events — the transcript is subprocess output, not a
+ * trusted document (mirrors `parseResultEvent`'s and `workerFinalMessage`'s
+ * tolerance).
+ */
+function assistantTurns(transcript: string): AssistantTurn[] {
+  const turns: AssistantTurn[] = [];
+  for (const line of transcript.split("\n")) {
+    if (line.trim() === "") continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    if (!isRecord(event) || event.type !== "assistant") continue;
+    const content = isRecord(event.message) ? event.message.content : undefined;
+    turns.push({ text: textOf(content), toolCalls: toolCallsOf(content) });
+  }
+  return turns;
+}
+
+function buildToolHistogram(turns: AssistantTurn[]): ToolTally[] {
+  const counts = new Map<string, number>();
+  for (const turn of turns) {
+    for (const call of turn.toolCalls) {
+      counts.set(call.name, (counts.get(call.name) ?? 0) + 1);
+    }
+  }
+  return [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name, count]) => ({ name, count }));
+}
+
+function summarizeInput(input: unknown): string {
+  try {
+    return truncateText(
+      JSON.stringify(input) ?? "undefined",
+      FORENSIC_INPUT_LIMIT,
+    );
+  } catch {
+    return "(unrenderable input)";
+  }
+}
+
+/**
+ * Build the forensic comment's data: the result facts already captured on the
+ * outcome, a whole-session tool-call histogram, and the final turns readable
+ * rather than raw. Pure — `transcript` is whatever the caller read (the file
+ * may be gone by the time a human reads the rendered comment, which is the
+ * point of baking this in now); an empty or unparseable transcript still
+ * yields the outcome's own facts, with an empty histogram and no final turns.
+ */
+export function buildForensicReport(
+  outcome: WorkerOutcome,
+  transcript: string,
+): ForensicReport {
+  const turns = assistantTurns(transcript);
+  const sliceStart = Math.max(0, turns.length - FORENSIC_FINAL_TURNS);
+  const finalTurns: ForensicTurn[] = turns.slice(sliceStart).map((turn, i) => {
+    const text = turn.text.trim();
+    return {
+      index: sliceStart + i + 1,
+      text: text === "" ? undefined : truncateText(text, FORENSIC_TEXT_LIMIT),
+      toolCalls: turn.toolCalls.map(
+        (call) => `${call.name}(${summarizeInput(call.input)})`,
+      ),
+    };
+  });
+  return {
+    facts: {
+      turns: outcome.turns,
+      costUsd: outcome.costUsd,
+      durationMs: outcome.durationMs,
+      subtype: outcome.subtype,
+    },
+    histogram: buildToolHistogram(turns),
+    finalTurns,
+  };
+}
+
+function renderFacts(facts: ForensicFacts): string {
+  const turns = facts.turns !== undefined ? String(facts.turns) : "unknown";
+  const cost =
+    facts.costUsd !== undefined ? `$${facts.costUsd.toFixed(2)}` : "unknown";
+  const duration =
+    facts.durationMs !== undefined
+      ? formatDuration(facts.durationMs)
+      : "unknown";
+  const subtype = facts.subtype ?? "unknown";
+  return `${turns} turns, ${cost}, ${duration}, terminated \`${subtype}\``;
+}
+
+function renderHistogram(histogram: ToolTally[]): string {
+  if (histogram.length === 0) return "(no tool calls recorded)";
+  return histogram.map((tally) => `- ${tally.name}: ${tally.count}`).join("\n");
+}
+
+function renderTurn(turn: ForensicTurn): string {
+  const lines = [`Turn ${turn.index}:`];
+  if (turn.text !== undefined) lines.push(turn.text);
+  lines.push(...turn.toolCalls.map((call) => `→ ${call}`));
+  return lines.join("\n");
+}
+
+/**
+ * Render the forensic comment's body: result facts, the whole-session tool
+ * histogram, then the final turns — everything a failed Attempt's evidence
+ * needs, readable without downloading a transcript that a runner may have
+ * already discarded. Bounded to `MAX_FORENSIC_LENGTH` as a backstop. Pure.
+ */
+export function renderForensicReport(report: ForensicReport): string {
+  const body = [
+    `**Result:** ${renderFacts(report.facts)}`,
+    "",
+    "**Tool calls (whole session):**",
+    renderHistogram(report.histogram),
+    "",
+    report.finalTurns.length === 0
+      ? "**Final turns:** (none recorded)"
+      : `**Final turns:**\n\n${report.finalTurns.map(renderTurn).join("\n\n")}`,
+  ].join("\n");
+  return truncateText(body, MAX_FORENSIC_LENGTH);
 }

@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import type { ReadFile } from "../../src/adapters/pr.js";
 import type { Exec } from "../../src/adapters/tracker.js";
 import { settleAttempt } from "../../src/app/settle.js";
 import type { Log, LogBindings, LogEvent } from "../../src/core/log.js";
@@ -6,6 +7,7 @@ import {
   type AttemptFailure,
   attemptMarker,
   CLAIM_LABEL,
+  RELEASE_MARKER,
   VOID_MARKER,
   type WorkerOutcome,
 } from "../../src/core/types.js";
@@ -40,6 +42,14 @@ function msgs(events: LogEvent[]): string[] {
   return events.map((e) => e.msg);
 }
 
+function fakeRead(transcript: string): ReadFile {
+  return async () => transcript;
+}
+
+const rejectingRead: ReadFile = async () => {
+  throw new Error("ENOENT: transcript gone");
+};
+
 function outcome(overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
   return {
     ticket: 7,
@@ -54,6 +64,8 @@ function outcome(overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
     infra: undefined,
     costUsd: undefined,
     turns: undefined,
+    durationMs: undefined,
+    subtype: undefined,
     costOverrun: false,
     ok: true,
     ...overrides,
@@ -141,6 +153,122 @@ describe("settleAttempt", () => {
       "Worker failed attempt 2 (stall): exit null, 0 new commits on border-collie/ticket-7 (transcript: .border-collie/transcripts/ticket-7.jsonl)",
       "released with the attempt record (failed attempt 2)",
     ]);
+  });
+
+  it("embeds the transcript's forensic evidence in the release comment — readable, without downloading anything", async () => {
+    const { exec, calls } = recordingExec();
+    const { log } = recordingLog();
+    const transcript = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: "Trying the tests once more." },
+            {
+              type: "tool_use",
+              id: "toolu_1",
+              name: "Bash",
+              input: { command: "npm test" },
+            },
+          ],
+        },
+      }),
+      JSON.stringify({ type: "result", subtype: "error_max_turns" }),
+    ].join("\n");
+
+    await settleAttempt(
+      outcome({
+        failure: "budget",
+        subtype: "error_max_turns",
+        turns: 200,
+        costUsd: 9.5,
+        durationMs: 723_000,
+        exitCode: null,
+        newCommits: 0,
+        ok: false,
+      }),
+      undefined,
+      log,
+      exec,
+      fakeRead(transcript),
+    );
+
+    const body = calls[1]?.[5] ?? "";
+    expect(body).toContain("200 turns");
+    expect(body).toContain("$9.50");
+    expect(body).toContain("terminated `error_max_turns`");
+    expect(body).toContain("- Bash: 1");
+    expect(body).toContain("Trying the tests once more.");
+    expect(body).toContain('→ Bash({"command":"npm test"})');
+  });
+
+  it("keeps the whole posted release body within GitHub's comment size limit for a long session", async () => {
+    const { exec, calls } = recordingExec();
+    const { log } = recordingLog();
+    // 500 turns, each carrying a sizeable text block and a tool call — a long
+    // session's raw transcript would be megabytes; the composed comment body
+    // (marker + description + transcript line + forensics) must not be.
+    const transcript = Array.from({ length: 500 }, (_, i) =>
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            { type: "text", text: `Turn ${i}: `.repeat(200) },
+            {
+              type: "tool_use",
+              id: `toolu_${i}`,
+              name: i % 2 === 0 ? "Bash" : "Edit",
+              input: { command: `step ${i}`.repeat(50) },
+            },
+          ],
+        },
+      }),
+    ).join("\n");
+
+    await settleAttempt(
+      outcome({
+        failure: "budget",
+        subtype: "error_max_turns",
+        turns: 500,
+        costUsd: 40,
+        durationMs: 3_600_000,
+        exitCode: null,
+        newCommits: 0,
+        ok: false,
+      }),
+      undefined,
+      log,
+      exec,
+      fakeRead(transcript),
+    );
+
+    const body = calls[1]?.[5] ?? "";
+    // GitHub's actual issue/PR comment cap.
+    expect(body.length).toBeLessThanOrEqual(65536);
+  });
+
+  it("still releases when the transcript is unreadable, falling back to the outcome's own facts", async () => {
+    const { exec, calls } = recordingExec();
+    const { log } = recordingLog();
+
+    await settleAttempt(
+      outcome({
+        failure: "timeout",
+        turns: undefined,
+        exitCode: null,
+        newCommits: 0,
+        ok: false,
+      }),
+      undefined,
+      log,
+      exec,
+      rejectingRead,
+    );
+
+    const body = calls[1]?.[5] ?? "";
+    expect(body).toContain(RELEASE_MARKER);
+    expect(body).toContain("unknown turns");
+    expect(body).toContain("(no tool calls recorded)");
   });
 
   it("voids an infrastructure-classified attempt: comment only, claim held, logged at warn", async () => {
