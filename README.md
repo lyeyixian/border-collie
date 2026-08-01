@@ -43,9 +43,12 @@ This writes `.github/workflows/border-collie-tick.yml` (the Orchestrator, which 
 
 Releases are tag-driven (see `.github/workflows/release.yml`):
 
-1. Bump the version and tag it: `npm version <patch|minor|major>`. This also rewrites the `border-collie@<version>` pin in both scaffolded workflows (the `version` lifecycle script, `scripts/sync-workflow-version.mjs`) and stages the result into the version commit; a test fails the build if the pin and `package.json` ever drift apart.
+1. Bump the version and tag it: `npm version <patch|minor|major>`.
 2. Push the tag: `git push --follow-tags`.
 3. Pushing a `v*` tag runs the release workflow: the same lint/typecheck/test/build/smoke gates as CI, a guard that the tag matches `package.json`'s version, a publish to npm over OIDC trusted publishing (no npm token stored in the repo), and a GitHub Release with generated notes.
+4. **Once the publish has landed**, point this repository's own fleet at it: `pnpm run sync:version`, then commit the two workflow files it rewrites.
+
+Step 4 is deliberately after the publish rather than folded into step 1. The workflows `npm install -g border-collie@<version>`, so a pin bumped ahead of the publish would 404 every Tick that fired in the window between — including the half-hourly cron. A pin *behind* `package.json` is harmless, and is the normal state between steps 1 and 4: the fleet simply keeps running the last version that exists. A test enforces that one-sidedness, failing the build only if a pin names a version this package hasn't reached.
 
 To rehearse a release without publishing, run the release workflow manually from the Actions tab (`workflow_dispatch`) — it runs the same gates and a `pnpm publish --dry-run` instead of a real publish.
 

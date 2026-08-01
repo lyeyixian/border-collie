@@ -19,9 +19,10 @@ export const SCAFFOLD_FILES: readonly string[] = [
 ];
 
 /**
- * How the scaffolded workflows install the Orchestrator (issue #93). A target
- * repo is not this repo: it has no `dist/` to run and no lockfile of ours to
- * install from, so the workflows install the published CLI rather than
+ * How the scaffolded workflows install the border-collie CLI (issue #93) — the
+ * Tick's Orchestrator and the Worker entrypoint alike ship in the one package.
+ * A target repo is not this repo: it has no `dist/` to run and no lockfile of
+ * ours to install from, so the workflows install the published CLI rather than
  * building the checkout — the checkout is the repo being herded, never the
  * herder. The pin is deliberate: the Tick's half-hourly cron runs unattended,
  * and a floating `@latest` would hand an unattended fleet a breaking release.
@@ -29,13 +30,48 @@ export const SCAFFOLD_FILES: readonly string[] = [
 const CLI_PIN_PATTERN = /npm install -g border-collie@(\S+)/;
 
 /**
- * The version a scaffolded workflow pins the Orchestrator to, or null if it
- * names none — a template that floats is as much a failure of the invariant
- * as one naming the wrong version, so an unpinned install reads as null
- * rather than as some default.
+ * The version a scaffolded workflow pins the CLI to, or null if it names
+ * none — a template that floats is as much a failure of the invariant as one
+ * naming the wrong version, so an unpinned install reads as null rather than
+ * as some default.
  */
 export function pinnedCliVersion(template: string): string | null {
   return CLI_PIN_PATTERN.exec(template)?.[1] ?? null;
+}
+
+function versionParts(version: string): number[] {
+  const release = version.split("-")[0] ?? version;
+  return release.split(".").map(Number);
+}
+
+/**
+ * Whether a pin names a version newer than this package's own — the one
+ * state that is always broken, because a version this package has not
+ * reached cannot be on npm yet and `npm install -g border-collie@<it>` can
+ * only 404.
+ *
+ * A pin *behind* package.json is fine, and is the normal state for a release
+ * (issue #93): `npm version` bumps package.json before the tag push
+ * publishes anything, so between those two moments this repo's own fleet has
+ * to keep running the last version that actually exists. `pnpm run
+ * sync:version` moves the pin up afterwards, once there is something to move
+ * it to — so the pin lags a release rather than leading it.
+ *
+ * Prerelease identifiers are compared on the release triple alone, which is
+ * all this guard needs: it exists to catch a pin naming an unpublished
+ * *version*, not to order two prereleases of one.
+ */
+export function pinIsAhead(pin: string, packageVersion: string): boolean {
+  const pinned = versionParts(pin);
+  const own = versionParts(packageVersion);
+
+  for (let i = 0; i < Math.max(pinned.length, own.length); i++) {
+    const a = pinned[i] ?? 0;
+    const b = own[i] ?? 0;
+    if (a !== b) return a > b;
+  }
+
+  return false;
 }
 
 export type ScaffoldOutcome = "written" | "overwritten" | "skipped-exists";
