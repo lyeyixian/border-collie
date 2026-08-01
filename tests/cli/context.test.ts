@@ -70,4 +70,42 @@ describe("buildRealContext's durable log file", () => {
     expect(contents).not.toContain("x-access-token");
     expect(contents).toContain("https://<redacted>@github.com/o/r.git");
   });
+
+  it("names the log file from BORDER_COLLIE_RUN_ID when set, so it correlates with the job that produced it (issue #75)", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "border-collie-context-test-"));
+
+    const context = buildRealContext(dir, { BORDER_COLLIE_RUN_ID: "12345678" });
+    context.log({
+      kind: "claim",
+      level: "debug",
+      ticket: 1,
+      msg: "claimed #1",
+    });
+
+    const logsDir = join(dir, ".border-collie", "logs");
+    await vi.waitFor(() => {
+      expect(existsSync(logsDir)).toBe(true);
+    });
+    expect(readdirSync(logsDir)).toEqual(["12345678.jsonl"]);
+  });
+
+  it("falls back to a timestamp-derived name when BORDER_COLLIE_RUN_ID is unset", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "border-collie-context-test-"));
+
+    const context = buildRealContext(dir, {});
+    context.log({
+      kind: "claim",
+      level: "debug",
+      ticket: 1,
+      msg: "claimed #1",
+    });
+
+    const logsDir = join(dir, ".border-collie", "logs");
+    await vi.waitFor(() => {
+      expect(existsSync(logsDir)).toBe(true);
+    });
+    const [fileName] = readdirSync(logsDir);
+    expect(fileName).not.toBe("12345678.jsonl");
+    expect(fileName).toMatch(/^\d{4}-\d{2}-\d{2}T.*\.jsonl$/);
+  });
 });

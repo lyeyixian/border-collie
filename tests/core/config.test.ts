@@ -129,6 +129,15 @@ describe("resolveConfig", () => {
     ).toThrow(ConfigError);
   });
 
+  it("lets a --timeout-minutes flag override the config file's Worker timeout", () => {
+    expect(
+      resolveConfig(
+        { parent: 1, worker_timeout_minutes: 90 },
+        { timeoutMinutes: 50 },
+      ).timeoutMinutes,
+    ).toBe(50);
+  });
+
   it("takes the Worker budget backstops from the config file, allowing a fractional cost cap", () => {
     const resolved = resolveConfig(
       { parent: 1, worker_max_turns: 80, worker_max_cost_usd: 7.5 },
@@ -333,6 +342,15 @@ describe("resolveWorkerConfig", () => {
 
     expect(resolved.model).toBe("opus");
     expect(resolved.retryModel).toBe("haiku");
+  });
+
+  it("lets --timeout-minutes override the config file's Worker timeout", () => {
+    const resolved = resolveWorkerConfig(
+      { worker_timeout_minutes: 90 },
+      { timeoutMinutes: 50 },
+    );
+
+    expect(resolved.timeoutMinutes).toBe(50);
   });
 
   it("takes the Worker timeout, stall window, and budget backstops from the config file", () => {

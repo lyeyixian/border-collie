@@ -1,0 +1,129 @@
+# A Worker as its own job (issue #75): one job per Ticket, taking the Ticket
+# and Attempt as explicit inputs rather than inferring them from a label or
+# an assignee event — the Orchestrator already knows what it decided to
+# dispatch, and inferring it back out would couple two systems through a
+# side effect.
+#
+# One job means one checkout with nothing shared, so the Worker runs
+# `--in-place`: no worktree, no repo-level git lock, no worktree pruning —
+# all of that exists only to isolate concurrent local Workers sharing one
+# checkout, which a dedicated job never has.
+name: Worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      ticket:
+        description: Ticket (issue) number to run this Attempt against
+        required: true
+        type: string
+      attempt:
+        description: Attempt number (1-based; binds the retry ladder's model)
+        required: true
+        type: string
+      timeout_minutes:
+        description: >-
+          Wall-clock ceiling in minutes for the Worker's own watchdog
+          (mirrors worker_timeout_minutes in border-collie.json)
+        required: false
+        default: "45"
+      job_timeout_minutes:
+        description: >-
+          Wall-clock ceiling in minutes for the job itself. GitHub Actions
+          expressions cannot add a margin onto timeout_minutes at dispatch
+          time, so this is its own input — keep it a few minutes above
+          timeout_minutes, covering setup (checkout, install, build, skills)
+          before the watchdog starts and settlement (the tracker write)
+          after it fires, so GitHub Actions never races the watchdog that
+          kills the claude subprocess and settles the Attempt
+        required: false
+        default: "55"
+
+# The built-in token authenticates nothing here — checkout, the branch push,
+# and every `gh` call run under the GitHub App installation token minted
+# below, scoped to whatever the App itself was granted (contents, issues,
+# pull requests; never workflow modification, so a Worker can never rewrite
+# the workflow that runs it). Read-only so it is not a second usable
+# credential sitting alongside the session.
+permissions:
+  contents: read
+
+jobs:
+  worker:
+    name: "Worker #${{ inputs.ticket }} attempt ${{ inputs.attempt }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: ${{ fromJSON(inputs.job_timeout_minutes) }}
+    steps:
+      - name: Validate wall-clock ceilings
+        # The relationship between the two timeout inputs is load-bearing
+        # (see job_timeout_minutes above) but GitHub Actions expressions
+        # can't enforce it structurally, so it's checked here, first and
+        # cheaply, before any credential is minted or anything is installed.
+        env:
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+          JOB_TIMEOUT_MINUTES: ${{ inputs.job_timeout_minutes }}
+        run: |
+          if [ "$JOB_TIMEOUT_MINUTES" -le "$TIMEOUT_MINUTES" ]; then
+            echo "::error::job_timeout_minutes ($JOB_TIMEOUT_MINUTES) must be greater than timeout_minutes ($TIMEOUT_MINUTES) — otherwise GitHub Actions can kill the whole job before the Worker's own watchdog gets a chance to settle the Attempt"
+            exit 1
+          fi
+
+      - name: Mint a GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ vars.BORDER_COLLIE_APP_ID }}
+          private-key: ${{ secrets.BORDER_COLLIE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ steps.app-token.outputs.token }}
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run build
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Install Worker skills
+        # The Worker prompt invokes a skill (/implement) by name with no
+        # fallback: on a runner without it, the Worker receives unhandled
+        # text and improvises rather than erroring, which surfaces as an
+        # oddly-shaped pull request instead of a clean failure.
+        run: |
+          claude plugin marketplace add mattpocock/skills
+          claude plugin install mattpocock-skills@mattpocock
+
+      - name: Run Worker
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The uploaded log artifact's file name is set from this job's own
+          # run identifier, so an operator reading a log file name can get
+          # straight to the job that produced it.
+          BORDER_COLLIE_RUN_ID: ${{ github.run_id }}
+          # Dispatch inputs arrive as environment, never interpolated into
+          # the script body: `${{ }}` inside `run:` is textual substitution.
+          TICKET: ${{ inputs.ticket }}
+          ATTEMPT: ${{ inputs.attempt }}
+          TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
+        run: |
+          pnpm exec border-collie worker "$TICKET" "$ATTEMPT" \
+            --in-place \
+            --timeout-minutes "$TIMEOUT_MINUTES"
+
+      - name: Upload run log
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: worker-log-ticket-${{ inputs.ticket }}-attempt-${{ inputs.attempt }}-${{ github.run_id }}
+          path: .border-collie/logs/*.jsonl
+          if-no-files-found: warn

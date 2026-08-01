@@ -26,6 +26,7 @@ export interface Flags {
   all?: boolean;
   model?: string;
   retryModel?: string;
+  timeoutMinutes?: number;
 }
 
 export type Scope = { kind: "parent"; parent: number } | { kind: "all" };
@@ -171,7 +172,9 @@ function resolveSharedConfig(
     "retry_model",
   );
   const timeoutMinutes = asPositiveInt(
-    file.worker_timeout_minutes ?? DEFAULT_TIMEOUT_MINUTES,
+    flags.timeoutMinutes ??
+      file.worker_timeout_minutes ??
+      DEFAULT_TIMEOUT_MINUTES,
     "worker_timeout_minutes",
   );
   const stallMinutes = asPositiveInt(

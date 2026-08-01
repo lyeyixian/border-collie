@@ -76,12 +76,15 @@ export async function runWorkerAttempt(
  * composed the same way the Tick's act phase composes them for a dispatched
  * Worker (src/app/tick.ts), minus the concurrency that only a whole batch
  * needs. A ticket's title is read directly (no world snapshot here) for the
- * PR title `openPrForOutcome` wants.
+ * PR title `openPrForOutcome` wants. `inPlace` forwards into the dispatched
+ * Worker's config (issue #75): true for a Worker job's own dedicated
+ * checkout, false (the default) for the local path's worktree isolation.
  */
 export async function workerAttemptOnce(
   config: WorkerAttemptConfig,
   ticket: number,
   attempt: number,
+  inPlace: boolean,
   deps: { log: Log },
 ): Promise<WorkerOutcome> {
   const exec = withDebugLogging(realExec, deps.log);
@@ -97,6 +100,7 @@ export async function workerAttemptOnce(
           stallMs: config.stallMinutes * 60_000,
           maxTurns: config.maxTurns,
           maxCostUsd: config.maxCostUsd,
+          inPlace,
         },
         exec,
         realSpawnWorkerProcess,

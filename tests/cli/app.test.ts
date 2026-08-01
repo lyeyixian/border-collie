@@ -99,6 +99,7 @@ interface FakeContext {
     config: WorkerAttemptConfig;
     ticket: number;
     attempt: number;
+    inPlace: boolean;
   }[];
   probeCalls: string[];
   events: LogEvent[];
@@ -124,6 +125,7 @@ function fakeContext(
     config: WorkerAttemptConfig;
     ticket: number;
     attempt: number;
+    inPlace: boolean;
   }[] = [];
   const probeCalls: string[] = [];
   const events: LogEvent[] = [];
@@ -164,8 +166,8 @@ function fakeContext(
         dispatchPaused: dispatchPaused ?? false,
       };
     },
-    runWorker: async (config, ticket, attempt) => {
-      runWorkerCalls.push({ config, ticket, attempt });
+    runWorker: async (config, ticket, attempt, inPlace) => {
+      runWorkerCalls.push({ config, ticket, attempt, inPlace });
       return runWorkerOutcome;
     },
     probe: async (model) => {
@@ -351,7 +353,7 @@ describe("command routing", () => {
     await runCli(["worker", "7", "2"], fake.context);
 
     expect(fake.runWorkerCalls).toEqual([
-      { config: FAKE_RESOLVED_CONFIG, ticket: 7, attempt: 2 },
+      { config: FAKE_RESOLVED_CONFIG, ticket: 7, attempt: 2, inPlace: false },
     ]);
   });
 });
@@ -370,6 +372,14 @@ describe("worker command", () => {
     ]);
   });
 
+  it("forwards a --timeout-minutes override to config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "7", "1", "--timeout-minutes", "50"], fake.context);
+
+    expect(fake.loadConfigCalls).toEqual([{ timeoutMinutes: 50 }]);
+  });
+
   it("omits unset flags from config resolution", async () => {
     const fake = fakeContext();
 
@@ -384,6 +394,22 @@ describe("worker command", () => {
     await runCli(["worker", "7", "1", "--verbose"], fake.context);
 
     expect(fake.verbosityCalls).toEqual([true]);
+  });
+
+  it("defaults --in-place to false, isolating the local path in a worktree", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "7", "1"], fake.context);
+
+    expect(fake.runWorkerCalls[0]?.inPlace).toBe(false);
+  });
+
+  it("forwards --in-place through to runWorker, for a Worker job's own checkout", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "7", "1", "--in-place"], fake.context);
+
+    expect(fake.runWorkerCalls[0]?.inPlace).toBe(true);
   });
 
   it("rejects a non-integer ticket without calling runWorker", async () => {
@@ -567,6 +593,34 @@ describe("help", () => {
 
     expect(fake.stdout()).not.toContain("--max-workers");
     expect(fake.stdout()).not.toContain("--parent");
+  });
+
+  it("offers --in-place only on worker's per-command help, not tick's or run's", async () => {
+    const worker = fakeContext();
+    await runCli(["worker", "--help"], worker.context);
+    expect(worker.stdout()).toContain("--in-place");
+
+    const tick = fakeContext();
+    await runCli(["tick", "--help"], tick.context);
+    expect(tick.stdout()).not.toContain("--in-place");
+
+    const run = fakeContext();
+    await runCli(["run", "--help"], run.context);
+    expect(run.stdout()).not.toContain("--in-place");
+  });
+
+  it("offers --timeout-minutes only on worker's per-command help, not tick's or run's", async () => {
+    const worker = fakeContext();
+    await runCli(["worker", "--help"], worker.context);
+    expect(worker.stdout()).toContain("--timeout-minutes");
+
+    const tick = fakeContext();
+    await runCli(["tick", "--help"], tick.context);
+    expect(tick.stdout()).not.toContain("--timeout-minutes");
+
+    const run = fakeContext();
+    await runCli(["run", "--help"], run.context);
+    expect(run.stdout()).not.toContain("--timeout-minutes");
   });
 });
 

@@ -91,6 +91,11 @@ export async function tickOnce(
             stallMs: config.stallMinutes * 60_000,
             maxTurns: config.maxTurns,
             maxCostUsd: config.maxCostUsd,
+            // A Tick may dispatch several Workers concurrently into this
+            // same checkout, so each still needs its own isolated worktree —
+            // never in-place (that path is a Worker job's own dedicated
+            // checkout; see src/app/worker.ts).
+            inPlace: false,
           },
           exec,
           realSpawnWorkerProcess,

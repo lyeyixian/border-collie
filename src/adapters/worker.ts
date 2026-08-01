@@ -50,6 +50,16 @@ export interface WorkerConfig extends ClaudeRunConfig {
    * turn cap and wall clock are the stoppers, this is the meter.
    */
   maxCostUsd: number;
+  /**
+   * True for a Worker job that owns its sole checkout (issue #75): the agent
+   * branch is checked out directly in the current working directory instead
+   * of an isolated worktree, and the repo-level git lock is skipped — one
+   * job means one checkout with nothing to isolate from or serialize
+   * against. False (the local path's default) keeps today's worktree
+   * isolation, which protects the operator's own checkout from a Worker
+   * running alongside it.
+   */
+  inPlace: boolean;
 }
 
 /** The headless-claude argv every Worker shares: prompt, model, turn cap, stream-json, skip-permissions. */
@@ -265,19 +275,28 @@ export async function branchCommitSubjects(
 }
 
 /**
- * Dispatch one Worker against one claimed ticket: cut an agent branch in an
- * isolated worktree, run headless claude in it streaming to a transcript,
- * then judge the outcome and remove the worktree (branch retained). The
- * branch is cut from the remote default branch's current tip (fetched fresh
- * each dispatch), never the local checkout: a ticket is Dispatchable only
- * once its blockers' PRs have merged, and that gating holds only if the
+ * Dispatch one Worker against one claimed ticket: cut an agent branch, run
+ * headless claude on it streaming to a transcript, then judge the outcome.
+ * The branch is cut from the remote default branch's current tip (fetched
+ * fresh each dispatch), never the local checkout: a ticket is Dispatchable
+ * only once its blockers' PRs have merged, and that gating holds only if the
  * Worker's base contains those merges — the local checkout goes stale the
  * moment a sibling merges mid-run. Branch and transcript are namespaced per
  * attempt so a retry leaves the failed attempt's evidence intact for
- * Escalation. `-B` and the up-front removal reset leftovers of the SAME
- * attempt from a crashed run — a local branch that never became a PR is not
- * recorded progress (ADR 0001: GitHub is the only state store), so
- * re-running the Tick supersedes it.
+ * Escalation. `-B` and the up-front reset (a stale worktree removed, or a
+ * plain branch overwritten) discard leftovers of the SAME attempt from a
+ * crashed run — a local branch that never became a PR is not recorded
+ * progress (ADR 0001: GitHub is the only state store), so re-running the
+ * Tick supersedes it.
+ *
+ * `config.inPlace` picks which of two isolation strategies runs: the local
+ * path (default) cuts an isolated worktree so a Worker never touches the
+ * operator's own checkout, locking every git phase against sibling Workers'
+ * worktree/ref operations (the repo-level lock below); a Worker job (issue
+ * #75) owns its sole checkout instead, so it checks the branch out directly
+ * in the current working directory and skips both the worktree and the
+ * lock — nothing else is running in that checkout to isolate from or
+ * serialize against.
  */
 /** No-op default for the optional `log` parameter, so every existing caller need not pass one. */
 const noopLog: Log = ((_event: LogEvent) => {}) as Log;
@@ -294,6 +313,7 @@ export async function dispatchWorker(
 ): Promise<WorkerOutcome> {
   const branch = `${AGENT_BRANCH_PREFIX}${ticket}-attempt-${config.attempt}`;
   const worktree = join(RUN_DIR, "worktrees", `ticket-${ticket}`);
+  const cwd = config.inPlace ? "." : worktree;
   const transcript = join(
     RUN_DIR,
     "transcripts",
@@ -305,41 +325,52 @@ export async function dispatchWorker(
     `ticket-${ticket}-attempt-${config.attempt}.stderr.log`,
   );
 
-  const base = await withGitLock(async () => {
-    await removeWorktree(worktree, exec);
-    await exec("git", ["worktree", "prune"]);
-    await exec("git", ["fetch", "origin"]);
-    await exec("git", [
-      "worktree",
-      "add",
-      worktree,
-      "-B",
-      branch,
-      "origin/HEAD",
-    ]);
+  // A no-op stand-in for withGitLock when there is no sibling Worker to
+  // serialize against — the git lock itself must never run on this path.
+  const gitPhase = config.inPlace
+    ? <T>(operation: () => Promise<T>): Promise<T> => operation()
+    : withGitLock;
+
+  const base = await gitPhase(async () => {
+    if (config.inPlace) {
+      await exec("git", ["fetch", "origin"]);
+      await exec("git", ["checkout", "-B", branch, "origin/HEAD"]);
+    } else {
+      await removeWorktree(worktree, exec);
+      await exec("git", ["worktree", "prune"]);
+      await exec("git", ["fetch", "origin"]);
+      await exec("git", [
+        "worktree",
+        "add",
+        worktree,
+        "-B",
+        branch,
+        "origin/HEAD",
+      ]);
+    }
     return (await exec("git", ["rev-parse", branch])).trim();
   });
-  // Logged once the worktree actually exists, so an operator can find a
-  // Worker's evidence — the worktree while it runs, the transcript any time
+  // Logged once the checkout actually exists, so an operator can find a
+  // Worker's evidence — the checkout while it runs, the transcript any time
   // after — without deriving the paths by hand.
   log({
     kind: "worker-paths",
     level: "debug",
-    msg: `Worker for #${ticket} (attempt ${config.attempt}): worktree ${worktree}, transcript ${transcript}`,
+    msg: `Worker for #${ticket} (attempt ${config.attempt}): ${config.inPlace ? "checkout" : "worktree"} ${cwd}, transcript ${transcript}`,
     ticket,
     attempt: config.attempt,
-    worktree,
+    path: cwd,
     transcript,
   });
 
   try {
     // Headless Workers cannot answer permission prompts; skipping them is
-    // what confines the blast radius to the worktree plus the operator's
+    // what confines the blast radius to the checkout plus the operator's
     // own tracker.
     const { exitCode, endedBy, stdoutTail, stderrTail } = await spawnProcess({
       cmd: "claude",
       args: claudeArgs(workerPrompt(ticket), config.model, config.maxTurns),
-      cwd: worktree,
+      cwd,
       transcriptPath: transcript,
       stderrPath: stderrLog,
       timeoutMs: config.timeoutMs,
@@ -348,7 +379,7 @@ export async function dispatchWorker(
     });
     const newCommits = Number(
       (
-        await withGitLock(() =>
+        await gitPhase(() =>
           exec("git", ["rev-list", "--count", `${base}..${branch}`]),
         )
       ).trim(),
@@ -408,7 +439,11 @@ export async function dispatchWorker(
       ok: failure === undefined && infra === undefined,
     };
   } finally {
-    await withGitLock(() => removeWorktree(worktree, exec));
+    // Nothing to clean up in-place: the checkout is the job's own, torn down
+    // with the runner rather than removed here.
+    if (!config.inPlace) {
+      await withGitLock(() => removeWorktree(worktree, exec));
+    }
   }
 }
 

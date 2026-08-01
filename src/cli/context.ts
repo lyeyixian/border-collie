@@ -34,11 +34,16 @@ export interface Context extends CommandContext {
     dryRun: boolean,
     dispatchPaused?: boolean,
   ) => Promise<TickResult>;
-  /** A Worker settling its own Attempt (issue #71); see src/app/worker.ts. */
+  /**
+   * A Worker settling its own Attempt (issue #71); see src/app/worker.ts.
+   * `inPlace` (issue #75) skips worktree isolation and the git lock for a
+   * Worker job that owns its own checkout.
+   */
   readonly runWorker: (
     config: WorkerAttemptConfig,
     ticket: number,
     attempt: number,
+    inPlace: boolean,
   ) => Promise<WorkerOutcome>;
   readonly probe: (model: string) => Promise<boolean>;
   readonly now: () => number;
@@ -108,7 +113,11 @@ function tagFor(bindings: LogBindings): string {
  *   the artifact a Worker job uploads.
  *
  * The root logger binds a run identifier matching the file's name, so every
- * record — console or file — carries it.
+ * record — console or file — carries it. The identifier is injectable via
+ * `BORDER_COLLIE_RUN_ID` (falling back to a timestamp when unset) so a
+ * Worker job (issue #75) can set it from the job's own run identifier,
+ * making the uploaded log artifact's file name correlate directly with the
+ * job an operator can click into.
  *
  * The three report kinds bypass both sinks entirely: they print as the
  * familiar unadorned block straight to the process's stdout, byte-identical
@@ -125,11 +134,13 @@ function tagFor(bindings: LogBindings): string {
 function buildLog(
   cliProcess: StricliProcess,
   cwd: string,
+  env: NodeJS.ProcessEnv,
 ): {
   log: Log;
   setVerbose: (verbose: boolean) => void;
 } {
-  const runId = new Date().toISOString().replace(/[:.]/g, "-");
+  const runId =
+    env.BORDER_COLLIE_RUN_ID ?? new Date().toISOString().replace(/[:.]/g, "-");
   const rootLogger = new Logger({
     type: "hidden",
     stack: { capture: "off" },
@@ -182,9 +193,12 @@ function buildLog(
 }
 
 /** The real context: today's collaborators, wired exactly as the entry point wired them before. */
-export function buildRealContext(cwd: string = process.cwd()): Context {
+export function buildRealContext(
+  cwd: string = process.cwd(),
+  env: NodeJS.ProcessEnv = process.env,
+): Context {
   const cliProcess = nodeProcessAdapter();
-  const { log, setVerbose } = buildLog(cliProcess, cwd);
+  const { log, setVerbose } = buildLog(cliProcess, cwd, env);
   const now = () => Date.now();
   const scheduleInterval: IntervalScheduler = (ms, callback) => {
     const id = setInterval(callback, ms);
@@ -197,8 +211,8 @@ export function buildRealContext(cwd: string = process.cwd()): Context {
       resolveWorkerConfig(loadConfigFile(cwd), flags),
     tick: (config, dryRun, dispatchPaused) =>
       tickOnce(config, dryRun, dispatchPaused, { log, now, scheduleInterval }),
-    runWorker: (config, ticket, attempt) =>
-      workerAttemptOnce(config, ticket, attempt, { log }),
+    runWorker: (config, ticket, attempt, inPlace) =>
+      workerAttemptOnce(config, ticket, attempt, inPlace, { log }),
     probe: (model) => probeEnvironment(model),
     now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
