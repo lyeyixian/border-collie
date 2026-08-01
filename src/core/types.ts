@@ -167,6 +167,54 @@ export function parseAttemptMarker(body: string): AttemptFailure | undefined {
 }
 
 /**
+ * The label an operator adds by hand to a pull request they have attached a
+ * conversational cloud session to, taking over from the automatic loop
+ * (CONTEXT.md "Operator-steered"). Distinct from `CLAIM_LABEL`: that one is
+ * Ticket-scoped and agent-held, this one is PR-scoped and human-held.
+ */
+export const OPERATOR_STEERED_LABEL = "operator-steered";
+
+/**
+ * A pull request gets at most this many Refinement rounds before Refinement
+ * give-up (CONTEXT.md "Refinement round").
+ */
+export const MAX_REFINEMENT_ROUNDS = 3;
+
+/**
+ * Hidden HTML marker counting one Refinement round (CONTEXT.md "Refinement
+ * round"): posted before the round's Worker dispatches, so a crash never
+ * loses count of a round already spent — the same charge-before-spend shape
+ * as the claim marker's Attempt count.
+ */
+export const REFINEMENT_ROUND_MARKER =
+  "<!-- border-collie:refinement-round -->";
+
+/**
+ * Hidden HTML marker recording Refinement give-up (CONTEXT.md "Refinement
+ * give-up"): posted on the pull request once its Refinement rounds are
+ * exhausted and it still needs one — the PR-scoped analogue of Escalation.
+ * Its presence vetoes every future round.
+ */
+export const REFINEMENT_GIVE_UP_MARKER =
+  "<!-- border-collie:refinement-give-up -->";
+
+/**
+ * The Refinement round state of one open agent pull request, read from its
+ * comment thread (CONTEXT.md "Refinement round"). `rounds` counts
+ * REFINEMENT_ROUND_MARKER comments ever posted; `triggerDue` is true when a
+ * failing check or a foreign (non-border-collie) comment posted after the
+ * latest round — or after the pull request opened, if there has been none —
+ * means another round is warranted; `givenUp` is true once the give-up
+ * marker has already fired, which vetoes every further round regardless of
+ * `triggerDue`.
+ */
+export interface RefinementSignal {
+  rounds: number;
+  triggerDue: boolean;
+  givenUp: boolean;
+}
+
+/**
  * A Conflict Worker gave up on a PR and asked for a human: the marker that
  * makes the ask structural, so the next Tick never re-dispatches a second
  * Worker against a conflict a human now owns (the PR-level analogue of
@@ -300,6 +348,13 @@ export interface OpenAgentPr {
    * this PR (the unresolved marker is present) — vetoes dispatching another.
    */
   conflictWorkerAsked: boolean;
+  /**
+   * True when the PR carries the operator-steered label (CONTEXT.md
+   * "Operator-steered") — the automatic Refinement loop never writes here.
+   */
+  operatorSteered: boolean;
+  /** This PR's Refinement round state (CONTEXT.md "Refinement round"). */
+  refinement: RefinementSignal;
 }
 
 /** Everything the planner knows about the world, recomputed each Tick. */
@@ -343,7 +398,10 @@ export interface PlanConfig {
  * attempt number; the caller binds it to a model (the retry ladder). The
  * three PR-upkeep actions carry the PR number plus the ticket (for the
  * human-readable rendering) and, for the conflict Worker, the head branch it
- * works in and pushes back.
+ * works in and pushes back. The two Refinement actions likewise carry the PR
+ * and ticket: `refine-pr` the head branch to dispatch into and the round
+ * number it is charging, `refinement-give-up` the round count spent, for the
+ * forensic comment.
  */
 export type Action =
   | { type: "claim"; ticket: number }
@@ -353,4 +411,12 @@ export type Action =
   | { type: "close"; ticket: number; prUrl: string }
   | { type: "update-branch"; pr: number; ticket: number }
   | { type: "conflict-worker"; pr: number; ticket: number; headRef: string }
-  | { type: "mark-ready"; pr: number; ticket: number };
+  | { type: "mark-ready"; pr: number; ticket: number }
+  | {
+      type: "refine-pr";
+      pr: number;
+      ticket: number;
+      headRef: string;
+      round: number;
+    }
+  | { type: "refinement-give-up"; pr: number; ticket: number; rounds: number };

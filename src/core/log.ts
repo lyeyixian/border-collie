@@ -37,6 +37,13 @@ export type LogEvent = LogEventBase &
     | { kind: "update-branch"; pr: number }
     | { kind: "mark-ready"; pr: number }
     | { kind: "conflict-dispatch"; ticket: number }
+    | { kind: "refinement-round-started"; ticket: number; round: number }
+    | {
+        kind: "refinement-give-up";
+        pr: number;
+        ticket: number;
+        rounds: number;
+      }
     | { kind: "spawn" }
     | { kind: "worker-outcome"; outcome: WorkerOutcome }
     | { kind: "heartbeat"; workers: WorkerHeartbeat[] }
@@ -48,6 +55,8 @@ export type LogEvent = LogEventBase &
     | { kind: "conflict-outcome"; resolved: boolean }
     | { kind: "conflict-pushed" }
     | { kind: "conflict-unresolved" }
+    | { kind: "refinement-outcome"; newCommits: number }
+    | { kind: "refinement-pushed" }
     | { kind: "breaker-closed" }
     | { kind: "breaker-still-open"; trips: number; nextProbeMs: number }
     | { kind: "breaker-open"; infraFailures: number; nextProbeMs: number }
@@ -72,6 +81,13 @@ export type LogEvent = LogEventBase &
     | {
         kind: "conflict-worker-paths";
         pr: number;
+        worktree: string;
+        transcript: string;
+      }
+    | {
+        kind: "refinement-worker-paths";
+        pr: number;
+        round: number;
         worktree: string;
         transcript: string;
       }

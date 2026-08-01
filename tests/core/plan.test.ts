@@ -3,6 +3,7 @@ import { plan } from "../../src/core/plan.js";
 import {
   type AttemptFailure,
   CLAIM_LABEL,
+  MAX_REFINEMENT_ROUNDS,
   type MergedAgentPr,
   type OpenAgentPr,
   type Ticket,
@@ -49,6 +50,8 @@ function openPr(
     behind: false,
     ci: "passing",
     conflictWorkerAsked: false,
+    operatorSteered: false,
+    refinement: { rounds: 0, triggerDue: false, givenUp: false },
     ...overrides,
   };
 }
@@ -925,7 +928,7 @@ describe("plan: PR upkeep", () => {
     expect(actions).toEqual([{ type: "mark-ready", pr: 30, ticket: 3 }]);
   });
 
-  it("does not flip a draft while CI is pending or failing", () => {
+  it("does not flip a draft while CI is pending or failing (a failing one is Refined instead)", () => {
     const actions = plan(
       worldWithPrs(
         [
@@ -942,13 +945,26 @@ describe("plan: PR upkeep", () => {
         ],
         [
           openPr(3, { number: 30, draft: true, ci: "pending" }),
-          openPr(4, { number: 40, draft: true, ci: "failing" }),
+          openPr(4, {
+            number: 40,
+            draft: true,
+            ci: "failing",
+            refinement: { rounds: 0, triggerDue: true, givenUp: false },
+          }),
         ],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
-    expect(actions).toEqual([]);
+    expect(actions).toEqual([
+      {
+        type: "refine-pr",
+        pr: 40,
+        ticket: 4,
+        headRef: "border-collie/ticket-4-attempt-1",
+        round: 1,
+      },
+    ]);
   });
 
   it("updates a behind draft this tick and defers the ready flip to the next", () => {
@@ -1020,6 +1036,271 @@ describe("plan: PR upkeep", () => {
       { type: "close", ticket: 2, prUrl: "https://github.com/o/r/pull/20" },
       { type: "mark-ready", pr: 50, ticket: 5 },
       { type: "update-branch", pr: 70, ticket: 7 },
+    ]);
+  });
+});
+
+describe("plan: Refinement", () => {
+  /** A claimed ticket with an open agent PR — the backdrop every Refinement case needs. */
+  function claimedTicket(number: number): Ticket {
+    return ticket({
+      number,
+      labels: ["ready-for-agent", CLAIM_LABEL],
+      hasAgentClaim: true,
+    });
+  }
+
+  it("starts round 1 when a fresh trigger is due and no round has run yet", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            refinement: { rounds: 0, triggerDue: true, givenUp: false },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([
+      {
+        type: "refine-pr",
+        pr: 30,
+        ticket: 3,
+        headRef: "border-collie/ticket-3-attempt-1",
+        round: 1,
+      },
+    ]);
+  });
+
+  it("charges the next round number when rounds have already run", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            refinement: { rounds: 2, triggerDue: true, givenUp: false },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([
+      {
+        type: "refine-pr",
+        pr: 30,
+        ticket: 3,
+        headRef: "border-collie/ticket-3-attempt-1",
+        round: 3,
+      },
+    ]);
+  });
+
+  it("plans nothing when no trigger is due, whatever the round count", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            refinement: { rounds: 1, triggerDue: false, givenUp: false },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("gives up once rounds are exhausted and a trigger is still due", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            refinement: {
+              rounds: MAX_REFINEMENT_ROUNDS,
+              triggerDue: true,
+              givenUp: false,
+            },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([
+      {
+        type: "refinement-give-up",
+        pr: 30,
+        ticket: 3,
+        rounds: MAX_REFINEMENT_ROUNDS,
+      },
+    ]);
+  });
+
+  it("never starts a round once Refinement has already given up, even if flagged due", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            refinement: {
+              rounds: MAX_REFINEMENT_ROUNDS,
+              triggerDue: true,
+              givenUp: true,
+            },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("skips a PR carrying the operator-steered label entirely", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            operatorSteered: true,
+            refinement: {
+              rounds: MAX_REFINEMENT_ROUNDS,
+              triggerDue: true,
+              givenUp: false,
+            },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("never Refines a conflicted PR — conflict handling is exclusive", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            mergeable: "conflicted",
+            conflictWorkerAsked: true,
+            refinement: { rounds: 0, triggerDue: true, givenUp: false },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("suppresses a due round within working hours", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            refinement: { rounds: 0, triggerDue: true, givenUp: false },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, withinWorkingHours: true },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("still gives up within working hours — mechanical, like Escalation", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            refinement: {
+              rounds: MAX_REFINEMENT_ROUNDS,
+              triggerDue: true,
+              givenUp: false,
+            },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, withinWorkingHours: true },
+    );
+
+    expect(actions).toEqual([
+      {
+        type: "refinement-give-up",
+        pr: 30,
+        ticket: 3,
+        rounds: MAX_REFINEMENT_ROUNDS,
+      },
+    ]);
+  });
+
+  it("does not give up within the circuit breaker's pause either — PR upkeep is suppressed wholesale", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          openPr(3, {
+            number: 30,
+            refinement: {
+              rounds: MAX_REFINEMENT_ROUNDS,
+              triggerDue: true,
+              givenUp: false,
+            },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("Refines instead of escalating a ticket whose Attempts are already exhausted: Refinement rounds count toward no ticket's Attempt cap", () => {
+    const exhausted = ticket({
+      number: 3,
+      labels: ["ready-for-agent", CLAIM_LABEL],
+      hasAgentClaim: true,
+      agentClaimCount: 2,
+    });
+    const actions = plan(
+      worldWithPrs(
+        [exhausted],
+        [
+          openPr(3, {
+            number: 30,
+            refinement: { rounds: 0, triggerDue: true, givenUp: false },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([
+      {
+        type: "refine-pr",
+        pr: 30,
+        ticket: 3,
+        headRef: "border-collie/ticket-3-attempt-1",
+        round: 1,
+      },
     ]);
   });
 });

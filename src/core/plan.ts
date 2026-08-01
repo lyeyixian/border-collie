@@ -2,6 +2,7 @@ import {
   type Action,
   CLAIM_LABEL,
   MAX_ATTEMPTS,
+  MAX_REFINEMENT_ROUNDS,
   type PlanConfig,
   READY_FOR_AGENT,
   type Ticket,
@@ -92,18 +93,30 @@ function isEscalationDue(ticket: Ticket, world: WorldSnapshot): boolean {
 
 /**
  * PR upkeep: after a merge advances the base, keep the remaining open agent
- * PRs current, one Action per PR at most. Conflict handling comes first and is
- * exclusive — a conflicted PR is neither updated nor readied until the merge is
+ * PRs current — mechanical writes plus the two Refinement actions, up to one
+ * of each kind per PR. Conflict handling comes first and is exclusive — a
+ * conflicted PR is neither updated, readied, nor Refined until the merge is
  * resolved: a one-shot conflict Worker unless one has already asked for a
  * human. A cleanly-mergeable PR that has fallen behind gets the mechanical
  * branch update, and its ready flip waits for the next Tick, judged against the
  * updated head (the update re-runs CI). Draft→ready is otherwise decided on CI
  * alone — a green draft, or one in a repo with no CI configured, flips to
  * ready-for-review — and independent of mergeability, so a fresh no-CI draft
- * surfaces even while GitHub is still computing whether it is behind. The
- * Conflict Worker is quota-consuming, so the working-hours gate (CONTEXT.md
- * "Working hours") suppresses it; the mechanical update and the ready flip
- * are not, and run regardless.
+ * surfaces even while GitHub is still computing whether it is behind.
+ *
+ * Refinement (CONTEXT.md "Refinement round") is judged independently of the
+ * ready flip — a failing check keeps `pr.draft && ci === "passing"` false
+ * regardless, so the two never collide — for every PR not carrying the
+ * operator-steered label and not already given up on: `triggerDue` false
+ * means nothing is due; `triggerDue` true with rounds already at
+ * MAX_REFINEMENT_ROUNDS means Refinement give-up (CONTEXT.md "Refinement
+ * give-up"), handing the Ticket to a human; otherwise a round is due.
+ *
+ * The Conflict Worker and a Refinement round are both quota-consuming, so the
+ * working-hours gate (CONTEXT.md "Working hours") suppresses them; the
+ * mechanical update, the ready flip, and Refinement give-up are not — give-up
+ * is mechanical bookkeeping, the same reasoning that keeps Escalation
+ * unsuppressed — and run regardless.
  */
 function prUpkeep(world: WorldSnapshot, withinWorkingHours: boolean): Action[] {
   const actions: Action[] = [];
@@ -127,6 +140,28 @@ function prUpkeep(world: WorldSnapshot, withinWorkingHours: boolean): Action[] {
     }
     if (pr.draft && (pr.ci === "passing" || pr.ci === "none")) {
       actions.push({ type: "mark-ready", pr: pr.number, ticket: pr.ticket });
+    }
+    if (
+      !pr.operatorSteered &&
+      !pr.refinement.givenUp &&
+      pr.refinement.triggerDue
+    ) {
+      if (pr.refinement.rounds >= MAX_REFINEMENT_ROUNDS) {
+        actions.push({
+          type: "refinement-give-up",
+          pr: pr.number,
+          ticket: pr.ticket,
+          rounds: pr.refinement.rounds,
+        });
+      } else if (!withinWorkingHours) {
+        actions.push({
+          type: "refine-pr",
+          pr: pr.number,
+          ticket: pr.ticket,
+          headRef: pr.headRef,
+          round: pr.refinement.rounds + 1,
+        });
+      }
     }
   }
   return actions;
