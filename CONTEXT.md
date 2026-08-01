@@ -21,7 +21,7 @@ Adding the `claimed` label to a ticket *before* any work begins, plus a marker c
 _Avoid_: lock, lease, assignment
 
 **Worker**:
-A fresh-context Claude Code agent session dispatched against exactly one Ticket, on its own agent branch — isolated in a git worktree on the local path, or in a Worker job's own dedicated checkout on the cloud path (issue #75), which needs no worktree since nothing else shares it. Fed nothing beyond its ticket plus repo context it discovers itself.
+A fresh-context Claude Code agent session dispatched against exactly one Ticket, on its own agent branch — isolated in a git worktree on the local path, or in a Worker job's own dedicated checkout on the cloud path (see ADR 0006), which needs no worktree since nothing else shares it. Fed nothing beyond its ticket plus repo context it discovers itself.
 _Avoid_: agent (unqualified), subagent
 
 **Done**:
