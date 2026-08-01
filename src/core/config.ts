@@ -130,15 +130,10 @@ function resolveWorkingHours(
   return { timezone: resolvedTimezone, startHour, endHour };
 }
 
-/**
- * Merge the target repo's config file with CLI flags. Flags win. Repo-wide
- * scope is never implicit: only the explicit `all` flag selects it, and it
- * refuses to combine with a `parent` flag.
- */
-export function resolveConfig(
-  fileConfig: unknown,
-  flags: Flags,
-): ResolvedConfig {
+/** The config fields a single Worker attempt needs — every field except `scope`, which only a Tick's dispatch (tick/run) ever consults. */
+export type WorkerAttemptConfig = Omit<ResolvedConfig, "scope">;
+
+function parseFileConfig(fileConfig: unknown): Record<string, unknown> {
   if (
     fileConfig !== undefined &&
     (typeof fileConfig !== "object" ||
@@ -147,8 +142,14 @@ export function resolveConfig(
   ) {
     throw new ConfigError(`${CONFIG_FILE} must contain a JSON object`);
   }
-  const file = (fileConfig ?? {}) as Record<string, unknown>;
+  return (fileConfig ?? {}) as Record<string, unknown>;
+}
 
+/** The scope-independent half of config resolution, shared by `resolveConfig` and `resolveWorkerConfig`. */
+function resolveSharedConfig(
+  file: Record<string, unknown>,
+  flags: Flags,
+): WorkerAttemptConfig {
   const maxWorkers = asPositiveInt(
     flags.maxWorkers ?? file.max_workers ?? DEFAULT_MAX_WORKERS,
     "max_workers",
@@ -186,7 +187,7 @@ export function resolveConfig(
     "worker_max_cost_usd",
   );
   const workingHours = resolveWorkingHours(file);
-  const shared: Omit<ResolvedConfig, "scope"> = {
+  const shared: WorkerAttemptConfig = {
     maxWorkers,
     maxOpenPrs,
     pollSeconds,
@@ -198,6 +199,20 @@ export function resolveConfig(
     maxCostUsd,
   };
   if (workingHours !== undefined) shared.workingHours = workingHours;
+  return shared;
+}
+
+/**
+ * Merge the target repo's config file with CLI flags. Flags win. Repo-wide
+ * scope is never implicit: only the explicit `all` flag selects it, and it
+ * refuses to combine with a `parent` flag.
+ */
+export function resolveConfig(
+  fileConfig: unknown,
+  flags: Flags,
+): ResolvedConfig {
+  const file = parseFileConfig(fileConfig);
+  const shared = resolveSharedConfig(file, flags);
 
   if (flags.all) {
     if (flags.parent !== undefined) {
@@ -218,9 +233,23 @@ export function resolveConfig(
   };
 }
 
+/**
+ * Config resolution for a single Worker attempt (issue #71): the same fields
+ * `resolveConfig` produces, minus Scope — a Worker is told exactly which
+ * Ticket and Attempt to run, so `resolveConfig`'s scope requirement (a
+ * `parent` in the config file or an explicit `--all`/`--parent` flag) does
+ * not apply, and does not need to be satisfied for the command to run.
+ */
+export function resolveWorkerConfig(
+  fileConfig: unknown,
+  flags: Flags,
+): WorkerAttemptConfig {
+  return resolveSharedConfig(parseFileConfig(fileConfig), flags);
+}
+
 /** The retry ladder's model binding: attempt two runs the stronger retry model. */
 export function modelForAttempt(
-  config: ResolvedConfig,
+  config: WorkerAttemptConfig,
   attempt: number,
 ): string {
   return attempt >= 2 ? config.retryModel : config.model;

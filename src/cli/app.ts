@@ -9,9 +9,10 @@ import type { Context } from "./context.js";
 import { runCommand } from "./run-command.js";
 import { tickCommand } from "./tick-command.js";
 import { VERSION } from "./version.js";
+import { workerCommand } from "./worker-command.js";
 
 const routeMap = buildRouteMap({
-  routes: { tick: tickCommand, run: runCommand },
+  routes: { tick: tickCommand, run: runCommand, worker: workerCommand },
   docs: {
     brief:
       "an orchestration loop that herds a ticket DAG to Done with a fleet of Claude Code agents",
