@@ -210,7 +210,13 @@ export function buildRealContext(
     loadWorkerConfig: (flags) =>
       resolveWorkerConfig(loadConfigFile(cwd), flags),
     tick: (config, dryRun, dispatchPaused) =>
-      tickOnce(config, dryRun, dispatchPaused, { log, now, scheduleInterval }),
+      tickOnce(config, dryRun, dispatchPaused, {
+        log,
+        now,
+        scheduleInterval,
+        // GitHub sets this on every Actions runner; see TickDeps.remoteDispatch.
+        remoteDispatch: cliProcess.env?.GITHUB_ACTIONS === "true",
+      }),
     runWorker: (config, ticket, attempt, inPlace) =>
       workerAttemptOnce(config, ticket, attempt, inPlace, { log }),
     probe: (model) => probeEnvironment(model),

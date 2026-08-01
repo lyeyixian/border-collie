@@ -1,0 +1,105 @@
+name: border-collie Tick
+
+# A Tick recomputes the world from GitHub and is idempotent, which is what
+# makes every one of these triggers free and a dropped duplicate harmless
+# (see the concurrency group below): a pull request closing unblocks its
+# dependents without waiting for the cron backstop, a Worker job finishing
+# gets its outcome acted on promptly, workflow_dispatch is the by-hand nudge,
+# and the cron is the slow backstop that catches whatever the others missed.
+on:
+  pull_request:
+    types: [closed]
+  workflow_run:
+    # Must match the `name:` the Worker workflow declares (issue #75,
+    # border-collie-worker.yml) — workflow_run matches on that name, not the
+    # file name. This trigger is inert (never fires) until that workflow
+    # exists with this exact name.
+    workflows: [Worker]
+    types: [completed]
+  workflow_dispatch:
+  schedule:
+    # Slow backstop, on the order of half an hour: a missed event must not
+    # strand a Scope indefinitely, but this is the fallback, not the primary
+    # trigger.
+    - cron: "*/30 * * * *"
+
+# Two concurrent Ticks would both read an unclaimed Ticket and both claim it,
+# so Ticks never overlap. cancel-in-progress stays false: killing a Tick
+# mid-write is worse than queueing behind it. If more than one run queues
+# behind the current one, GitHub keeps only the most recently queued and
+# drops the rest — a dropped duplicate loses nothing, since the one that
+# survives recomputes the same world plus whatever changed since.
+concurrency:
+  group: border-collie-tick
+  cancel-in-progress: false
+
+# Least-privilege for the built-in token: every write below — the tracker
+# (gh) and the branches this Tick pushes (git) — authenticates with the
+# GitHub App credential instead (see the "Tick" step), so GITHUB_TOKEN itself
+# is never asked to do anything and needs nothing at all.
+permissions: {}
+
+jobs:
+  tick:
+    name: Tick
+    runs-on: ubuntu-latest
+    # Generous relative to a single Worker's timeout: Conflict and Refinement
+    # Workers still run headless claude inline in this job (they're cheap
+    # one-shot sessions, not their own Actions job), concurrently with each
+    # other, so the ceiling only needs to clear the slowest one plus setup.
+    timeout-minutes: 75
+    steps:
+      # Minted once per job and reused for both git (checkout, below) and gh
+      # (the Tick step): a GitHub App identity, not the default token, is
+      # what a Worker's Claim already relies on (a claim label/comment posted
+      # by the App), and it's the only credential that can actually retrigger
+      # a workflow — see the Tick step's comment on GH_TOKEN.
+      - name: Mint a GitHub App installation token
+        id: app-token
+        uses: actions/create-github-app-token@v2
+        with:
+          app-id: ${{ secrets.BORDER_COLLIE_APP_ID }}
+          private-key: ${{ secrets.BORDER_COLLIE_APP_PRIVATE_KEY }}
+
+      - uses: actions/checkout@v7
+        with:
+          # The App credential, not GITHUB_TOKEN: PR upkeep and a resolved
+          # conflict/Refinement round push straight to an open PR's branch,
+          # and that push has to retrigger the PR's own CI — a push
+          # authenticated with the built-in token is invisible to
+          # `on: push`/`on: pull_request` (GitHub's own recursive-trigger
+          # guard), which would leave the PR's checks stale forever.
+          token: ${{ steps.app-token.outputs.token }}
+          # Full history, not the default shallow clone: a Conflict or
+          # Refinement Worker's worktree rebases an arbitrary open PR branch
+          # onto origin/HEAD (dispatchConflictWorker/dispatchRefinementWorker,
+          # src/adapters/worker.ts), which needs the commit graph a shallow
+          # clone doesn't have.
+          fetch-depth: 0
+
+      - uses: pnpm/action-setup@v6
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+
+      - run: pnpm run build
+
+      - name: Install Claude Code
+        run: npm install -g @anthropic-ai/claude-code@latest
+
+      - name: Tick
+        env:
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          # The App credential again, for the same reason as checkout above:
+          # dispatching a Worker's job (`gh workflow run`) is a write that
+          # must retrigger a workflow, and GitHub never starts a job that a
+          # GITHUB_TOKEN-authenticated workflow_dispatch call named — only a
+          # PAT or an App token actually starts it. Every other tracker write
+          # this Tick makes (claims, comments, labels, closures) rides the
+          # same credential rather than juggling two.
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: node dist/main.js tick

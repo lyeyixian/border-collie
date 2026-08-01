@@ -3,6 +3,7 @@ import { readScope, realExec, withDebugLogging } from "../adapters/tracker.js";
 import {
   dispatchConflictWorker,
   dispatchRefinementWorker,
+  dispatchRemoteWorker,
   dispatchWorker,
   realSpawnWorkerProcess,
 } from "../adapters/worker.js";
@@ -20,6 +21,17 @@ export interface TickDeps {
   log: Log;
   now: () => number;
   scheduleInterval: IntervalScheduler;
+  /**
+   * True when this Tick runs as the Orchestrator's own GitHub Actions job
+   * (issue #74): a Ticket dispatch triggers the Worker's job and returns
+   * (`dispatchRemoteWorker`) instead of running headless claude to
+   * completion in-process (`dispatchWorker`). Conflict and Refinement
+   * Workers are unaffected either way — they stay cheap enough to run inline
+   * in whichever process the Tick itself is. Left undefined (falsy) by every
+   * caller but the real composition root, so the resident run loop and a
+   * manually-run tick keep today's synchronous local path.
+   */
+  remoteDispatch?: boolean;
 }
 
 /**
@@ -44,7 +56,7 @@ export async function tickOnce(
   dispatchPaused = false,
   deps: TickDeps,
 ): Promise<TickResult> {
-  const { log, now, scheduleInterval } = deps;
+  const { log, now, scheduleInterval, remoteDispatch = false } = deps;
   // Every command this Tick issues through the adapters — gh and git alike
   // — plus its exit code, is narrated at debug through the same seam:
   // detail that does not exist today, hidden from the console unless
@@ -81,27 +93,29 @@ export async function tickOnce(
   if (!dryRun) {
     const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
     const report = await act(actions, {
-      dispatch: (ticket, attempt, onActivity) =>
-        dispatchWorker(
-          ticket,
-          {
-            model: modelForAttempt(config, attempt),
-            attempt,
-            timeoutMs: config.timeoutMinutes * 60_000,
-            stallMs: config.stallMinutes * 60_000,
-            maxTurns: config.maxTurns,
-            maxCostUsd: config.maxCostUsd,
-            // A Tick may dispatch several Workers concurrently into this
-            // same checkout, so each still needs its own isolated worktree —
-            // never in-place (that path is a Worker job's own dedicated
-            // checkout; see src/app/worker.ts).
-            inPlace: false,
-          },
-          exec,
-          realSpawnWorkerProcess,
-          log,
-          onActivity,
-        ),
+      dispatch: remoteDispatch
+        ? (ticket, attempt) => dispatchRemoteWorker(ticket, attempt, exec)
+        : (ticket, attempt, onActivity) =>
+            dispatchWorker(
+              ticket,
+              {
+                model: modelForAttempt(config, attempt),
+                attempt,
+                timeoutMs: config.timeoutMinutes * 60_000,
+                stallMs: config.stallMinutes * 60_000,
+                maxTurns: config.maxTurns,
+                maxCostUsd: config.maxCostUsd,
+                // A Tick may dispatch several Workers concurrently into this
+                // same checkout, so each still needs its own isolated worktree —
+                // never in-place (that path is a Worker job's own dedicated
+                // checkout; see src/app/worker.ts).
+                inPlace: false,
+              },
+              exec,
+              realSpawnWorkerProcess,
+              log,
+              onActivity,
+            ),
       openPr: (outcome) =>
         openPrForOutcome(
           outcome,
