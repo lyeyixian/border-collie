@@ -39,6 +39,9 @@ function ticket(
     agentClaimCount: 0,
     attemptFailures: [],
     voidedAtMs: undefined,
+    lastFailureAtMs: undefined,
+    lastFailureReason: undefined,
+    hasLiveWorker: false,
     ...overrides,
   };
 }

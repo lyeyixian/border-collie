@@ -21,6 +21,9 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
     agentClaimCount: 0,
     attemptFailures: [],
     voidedAtMs: undefined,
+    lastFailureAtMs: undefined,
+    lastFailureReason: undefined,
+    hasLiveWorker: false,
     ...overrides,
   };
 }
@@ -148,5 +151,56 @@ describe("deriveBreaker", () => {
     expect(
       probeDue({ openedAtMs: 0, trips: 1 }, BREAKER_BASE_COOLDOWN_MS),
     ).toBe(true);
+  });
+
+  it("trips on two tickets whose latest release correlates the same way within one Tick (issue #73)", () => {
+    // A self-reporting Worker never sees a sibling's outcome, so this can no
+    // longer be reclassified in the act phase — it is recomputed here from
+    // each ticket's own latest release instead (CONTEXT.md "Infrastructure
+    // failure" — correlated).
+    const w = world([
+      ticket({
+        number: 4,
+        lastFailureAtMs: 1_000,
+        lastFailureReason: "nonzero-exit",
+      }),
+      ticket({
+        number: 7,
+        lastFailureAtMs: 1_500,
+        lastFailureReason: "nonzero-exit",
+      }),
+    ]);
+
+    expect(deriveBreaker(w)).toEqual(tripBreaker(undefined, 1_500));
+  });
+
+  it("does not trip on a single Ticket-failure release — one death is a ticket failure until proven otherwise", () => {
+    const w = world([
+      ticket({
+        number: 4,
+        lastFailureAtMs: 1_000,
+        lastFailureReason: "timeout",
+      }),
+    ]);
+
+    expect(deriveBreaker(w)).toBeUndefined();
+  });
+
+  it("collapses a held void and a correlated release close together into a single trip", () => {
+    const w = world([
+      ticket({ number: 2, voidedAtMs: 1_000 }),
+      ticket({
+        number: 4,
+        lastFailureAtMs: 1_200,
+        lastFailureReason: "stall",
+      }),
+      ticket({
+        number: 7,
+        lastFailureAtMs: 1_400,
+        lastFailureReason: "stall",
+      }),
+    ]);
+
+    expect(deriveBreaker(w)).toEqual(tripBreaker(undefined, 1_400));
   });
 });

@@ -22,6 +22,9 @@ function ticket(overrides: Partial<Ticket> & { number: number }): Ticket {
     agentClaimCount: 0,
     attemptFailures: [],
     voidedAtMs: undefined,
+    lastFailureAtMs: undefined,
+    lastFailureReason: undefined,
+    hasLiveWorker: false,
     ...overrides,
   };
 }
@@ -158,6 +161,25 @@ describe("plan", () => {
     );
 
     expect(actions).toEqual([{ type: "release", ticket: 5 }]);
+  });
+
+  it("keeps a claim whose Worker job is still live, even with no PR yet (issue #73)", () => {
+    // Dispatch is fire-and-forget: by the time this Tick observes the world,
+    // the Worker (local or remote) may not have opened its PR yet. Worker
+    // liveness read from GitHub is what keeps this from reading as orphaned.
+    const actions = plan(
+      world([
+        ticket({
+          number: 5,
+          labels: ["ready-for-agent", CLAIM_LABEL],
+          hasAgentClaim: true,
+          hasLiveWorker: true,
+        }),
+      ]),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
   });
 
   it("keeps an agent claim whose ticket has an open agent PR", () => {

@@ -26,7 +26,9 @@ interface LogEventBase {
  * Worker-lifecycle kinds (`spawn` through `attempt-released`, and the
  * `conflict-*` kinds) omit the ticket/attempt/pr they'd otherwise repeat on
  * every call — a dispatched Worker's sub-logger binds those once; see
- * {@link Log.child}.
+ * {@link Log.child}. `worker-dispatched-async` is a fire-and-forget
+ * dispatch's only narration this Tick (issue #73): its Worker settles its
+ * own Attempt elsewhere, so there is no `worker-outcome` to follow it.
  */
 export type LogEvent = LogEventBase &
   (
@@ -45,6 +47,7 @@ export type LogEvent = LogEventBase &
         rounds: number;
       }
     | { kind: "spawn" }
+    | { kind: "worker-dispatched-async" }
     | { kind: "worker-outcome"; outcome: WorkerOutcome }
     | { kind: "heartbeat"; workers: WorkerHeartbeat[] }
     | { kind: "pr-opened"; prUrl: string }

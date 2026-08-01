@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import type { Exec } from "../../src/adapters/tracker.js";
+import { type Exec, WORKER_WORKFLOW_FILE } from "../../src/adapters/tracker.js";
 import {
   branchCommitSubjects,
   type ClaudeRunConfig,
@@ -10,6 +10,7 @@ import {
   conflictWorkerPrompt,
   dispatchConflictWorker,
   dispatchRefinementWorker,
+  dispatchRemoteWorker,
   dispatchWorker,
   probeEnvironment,
   pushAgentBranch,
@@ -501,6 +502,28 @@ describe("dispatchWorker", () => {
     expect(outcome.transcript).toBe(
       ".border-collie/transcripts/ticket-7-attempt-2.jsonl",
     );
+  });
+});
+
+describe("dispatchRemoteWorker", () => {
+  it("triggers the Worker workflow with ticket and attempt as explicit inputs, resolving with no outcome", async () => {
+    const { exec, calls } = fakeExec();
+
+    const result = await dispatchRemoteWorker(7, 2, exec);
+
+    expect(result).toBeUndefined();
+    expect(calls).toEqual([
+      [
+        "gh",
+        "workflow",
+        "run",
+        WORKER_WORKFLOW_FILE,
+        "-f",
+        "ticket=7",
+        "-f",
+        "attempt=2",
+      ],
+    ]);
   });
 });
 

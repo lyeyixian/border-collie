@@ -10,6 +10,7 @@ import {
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
   FAILURE_DESCRIPTIONS,
+  type FailureReason,
   INFRA_DESCRIPTIONS,
   type InfraReason,
   MAX_ATTEMPTS,
@@ -126,6 +127,9 @@ function toTicket(issue: GithubIssue): Ticket {
     agentClaimCount: 0,
     attemptFailures: [],
     voidedAtMs: undefined,
+    lastFailureAtMs: undefined,
+    lastFailureReason: undefined,
+    hasLiveWorker: false,
   };
 }
 
@@ -147,6 +151,8 @@ interface ClaimHistory {
   agentClaimCount: number;
   attemptFailures: AttemptFailure[];
   voidedAtMs: number | undefined;
+  lastFailureAtMs: number | undefined;
+  lastFailureReason: FailureReason | undefined;
 }
 
 /**
@@ -160,7 +166,12 @@ interface ClaimHistory {
  * auditable and attempt state needs no local store. `voidedAtMs` tracks
  * whether a void marker is still the latest one — a later claim or release
  * resolves it — so the circuit breaker can be derived from it fresh each Tick
- * (CONTEXT.md "Infrastructure failure").
+ * (CONTEXT.md "Infrastructure failure"). `lastFailureAtMs`/`lastFailureReason`
+ * track the same thing for a Ticket-failure release instead of a void — reset
+ * by a later claim exactly like `voidedAtMs`, and left undefined by a release
+ * carrying no attempt record (an orphan release) — feeding the correlation
+ * heuristic recomputed at Tick time (issue #73; `classify.ts`'s
+ * `correlatedFailureTimestampsMs`).
  */
 async function readClaimHistory(
   ticket: number,
@@ -175,12 +186,16 @@ async function readClaimHistory(
     agentClaimCount: 0,
     attemptFailures: [],
     voidedAtMs: undefined,
+    lastFailureAtMs: undefined,
+    lastFailureReason: undefined,
   };
   for (const comment of comments) {
     if (comment.body?.includes(CLAIM_MARKER)) {
       history.hasAgentClaim = true;
       history.agentClaimCount += 1;
       history.voidedAtMs = undefined;
+      history.lastFailureAtMs = undefined;
+      history.lastFailureReason = undefined;
     } else if (comment.body?.includes(VOID_MARKER)) {
       history.agentClaimCount = Math.max(0, history.agentClaimCount - 1);
       history.voidedAtMs = commentTimestamp(comment.created_at);
@@ -188,7 +203,14 @@ async function readClaimHistory(
       history.hasAgentClaim = false;
       history.voidedAtMs = undefined;
       const failure = parseAttemptMarker(comment.body);
-      if (failure) history.attemptFailures.push(failure);
+      if (failure) {
+        history.attemptFailures.push(failure);
+        history.lastFailureAtMs = commentTimestamp(comment.created_at);
+        history.lastFailureReason = failure.reason;
+      } else {
+        history.lastFailureAtMs = undefined;
+        history.lastFailureReason = undefined;
+      }
     }
   }
   return history;
@@ -492,6 +514,69 @@ async function listMergedAgentPrs(exec: Exec): Promise<MergedAgentPr[]> {
 }
 
 /**
+ * The GitHub Actions workflow file a Worker job runs from (issue #75),
+ * dispatched with the Ticket and Attempt as explicit workflow_dispatch
+ * inputs — never inferred from a label or an assignee event, since the
+ * Orchestrator already knows which Ticket it decided to dispatch.
+ */
+export const WORKER_WORKFLOW_FILE = "border-collie-worker.yml";
+
+const WORKER_RUN_NAME_PREFIX = "border-collie worker #";
+
+/**
+ * The `run-name:` the Worker workflow (issue #75) must set from its ticket
+ * and attempt inputs, so a running job's ticket is readable from the run
+ * list below without decoding workflow_dispatch inputs — the REST API never
+ * echoes those back on the run itself.
+ */
+export function workerRunName(ticket: number, attempt: number): string {
+  return `${WORKER_RUN_NAME_PREFIX}${ticket} attempt ${attempt}`;
+}
+
+function ticketFromWorkerRunName(displayTitle: string): number | undefined {
+  if (!displayTitle.startsWith(WORKER_RUN_NAME_PREFIX)) return undefined;
+  const match = /^\d+/.exec(displayTitle.slice(WORKER_RUN_NAME_PREFIX.length));
+  return match ? Number(match[0]) : undefined;
+}
+
+interface GhWorkflowRun {
+  status?: string;
+  displayTitle?: string;
+}
+
+/**
+ * Ticket numbers with a Worker job GitHub has not yet marked `completed` —
+ * queued, in progress, or otherwise still running. Worker liveness read from
+ * GitHub itself (issue #64, #73) rather than a promise held in the
+ * Orchestrator's memory: a restarted Orchestrator reaches the same verdict,
+ * and a job GitHub itself already finished (whether it settled cleanly or
+ * was killed by its own wall-clock ceiling) is never mistaken for one still
+ * live, so the orphan check can release its Claim.
+ */
+export async function liveWorkerTickets(
+  exec: Exec = realExec,
+): Promise<Set<number>> {
+  const stdout = await exec("gh", [
+    "run",
+    "list",
+    "--workflow",
+    WORKER_WORKFLOW_FILE,
+    "--json",
+    "status,displayTitle",
+    "--limit",
+    "100",
+  ]);
+  const runs = JSON.parse(stdout) as GhWorkflowRun[];
+  const live = new Set<number>();
+  for (const run of runs) {
+    if (run.status === "completed") continue;
+    const ticket = ticketFromWorkerRunName(run.displayTitle ?? "");
+    if (ticket !== undefined) live.add(ticket);
+  }
+  return live;
+}
+
+/**
  * Observe phase: read the Scope from GitHub. Parent scope lists the parent's
  * sub-issues (open and closed — the planner needs closed ones to reason about
  * later); repo-wide scope lists open agent-ready issues, excluding PRs
@@ -526,9 +611,26 @@ export async function readScope(
       ticket.agentClaimCount = history.agentClaimCount;
       ticket.attemptFailures = history.attemptFailures;
       ticket.voidedAtMs = history.voidedAtMs;
+      ticket.lastFailureAtMs = history.lastFailureAtMs;
+      ticket.lastFailureReason = history.lastFailureReason;
     }
     if (ticket.openBlockers > 0) {
       ticket.blockedBy = await readOpenBlockers(ticket.number, exec);
+    }
+  }
+
+  // Worker liveness matters only for a ticket the orphan check could
+  // otherwise mistake for abandoned: open, claim-labelled, no PR yet because
+  // its Worker (local or remote) has not finished. Read once, repo-wide, and
+  // fanned back onto every such ticket — cheaper than one call per ticket,
+  // and the same shape as the PR listings below.
+  const claimedOpenTickets = tickets.filter(
+    (t) => t.state === "open" && t.labels.includes(CLAIM_LABEL),
+  );
+  if (claimedOpenTickets.length > 0) {
+    const live = await liveWorkerTickets(exec);
+    for (const ticket of claimedOpenTickets) {
+      ticket.hasLiveWorker = live.has(ticket.number);
     }
   }
 

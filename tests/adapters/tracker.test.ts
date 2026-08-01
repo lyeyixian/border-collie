@@ -7,6 +7,7 @@ import {
   type Exec,
   escalateTicket,
   giveUpOnPr,
+  liveWorkerTickets,
   markPrReady,
   readScope,
   readTicketTitle,
@@ -15,7 +16,9 @@ import {
   startRefinementRound,
   updatePrBranch,
   voidAttempt,
+  WORKER_WORKFLOW_FILE,
   withDebugLogging,
+  workerRunName,
 } from "../../src/adapters/tracker.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
 import {
@@ -62,13 +65,14 @@ const prItem = (overrides: Record<string, unknown> = {}) => ({
 
 /**
  * Fake the subprocess seam. `gh api <endpoint> --paginate --slurp` calls are
- * answered from `api` keyed by endpoint; `gh pr list` from `prList`. An
- * un-mapped gh api endpoint throws, so a test also asserts which reads do NOT
- * happen.
+ * answered from `api` keyed by endpoint; `gh pr list` from `prList`; `gh run
+ * list` (Worker liveness) from `runList`. An un-mapped gh api endpoint
+ * throws, so a test also asserts which reads do NOT happen.
  */
 function fakeExec(opts: {
   api?: Record<string, unknown>;
   prList?: unknown[];
+  runList?: unknown[];
 }): {
   exec: Exec;
   calls: string[][];
@@ -82,6 +86,12 @@ function fakeExec(opts: {
         throw new Error(`unexpected gh pr list: ${[cmd, ...args].join(" ")}`);
       }
       return JSON.stringify(opts.prList);
+    }
+    if (args[0] === "run" && args[1] === "list") {
+      if (opts.runList === undefined) {
+        throw new Error(`unexpected gh run list: ${[cmd, ...args].join(" ")}`);
+      }
+      return JSON.stringify(opts.runList);
     }
     if (args[0] === "api") {
       const endpoint = args[1] ?? "";
@@ -113,8 +123,11 @@ const compare = (base: string, head: string) =>
   `repos/{owner}/{repo}/compare/${base}...${head}`;
 
 /** The gh operation a recorded call performed, for asserting read order. */
-const op = (call: string[]) =>
-  call[1] === "pr" && call[2] === "list" ? "pr-list" : call[2];
+const op = (call: string[]) => {
+  if (call[1] === "pr" && call[2] === "list") return "pr-list";
+  if (call[1] === "run" && call[2] === "list") return "run-list";
+  return call[2];
+};
 
 describe("readScope", () => {
   it("reads a parent's sub-issues, then comments, then the open and closed PR listings", async () => {
@@ -222,6 +235,7 @@ describe("readScope", () => {
         hasAgentClaim: false,
         agentClaimCount: 0,
         attemptFailures: [],
+        hasLiveWorker: false,
       },
       {
         number: 4,
@@ -234,6 +248,7 @@ describe("readScope", () => {
         hasAgentClaim: false,
         agentClaimCount: 0,
         attemptFailures: [],
+        hasLiveWorker: false,
       },
     ]);
   });
@@ -294,6 +309,7 @@ describe("readScope", () => {
         [CLOSED_PULLS]: [[]],
       },
       prList: [],
+      runList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -323,6 +339,7 @@ describe("readScope", () => {
         [CLOSED_PULLS]: [[]],
       },
       prList: [],
+      runList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -472,6 +489,7 @@ describe("readScope", () => {
         [CLOSED_PULLS]: [[]],
       },
       prList: [],
+      runList: [],
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
@@ -564,6 +582,163 @@ describe("readScope", () => {
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
 
     expect(world.tickets[0]).toMatchObject({ voidedAtMs: undefined });
+  });
+
+  it("records the latest Ticket-failure release's timestamp and reason for the correlation heuristic", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [
+          [
+            { body: `${CLAIM_MARKER}\n🐕 claimed` },
+            {
+              body: `${RELEASE_MARKER}\n${attemptMarker(FAILURE)}\n🐕 Attempt 1 failed`,
+              created_at: "2026-01-01T00:05:00.000Z",
+            },
+          ],
+        ],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]).toMatchObject({
+      lastFailureAtMs: Date.parse("2026-01-01T00:05:00.000Z"),
+      lastFailureReason: FAILURE.reason,
+    });
+  });
+
+  it("resolves the last Ticket-failure release once a later claim lands", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [
+          [
+            { body: `${CLAIM_MARKER}\n🐕 claimed` },
+            {
+              body: `${RELEASE_MARKER}\n${attemptMarker(FAILURE)}\n🐕 Attempt 1 failed`,
+              created_at: "2026-01-01T00:05:00.000Z",
+            },
+            { body: `${CLAIM_MARKER}\n🐕 claimed again` },
+          ],
+        ],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]).toMatchObject({
+      lastFailureAtMs: undefined,
+      lastFailureReason: undefined,
+    });
+  });
+
+  it("leaves lastFailureAtMs/lastFailureReason undefined after an orphan release (no attempt record)", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [
+          [
+            issue({
+              number: 5,
+              labels: [{ name: "ready-for-agent" }, { name: CLAIM_LABEL }],
+            }),
+          ],
+        ],
+        [comments(5)]: [
+          [
+            { body: `${CLAIM_MARKER}\n🐕 claimed` },
+            { body: `${RELEASE_MARKER}\n🐕 released an orphaned claim` },
+          ],
+        ],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
+      runList: [],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]).toMatchObject({
+      lastFailureAtMs: undefined,
+      lastFailureReason: undefined,
+    });
+  });
+
+  it("reads Worker liveness only when an open ticket carries the claim label", async () => {
+    const { exec, calls } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
+      // runList deliberately unmapped: fetching it would throw.
+    });
+
+    await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(calls.map(op)).not.toContain("run-list");
+  });
+
+  it("marks a claimed ticket's Worker live when its job is still running", async () => {
+    const { exec, calls } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [
+          [
+            issue({
+              number: 5,
+              labels: [{ name: "ready-for-agent" }, { name: CLAIM_LABEL }],
+            }),
+          ],
+        ],
+        [comments(5)]: [[{ body: `${CLAIM_MARKER}\n🐕 claimed` }]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
+      runList: [{ status: "in_progress", displayTitle: workerRunName(5, 1) }],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]?.hasLiveWorker).toBe(true);
+    expect(calls.find((c) => c[1] === "run")).toEqual([
+      "gh",
+      "run",
+      "list",
+      "--workflow",
+      WORKER_WORKFLOW_FILE,
+      "--json",
+      "status,displayTitle",
+      "--limit",
+      "100",
+    ]);
+  });
+
+  it("does not mark a claimed ticket's Worker live once GitHub marks its job completed", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [
+          [
+            issue({
+              number: 5,
+              labels: [{ name: "ready-for-agent" }, { name: CLAIM_LABEL }],
+            }),
+          ],
+        ],
+        [comments(5)]: [[{ body: `${CLAIM_MARKER}\n🐕 claimed` }]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [],
+      runList: [{ status: "completed", displayTitle: workerRunName(5, 1) }],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]?.hasLiveWorker).toBe(false);
   });
 
   it("maps open agent-branch PRs with their upkeep signals, ignoring other branches", async () => {
@@ -1425,6 +1600,54 @@ describe("readTicketTitle", () => {
     const title = await readTicketTitle(7, exec);
 
     expect(title).toBe("Ticket #7");
+  });
+});
+
+describe("workerRunName", () => {
+  it("names a run by ticket and attempt", () => {
+    expect(workerRunName(5, 1)).toBe("border-collie worker #5 attempt 1");
+  });
+});
+
+describe("liveWorkerTickets", () => {
+  it("reads the Worker workflow's own run list", async () => {
+    const { exec, calls } = fakeExec({ runList: [] });
+
+    await liveWorkerTickets(exec);
+
+    expect(calls).toEqual([
+      [
+        "gh",
+        "run",
+        "list",
+        "--workflow",
+        WORKER_WORKFLOW_FILE,
+        "--json",
+        "status,displayTitle",
+        "--limit",
+        "100",
+      ],
+    ]);
+  });
+
+  it("collects tickets whose job GitHub has not marked completed", async () => {
+    const { exec } = fakeExec({
+      runList: [
+        { status: "in_progress", displayTitle: workerRunName(5, 1) },
+        { status: "queued", displayTitle: workerRunName(9, 2) },
+        { status: "completed", displayTitle: workerRunName(4, 1) },
+      ],
+    });
+
+    expect(await liveWorkerTickets(exec)).toEqual(new Set([5, 9]));
+  });
+
+  it("ignores a run whose display title does not match the Worker naming convention", async () => {
+    const { exec } = fakeExec({
+      runList: [{ status: "in_progress", displayTitle: "some other workflow" }],
+    });
+
+    expect(await liveWorkerTickets(exec)).toEqual(new Set());
   });
 });
 

@@ -38,16 +38,41 @@ export type IntervalScheduler = (
 ) => () => void;
 
 /**
+ * A dispatch that waits for the Worker to finish and resolves with its
+ * outcome — what the local, synchronous path (`dispatchWorker`,
+ * adapters/worker.ts) always is, and the only kind the Worker entrypoint's
+ * own dispatch call can sensibly be (src/app/worker.ts, issue #71): it runs
+ * the session itself, so firing-and-forgetting from its own perspective
+ * would make no sense. A stricter return type than `DispatchWorker` below,
+ * and so always assignable to it.
+ */
+export type SyncDispatchWorker = (
+  ticket: number,
+  attempt: number,
+  onActivity: () => void,
+) => Promise<WorkerOutcome>;
+
+/**
  * Dispatch one Worker against one claimed ticket; the caller binds the
  * attempt number to a model (the retry ladder). `onActivity` is called
  * whenever the Worker process produces output — the fleet heartbeat's
  * activity signal, riding the process adapter's existing observation.
+ *
+ * Two implementations share this seam (issue #73). The local one
+ * (`dispatchWorker`) runs the Worker to completion and always resolves with
+ * its outcome — a `SyncDispatchWorker`. The remote one (`dispatchRemoteWorker`,
+ * adapters/worker.ts) triggers the Worker's GitHub Actions job and resolves
+ * immediately with `undefined`: no outcome to settle here, because the job
+ * runs the Worker entrypoint that settles its own Attempt (src/app/worker.ts)
+ * and the next Tick reads the result back from the tracker. `act` below
+ * therefore completes without waiting for a Worker dispatched this way —
+ * there is nothing left for it to await.
  */
 export type DispatchWorker = (
   ticket: number,
   attempt: number,
   onActivity: () => void,
-) => Promise<WorkerOutcome>;
+) => Promise<WorkerOutcome | undefined>;
 
 /** Open the draft PR for a successful Attempt; resolves with the PR URL. */
 export type OpenPr = (outcome: WorkerOutcome) => Promise<string>;
@@ -67,9 +92,14 @@ export type DispatchRefinementWorker = (
   round: number,
 ) => Promise<RefinementOutcome>;
 
-/** What one spawn action came to: the Attempt, and its PR when one was opened. */
+/**
+ * What one spawn action came to: the Attempt, and its PR when one was
+ * opened. `outcome` is undefined when the dispatch was fire-and-forget (the
+ * remote implementation) — the Worker settles its own Attempt elsewhere, so
+ * there is nothing here to reclassify or settle.
+ */
 interface SpawnResult {
-  outcome: WorkerOutcome;
+  outcome: WorkerOutcome | undefined;
   prUrl?: string;
   /** PR opening failed after a successful Attempt; reported, then rethrown. */
   prFailure?: unknown;
@@ -191,13 +221,23 @@ function describeRefinement(outcome: RefinementOutcome): string {
  * Act phase: perform the planned writes in plan order (releases first), one
  * at a time, narrating each as it lands. Spawns are the exception: each
  * Worker starts as its action is reached but runs concurrently, its branch
- * becoming a draft PR the moment it succeeds, and the Tick waits for all of
- * them before reporting outcomes. The same-way-same-Tick heuristic
+ * becoming a draft PR the moment it succeeds, and the Tick waits for
+ * whichever of them the injected `dispatch` actually hands back an outcome
+ * for before reporting. The local, synchronous dispatch hands back every
+ * outcome, so this is unchanged for it: the same-way-same-Tick heuristic
  * reclassifies correlated deaths once every Worker has settled, then each
  * outcome's write — the forensic release for a Ticket failure, the void for
  * an Infrastructure failure — is delegated to `settleAttempt`, the unit a
- * Worker settling its own Attempt will one day share. The report's infra
- * count is what trips the caller's circuit breaker. A tracker failure
+ * Worker settling its own Attempt also shares (src/app/worker.ts, issue
+ * #71). The remote dispatch (issue #73) hands back `undefined` instead, once
+ * its Worker's GitHub Actions job is merely triggered — nothing to
+ * reclassify or settle here, so this phase (and the Tick as a whole) never
+ * waits for that Worker to actually finish; the job settles its own Attempt,
+ * and a later Tick reads the result back from the tracker. The report's
+ * infra count is what trips the caller's circuit breaker, and only ever
+ * counts outcomes this Tick actually saw — a fire-and-forget dispatch's
+ * eventual infra failure instead surfaces through `deriveBreaker`'s own
+ * tracker read (breaker.ts) once its Worker reports. A tracker failure
  * mid-way throws — the stateless recovery story is re-running the Tick,
  * which recomputes the world and re-plans whatever is still due. PR upkeep
  * runs alongside dispatch: the mechanical branch update and draft→ready flip
@@ -344,6 +384,17 @@ export async function act(
           dispatch(action.ticket, action.attempt, handle.touch)
             .finally(handle.stop)
             .then(async (outcome): Promise<SpawnResult> => {
+              if (outcome === undefined) {
+                // Fire-and-forget: the Worker's job settles its own Attempt
+                // elsewhere (src/app/worker.ts, issue #71), and the next
+                // Tick reads the result back from the tracker.
+                workerLog({
+                  kind: "worker-dispatched-async",
+                  level: "info",
+                  msg: "Worker dispatched to a remote job; it will settle its own Attempt",
+                });
+                return { outcome: undefined, log: workerLog };
+              }
               if (!outcome.ok) return { outcome, log: workerLog };
               try {
                 return {
@@ -373,14 +424,22 @@ export async function act(
         result.status === "fulfilled",
     )
     .map((result) => result.value);
+  // A fire-and-forget dispatch (the remote implementation) settles nothing
+  // here — its outcome is undefined, and its Attempt is settled by the
+  // Worker job itself (src/app/worker.ts). Only the reportable (defined)
+  // outcomes are reclassified and settled below.
+  const reportable = fulfilled.filter(
+    (spawn): spawn is SpawnResult & { outcome: WorkerOutcome } =>
+      spawn.outcome !== undefined,
+  );
   // Reclassify once every Worker has settled: only the full Tick's outcomes
   // can show several Workers dying the same way (an environment problem,
   // not a coincidence of tickets). Zipped straight back onto the spawn
   // results so each outcome keeps its own PR and sub-logger.
   const reclassifiedOutcomes = reclassifyCorrelatedFailures(
-    fulfilled.map((spawn) => spawn.outcome),
+    reportable.map((spawn) => spawn.outcome),
   );
-  const outcomes = fulfilled.map((spawn, i) => ({
+  const outcomes = reportable.map((spawn, i) => ({
     outcome: reclassifiedOutcomes[i] ?? spawn.outcome,
     prUrl: spawn.prUrl,
     log: spawn.log,

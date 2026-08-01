@@ -1,11 +1,18 @@
 import { describe, expect, it } from "vitest";
 import {
+  CORRELATED_WINDOW_MS,
   classifyInfrastructure,
+  clusterWithinWindow,
+  correlatedFailureTimestampsMs,
   lastResultLine,
   parseResultEvent,
   reclassifyCorrelatedFailures,
 } from "../../src/core/classify.js";
-import type { WorkerOutcome } from "../../src/core/types.js";
+import type {
+  FailureReason,
+  Ticket,
+  WorkerOutcome,
+} from "../../src/core/types.js";
 
 describe("classifyInfrastructure", () => {
   it("classifies a usage-limit death", () => {
@@ -211,6 +218,121 @@ describe("reclassifyCorrelatedFailures", () => {
     expect(reclassifyCorrelatedFailures([infra, failed(4, "stall")])).toEqual([
       infra,
       failed(4, "stall"),
+    ]);
+  });
+});
+
+function ticketWithFailure(
+  lastFailureAtMs: number | undefined,
+  lastFailureReason: FailureReason | undefined,
+): Ticket {
+  return {
+    number: 1,
+    title: "Ticket",
+    state: "open",
+    assignees: [],
+    labels: ["ready-for-agent"],
+    openBlockers: 0,
+    blockedBy: [],
+    hasAgentClaim: false,
+    agentClaimCount: 1,
+    attemptFailures: [],
+    voidedAtMs: undefined,
+    lastFailureAtMs,
+    lastFailureReason,
+    hasLiveWorker: false,
+  };
+}
+
+describe("clusterWithinWindow", () => {
+  it("groups timestamps within the window into one cluster", () => {
+    expect(clusterWithinWindow([0, 500, 900], 1_000)).toEqual([[0, 500, 900]]);
+  });
+
+  it("starts a fresh cluster once a gap exceeds the window", () => {
+    expect(clusterWithinWindow([0, 500, 2_000], 1_000)).toEqual([
+      [0, 500],
+      [2_000],
+    ]);
+  });
+
+  it("measures each gap against the cluster's own latest member, not its first", () => {
+    // 0 -> 900 -> 1_800: each successive gap is 900 (within the window), so
+    // the whole run stays one cluster even though 1_800 is 1_800 past 0.
+    expect(clusterWithinWindow([0, 900, 1_800], 1_000)).toEqual([
+      [0, 900, 1_800],
+    ]);
+  });
+
+  it("returns one singleton cluster per timestamp when nothing is close enough", () => {
+    expect(clusterWithinWindow([0, 5_000, 10_000], 1_000)).toEqual([
+      [0],
+      [5_000],
+      [10_000],
+    ]);
+  });
+
+  it("returns no clusters for no timestamps", () => {
+    expect(clusterWithinWindow([], CORRELATED_WINDOW_MS)).toEqual([]);
+  });
+});
+
+describe("correlatedFailureTimestampsMs", () => {
+  it("trips on two tickets whose latest release shares a correlatable reason within the window", () => {
+    const tickets = [
+      ticketWithFailure(1_000, "nonzero-exit"),
+      ticketWithFailure(1_500, "nonzero-exit"),
+    ];
+
+    expect(correlatedFailureTimestampsMs(tickets)).toEqual([1_500]);
+  });
+
+  it("ignores a single failure — one death is a ticket failure until proven otherwise", () => {
+    const tickets = [ticketWithFailure(1_000, "timeout")];
+
+    expect(correlatedFailureTimestampsMs(tickets)).toEqual([]);
+  });
+
+  it("ignores tickets that failed in different ways", () => {
+    const tickets = [
+      ticketWithFailure(1_000, "stall"),
+      ticketWithFailure(1_050, "timeout"),
+    ];
+
+    expect(correlatedFailureTimestampsMs(tickets)).toEqual([]);
+  });
+
+  it("never reclassifies budget breaches or clean no-commit exits, same as the batch heuristic", () => {
+    const tickets = [
+      ticketWithFailure(1_000, "budget"),
+      ticketWithFailure(1_050, "budget"),
+      ticketWithFailure(1_100, "no-commits"),
+      ticketWithFailure(1_150, "no-commits"),
+    ];
+
+    expect(correlatedFailureTimestampsMs(tickets)).toEqual([]);
+  });
+
+  it("ignores tickets whose latest marker is no longer a Ticket-failure release", () => {
+    const tickets = [
+      ticketWithFailure(undefined, undefined),
+      ticketWithFailure(undefined, undefined),
+    ];
+
+    expect(correlatedFailureTimestampsMs(tickets)).toEqual([]);
+  });
+
+  it("does not collapse two correlated pairs spaced beyond the window into one trip", () => {
+    const tickets = [
+      ticketWithFailure(0, "stall"),
+      ticketWithFailure(500, "stall"),
+      ticketWithFailure(CORRELATED_WINDOW_MS * 10, "stall"),
+      ticketWithFailure(CORRELATED_WINDOW_MS * 10 + 500, "stall"),
+    ];
+
+    expect(correlatedFailureTimestampsMs(tickets)).toEqual([
+      500,
+      CORRELATED_WINDOW_MS * 10 + 500,
     ]);
   });
 });

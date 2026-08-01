@@ -1,3 +1,8 @@
+import {
+  CORRELATED_WINDOW_MS,
+  clusterWithinWindow,
+  correlatedFailureTimestampsMs,
+} from "./classify.js";
 import type { WorldSnapshot } from "./types.js";
 
 /**
@@ -45,44 +50,46 @@ export function probeDue(breaker: OpenBreaker, nowMs: number): boolean {
 }
 
 /**
- * Void markers this close together are read as one Tick's worth: the live
- * loop trips once per Tick no matter how many Workers died the same way
+ * Timestamps this close together are read as one Tick's worth: the live loop
+ * trips once per Tick no matter how many Workers died the same way
  * (CONTEXT.md "Infrastructure failure" — correlated), and every void comment
  * for one Tick posts back-to-back right after its Workers settle. Ticks
  * themselves are always spaced by at least the base cooldown once the
  * breaker is open, so this window can't merge two genuinely separate trips.
+ * Every cluster becomes one trip regardless of size — unlike
+ * `correlatedFailureTimestampsMs` below, a single held void always trips: it
+ * is not a coincidence heuristic, the Worker already evidenced the
+ * environment cause itself.
  */
-const CORRELATED_VOID_WINDOW_MS = 60_000;
+function collapseWithinWindow(msSorted: number[]): number[] {
+  return clusterWithinWindow(msSorted, CORRELATED_WINDOW_MS).map(
+    (cluster) => cluster.at(-1) as number,
+  );
+}
 
 /**
  * Derive the breaker fresh from the world snapshot: every in-Scope ticket's
  * still-held void marker (`Ticket.voidedAtMs`, undefined once a later claim
- * or release resolves it) contributes its timestamp; timestamps within
- * `CORRELATED_VOID_WINDOW_MS` of each other collapse to the one Tick that
- * produced them. Each surviving timestamp is one trip, folded through
+ * or release resolves it) contributes its timestamp, alongside every
+ * correlated Ticket-failure timestamp `correlatedFailureTimestampsMs`
+ * recomputes from the tracker (issue #73 — a self-reporting Worker never
+ * sees a sibling's outcome to batch against, so this replaces the batch the
+ * act phase used to reclassify inline). The merged timestamps collapse
+ * within `CORRELATED_WINDOW_MS` of each other to the one Tick that produced
+ * them, and each surviving timestamp is one trip, folded through
  * `tripBreaker` in chronological order — the same sequence a live process
- * would have applied as each Tick's voids landed. A fresh process therefore
- * reaches the same verdict as one that watched the failures happen, with no
- * store beyond the tracker's own comments.
+ * would have applied as each Tick's infrastructure failures landed. A fresh
+ * process therefore reaches the same verdict as one that watched them
+ * happen, with no store beyond the tracker's own comments.
  */
 export function deriveBreaker(world: WorldSnapshot): Breaker {
   const voidTimestampsMs = world.tickets
     .map((ticket) => ticket.voidedAtMs)
-    .filter((ms): ms is number => ms !== undefined)
-    .sort((a, b) => a - b);
-
-  const tripTimestampsMs: number[] = [];
-  for (const ms of voidTimestampsMs) {
-    const lastIndex = tripTimestampsMs.length - 1;
-    if (
-      lastIndex >= 0 &&
-      ms - (tripTimestampsMs[lastIndex] as number) <= CORRELATED_VOID_WINDOW_MS
-    ) {
-      tripTimestampsMs[lastIndex] = ms;
-    } else {
-      tripTimestampsMs.push(ms);
-    }
-  }
+    .filter((ms): ms is number => ms !== undefined);
+  const correlatedTimestampsMs = correlatedFailureTimestampsMs(world.tickets);
+  const tripTimestampsMs = collapseWithinWindow(
+    [...voidTimestampsMs, ...correlatedTimestampsMs].sort((a, b) => a - b),
+  );
 
   return tripTimestampsMs.reduce<Breaker>(
     (breaker, ms) => tripBreaker(breaker, ms),
