@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { Exec } from "../../src/adapters/tracker.js";
-import type { DispatchWorker, OpenPr } from "../../src/app/act.js";
+import type { OpenPr, SyncDispatchWorker } from "../../src/app/act.js";
 import { runWorkerAttempt } from "../../src/app/worker.js";
 import type { Log, LogBindings, LogEvent } from "../../src/core/log.js";
 import {
@@ -62,7 +62,7 @@ describe("runWorkerAttempt", () => {
     const { exec, calls } = recordingExec();
     const { log, events } = recordingLog();
     const dispatched: [number, number][] = [];
-    const dispatch: DispatchWorker = async (ticket, attempt) => {
+    const dispatch: SyncDispatchWorker = async (ticket, attempt) => {
       dispatched.push([ticket, attempt]);
       return outcome({ newCommits: 3 });
     };
@@ -94,7 +94,7 @@ describe("runWorkerAttempt", () => {
     const { exec, calls } = recordingExec();
     const { log, events } = recordingLog();
     let openPrCalled = false;
-    const dispatch: DispatchWorker = async () =>
+    const dispatch: SyncDispatchWorker = async () =>
       outcome({
         exitCode: 1,
         newCommits: 0,
@@ -129,7 +129,7 @@ describe("runWorkerAttempt", () => {
     const { exec, calls } = recordingExec();
     const { log, events } = recordingLog();
     let openPrCalled = false;
-    const dispatch: DispatchWorker = async () =>
+    const dispatch: SyncDispatchWorker = async () =>
       outcome({ exitCode: 1, newCommits: 0, infra: "usage-limit", ok: false });
     const openPr: OpenPr = async () => {
       openPrCalled = true;
@@ -166,7 +166,7 @@ describe("runWorkerAttempt", () => {
     const { exec } = recordingExec();
     const { log } = recordingLog();
     const attempts: [number, number][] = [];
-    const dispatch: DispatchWorker = async (ticket, attempt) => {
+    const dispatch: SyncDispatchWorker = async (ticket, attempt) => {
       attempts.push([ticket, attempt]);
       return outcome({ ticket, attempt });
     };
@@ -180,7 +180,7 @@ describe("runWorkerAttempt", () => {
   it("still settles the Attempt when PR opening fails, then rethrows, logging the failure at error", async () => {
     const { exec } = recordingExec();
     const { log, events } = recordingLog();
-    const dispatch: DispatchWorker = async () => outcome();
+    const dispatch: SyncDispatchWorker = async () => outcome();
     const openPr: OpenPr = async () => {
       throw new Error("gh pr create exploded");
     };

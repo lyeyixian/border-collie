@@ -37,14 +37,21 @@ export function dispatchableSet(world: WorldSnapshot): Ticket[] {
 
 /**
  * Orphaned agent claim: an open ticket carrying both the claim label and the
- * claim marker but with no agent PR, open or merged — leftover from a
- * crashed run. (No live-Worker check yet: the stateless Orchestrator has no
- * Workers at Tick start until spawning lands with a later ticket. A
- * merged-PR claim is not orphaned: that ticket is done and merely awaiting
- * closure verification. Requiring the marker too — not just the label —
- * fails safe on a crash between the two claim writes: a labelled ticket with
- * no marker looks like an interrupted claim rather than a crashed run's
- * leftover, so it is left for a human to notice instead of auto-released.)
+ * claim marker, no agent PR (open or merged), and no Worker job still live —
+ * leftover from a crashed or finished-without-reporting run. A merged-PR
+ * claim is not orphaned: that ticket is done and merely awaiting closure
+ * verification. Requiring the marker too — not just the label — fails safe
+ * on a crash between the two claim writes: a labelled ticket with no marker
+ * looks like an interrupted claim rather than a crashed run's leftover, so it
+ * is left for a human to notice instead of auto-released. The live-Worker
+ * check (`Ticket.hasLiveWorker`, issue #73) is what keeps this from firing
+ * against a claim whose Worker is still actually running: dispatch is now
+ * fire-and-forget, so by the time this Tick observes the ticket, its Worker
+ * may not have finished (and thus opened no PR) yet — a promise once held
+ * only in the Orchestrator's memory would have blocked here in-process, but
+ * a self-reporting Worker gives that memory nothing to hold. Once GitHub
+ * itself marks the job no longer live with still no PR and no report, this
+ * releases it, whether the Worker crashed or simply never wrote back.
  * Released back to unclaimed; it rejoins the dispatchable set on the next
  * Tick's recomputed snapshot.
  */
@@ -63,6 +70,7 @@ function isOrphanedClaim(ticket: Ticket, world: WorldSnapshot): boolean {
     ticket.state === "open" &&
     ticket.labels.includes(CLAIM_LABEL) &&
     ticket.hasAgentClaim &&
+    !ticket.hasLiveWorker &&
     !hasOpenAgentPr(world, ticket.number) &&
     !hasMergedAgentPr(world, ticket.number)
   );

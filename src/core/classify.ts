@@ -1,4 +1,9 @@
-import type { InfraReason, WorkerOutcome } from "./types.js";
+import type {
+  FailureReason,
+  InfraReason,
+  Ticket,
+  WorkerOutcome,
+} from "./types.js";
 
 /**
  * Failure classification (CONTEXT.md "Infrastructure failure"): pure
@@ -103,7 +108,7 @@ export function parseResultEvent(tail: string): ResultEvent | undefined {
  * same evidence: both are measured from a Worker that ran to completion,
  * which proves the environment was up.
  */
-const CORRELATABLE: ReadonlySet<string> = new Set([
+const CORRELATABLE: ReadonlySet<FailureReason> = new Set([
   "nonzero-exit",
   "timeout",
   "stall",
@@ -131,4 +136,90 @@ export function reclassifyCorrelatedFailures(
       ? { ...outcome, failure: undefined, infra: "correlated" as const }
       : outcome,
   );
+}
+
+/**
+ * Same-Tick window for the correlation heuristic: timestamps this close
+ * together read as one Tick's worth of coincident deaths — void markers
+ * (breaker.ts's own trip collapsing) or, now that a self-reporting Worker
+ * settles alone and never sees a sibling's outcome (issue #73),
+ * Ticket-failure releases recomputed from the tracker below.
+ */
+export const CORRELATED_WINDOW_MS = 60_000;
+
+/**
+ * Group sorted timestamps into clusters: a new cluster starts whenever a
+ * timestamp is more than `windowMs` past its cluster's own latest member.
+ * The one clustering primitive both same-Tick heuristics share, since they
+ * differ only in what counts as a trip once clustered: breaker.ts's void
+ * collapsing trips on every cluster regardless of size (a single void always
+ * trips), while `correlatedFailureTimestampsMs` below only trips a cluster of
+ * two or more (a lone Ticket-failure release is not evidence of anything).
+ */
+export function clusterWithinWindow(
+  sortedMs: number[],
+  windowMs: number,
+): number[][] {
+  const clusters: number[][] = [];
+  for (const ms of sortedMs) {
+    const current = clusters.at(-1);
+    const latest = current?.at(-1);
+    if (
+      current !== undefined &&
+      latest !== undefined &&
+      ms - latest <= windowMs
+    ) {
+      current.push(ms);
+    } else {
+      clusters.push([ms]);
+    }
+  }
+  return clusters;
+}
+
+/**
+ * `reclassifyCorrelatedFailures` above needs a batch of outcomes seen
+ * together in one process, which a self-reporting Worker never has (issue
+ * #73): each settles its own Attempt alone, whether locally or as its own
+ * GitHub Actions job. This is the same heuristic recomputed instead from
+ * `Ticket.lastFailureAtMs`/`lastFailureReason` — the tracker's own record of
+ * each ticket's latest release, one pair per ticket, mirroring
+ * `voidedAtMs` — across every ticket in Scope: two or more tickets whose
+ * latest release still carries the same correlatable reason
+ * (`CORRELATABLE`), posted within `CORRELATED_WINDOW_MS` of each other, are
+ * read as one environment problem rather than a coincidence of tickets.
+ * Each surviving cluster contributes its last timestamp, exactly like a void
+ * marker's, for `deriveBreaker` (breaker.ts) to fold through the same trip
+ * sequence a live batch would have.
+ *
+ * Unlike a void, a correlated release cannot be un-counted after the fact:
+ * the Attempt already released and counted against the ticket's cap before
+ * this Tick ever ran. Recomputing at Tick time recovers the breaker trip —
+ * dispatch still pauses so the outage cannot burn further Attempts — but not
+ * the Attempt itself, a known, accepted narrowing of "counts as nothing"
+ * (CONTEXT.md "Infrastructure failure") that a synchronous batch no longer
+ * makes possible.
+ */
+export function correlatedFailureTimestampsMs(tickets: Ticket[]): number[] {
+  const byReason = new Map<FailureReason, number[]>();
+  for (const { lastFailureAtMs, lastFailureReason } of tickets) {
+    if (lastFailureAtMs === undefined || lastFailureReason === undefined) {
+      continue;
+    }
+    if (!CORRELATABLE.has(lastFailureReason)) continue;
+    const timestamps = byReason.get(lastFailureReason) ?? [];
+    timestamps.push(lastFailureAtMs);
+    byReason.set(lastFailureReason, timestamps);
+  }
+  const trips: number[] = [];
+  for (const timestamps of byReason.values()) {
+    timestamps.sort((a, b) => a - b);
+    for (const cluster of clusterWithinWindow(
+      timestamps,
+      CORRELATED_WINDOW_MS,
+    )) {
+      if (cluster.length >= 2) trips.push(cluster.at(-1) as number);
+    }
+  }
+  return trips.sort((a, b) => a - b);
 }

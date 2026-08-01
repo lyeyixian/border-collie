@@ -300,6 +300,28 @@ export interface Ticket {
    * these across in-Scope tickets (CONTEXT.md "Infrastructure failure").
    */
   voidedAtMs: number | undefined;
+  /**
+   * Timestamp (ms) of the ticket's most recent Ticket-failure release, when
+   * it is still the latest border-collie marker on the ticket — the
+   * Ticket-failure analogue of `voidedAtMs`. Undefined once superseded by a
+   * later claim, or when the latest release carried no attempt record (an
+   * orphan release). A self-reporting Worker settles alone and never sees a
+   * sibling's outcome, so the same-way-same-Tick correlation heuristic
+   * (CONTEXT.md "Infrastructure failure" — correlated) is recomputed from
+   * this pair across in-Scope tickets instead of from a batch in the act
+   * phase (issue #73; see `classify.ts`'s `correlatedFailureTimestampsMs`).
+   */
+  lastFailureAtMs: number | undefined;
+  /** The reason recorded on that same latest release, paired with `lastFailureAtMs`. */
+  lastFailureReason: FailureReason | undefined;
+  /**
+   * True when a Worker job for this ticket is still running on GitHub —
+   * anything short of `completed` (issue #73). Worker liveness read from
+   * GitHub itself, replacing a promise held in the Orchestrator's memory, so
+   * a restarted Orchestrator reaches the same verdict and an orphaned-claim
+   * check never releases a Claim whose Worker is still actually working.
+   */
+  hasLiveWorker: boolean;
 }
 
 /**

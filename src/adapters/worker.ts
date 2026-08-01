@@ -12,7 +12,7 @@ import {
   type FailureReason,
   type WorkerOutcome,
 } from "../core/types.js";
-import { type Exec, realExec } from "./tracker.js";
+import { type Exec, realExec, WORKER_WORKFLOW_FILE } from "./tracker.js";
 
 /**
  * The WorkerHost seam: everything a dispatched Worker needs around it —
@@ -410,6 +410,38 @@ export async function dispatchWorker(
   } finally {
     await withGitLock(() => removeWorktree(worktree, exec));
   }
+}
+
+/**
+ * Dispatch one Worker against one claimed ticket by triggering its GitHub
+ * Actions job (issue #75) and returning immediately, without an outcome —
+ * the fire-and-forget half of the dispatch seam (issue #73), alongside the
+ * synchronous `dispatchWorker` above, which the local path keeps unchanged.
+ * The job runs the Worker entrypoint command, which settles its own Attempt
+ * (src/app/worker.ts, issue #71): opening the draft PR itself on success,
+ * releasing with the forensic record on a Ticket failure, or voiding the
+ * Attempt on an Infrastructure failure. The next Tick reads the result back
+ * from the tracker, and reads the job's own running state as this ticket's
+ * Worker liveness (`liveWorkerTickets`, adapters/tracker.ts) rather than
+ * waiting on it here. Ticket and attempt are explicit workflow_dispatch
+ * inputs — dispatch is never inferred from a label or an assignee event,
+ * since the Orchestrator already knows which Ticket it decided to dispatch.
+ */
+export async function dispatchRemoteWorker(
+  ticket: number,
+  attempt: number,
+  exec: Exec = realExec,
+): Promise<undefined> {
+  await exec("gh", [
+    "workflow",
+    "run",
+    WORKER_WORKFLOW_FILE,
+    "-f",
+    `ticket=${ticket}`,
+    "-f",
+    `attempt=${attempt}`,
+  ]);
+  return undefined;
 }
 
 /** The probe's own generous window: a healthy environment answers in seconds. */

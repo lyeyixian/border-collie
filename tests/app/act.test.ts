@@ -589,6 +589,71 @@ describe("act", () => {
     expect(report).toEqual({ infraFailures: 0 });
   });
 
+  it("completes without waiting for a Worker dispatched fire-and-forget (the remote implementation, issue #73)", async () => {
+    const { exec, calls } = recordingExec();
+    const { openPr, opened } = recordingOpenPr();
+    const { log, events } = recordingLog();
+    // The remote dispatch resolves once the job is merely triggered — never
+    // once it finishes. Nothing here ever settles it, proving the Tick
+    // itself never waited for that to happen.
+    const dispatch: DispatchWorker = async () => undefined;
+
+    const report = await act([{ type: "spawn", ticket: 7, attempt: 1 }], {
+      dispatch,
+      openPr,
+      dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
+      exec,
+      now,
+      scheduleInterval,
+      log,
+    });
+
+    expect(opened).toEqual([]); // nothing to open a PR for yet
+    expect(calls).toEqual([]); // nothing to write to the tracker yet
+    expect(report).toEqual({ infraFailures: 0 });
+    expect(events.map((e) => e.kind)).toEqual([
+      "spawn",
+      "worker-dispatched-async",
+    ]);
+  });
+
+  it("settles only the Workers dispatch actually hands back an outcome for", async () => {
+    const { exec, calls } = recordingExec();
+    const { openPr, opened } = recordingOpenPr();
+    const { log, events } = recordingLog();
+    const dispatch: DispatchWorker = async (ticket) =>
+      ticket === 2 ? undefined : outcome(4, { newCommits: 3 });
+
+    const report = await act(
+      [
+        { type: "spawn", ticket: 2, attempt: 1 },
+        { type: "spawn", ticket: 4, attempt: 1 },
+      ],
+      {
+        dispatch,
+        openPr,
+        dispatchConflict: noConflict,
+        dispatchRefinement: noRefinement,
+        exec,
+        now,
+        scheduleInterval,
+        log,
+      },
+    );
+
+    expect(opened).toEqual([4]);
+    expect(calls).toEqual([]); // a clean success writes nothing beyond its claim
+    expect(report).toEqual({ infraFailures: 0 });
+    const ticket2Events = events.filter(
+      (e) => (e as { ticket?: number }).ticket === 2,
+    );
+    expect(ticket2Events.map((e) => e.kind)).toEqual([
+      "spawn",
+      "worker-dispatched-async",
+    ]);
+  });
+
   it("still reports finished Workers when a sibling dispatch throws, then rethrows", async () => {
     const { exec } = recordingExec();
     const { openPr } = recordingOpenPr();

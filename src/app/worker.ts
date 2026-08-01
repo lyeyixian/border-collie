@@ -9,17 +9,21 @@ import { dispatchWorker, realSpawnWorkerProcess } from "../adapters/worker.js";
 import { modelForAttempt, type WorkerAttemptConfig } from "../core/config.js";
 import type { Log } from "../core/log.js";
 import type { WorkerOutcome } from "../core/types.js";
-import type { DispatchWorker, OpenPr } from "./act.js";
+import type { OpenPr, SyncDispatchWorker } from "./act.js";
 import { settleAttempt } from "./settle.js";
 
 /**
- * A Worker settling its own Attempt (issue #71): the same `DispatchWorker`
- * and `OpenPr` seams the act phase spawns a batch of Workers through
- * (src/app/act.ts), injectable so a fake dispatch/openPr exercises this unit
- * without a real session.
+ * A Worker settling its own Attempt (issue #71): the same `OpenPr` seam the
+ * act phase spawns a batch of Workers through (src/app/act.ts), injectable
+ * so a fake dispatch/openPr exercises this unit without a real session.
+ * `dispatch` is a `SyncDispatchWorker`, not the wider `DispatchWorker`: this
+ * command IS the Worker running its own session, so its own dispatch call
+ * always waits for that session and always gets a real outcome back — the
+ * fire-and-forget remote implementation (issue #73) belongs at the Tick's
+ * act phase, not here.
  */
 export interface WorkerAttemptDeps {
-  dispatch: DispatchWorker;
+  dispatch: SyncDispatchWorker;
   openPr: OpenPr;
   exec: Exec;
   log: Log;
