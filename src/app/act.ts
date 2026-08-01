@@ -4,11 +4,17 @@ import {
   commentConflictUnresolved,
   type Exec,
   escalateTicket,
+  giveUpOnPr,
   markPrReady,
   releaseTicket,
+  startRefinementRound,
   updatePrBranch,
 } from "../adapters/tracker.js";
-import { type ConflictOutcome, pushAgentBranch } from "../adapters/worker.js";
+import {
+  type ConflictOutcome,
+  pushAgentBranch,
+  type RefinementOutcome,
+} from "../adapters/worker.js";
 import { reclassifyCorrelatedFailures } from "../core/classify.js";
 import { heartbeatSnapshot, type WorkerActivity } from "../core/heartbeat.js";
 import type { Log } from "../core/log.js";
@@ -53,6 +59,14 @@ export type DispatchConflictWorker = (
   headRef: string,
 ) => Promise<ConflictOutcome>;
 
+/** Dispatch one Refinement-round Worker against one open agent PR. */
+export type DispatchRefinementWorker = (
+  pr: number,
+  ticket: number,
+  headRef: string,
+  round: number,
+) => Promise<RefinementOutcome>;
+
 /** What one spawn action came to: the Attempt, and its PR when one was opened. */
 interface SpawnResult {
   outcome: WorkerOutcome;
@@ -69,6 +83,12 @@ interface ConflictSpawnResult {
   log: Log;
 }
 
+/** What one refine-pr action came to: the outcome, and its sub-logger to carry forward. */
+interface RefinementSpawnResult {
+  outcome: RefinementOutcome;
+  log: Log;
+}
+
 /** What one Tick's act phase reports back to the loop. */
 export interface ActReport {
   /** Infrastructure-voided Attempts this Tick — any at all trips the circuit breaker. */
@@ -80,6 +100,7 @@ export interface ActDeps {
   dispatch: DispatchWorker;
   openPr: OpenPr;
   dispatchConflict: DispatchConflictWorker;
+  dispatchRefinement: DispatchRefinementWorker;
   exec: Exec;
   log: Log;
   /** The heartbeat's clock, following the run loop's existing treatment of time. */
@@ -160,6 +181,12 @@ function describeConflict(outcome: ConflictOutcome): string {
     : `Conflict Worker could not resolve the conflicts (exit ${outcome.exitCode}) ${where}`;
 }
 
+function describeRefinement(outcome: RefinementOutcome): string {
+  const commits = `${outcome.newCommits} new commit${outcome.newCommits === 1 ? "" : "s"}`;
+  const where = `on ${outcome.headRef} (transcript: ${outcome.transcript})`;
+  return `Refinement Worker finished: ${commits} ${where}`;
+}
+
 /**
  * Act phase: perform the planned writes in plan order (releases first), one
  * at a time, narrating each as it lands. Spawns are the exception: each
@@ -178,7 +205,12 @@ function describeConflict(outcome: ConflictOutcome): string {
  * spawn, its resolved rebase pushed (or the PR handed to a human) once it
  * settles. While any dispatch Worker is in flight, a fleet heartbeat reports
  * all of them once a minute — elapsed time and time since last output,
- * independently — and stops the moment the last one settles.
+ * independently — and stops the moment the last one settles. A Refinement
+ * round (CONTEXT.md "Refinement round") runs the same shape as a conflict
+ * Worker — the round marker lands first (bounding the round even across a
+ * crash), then the Worker runs concurrently, its branch pushed back only
+ * when it actually committed a fix. Refinement give-up is an immediate
+ * tracker write, like an escalation.
  */
 export async function act(
   actions: Action[],
@@ -188,6 +220,7 @@ export async function act(
     dispatch,
     openPr,
     dispatchConflict,
+    dispatchRefinement,
     exec,
     log,
     now,
@@ -195,6 +228,7 @@ export async function act(
   } = deps;
   const workers: Promise<SpawnResult>[] = [];
   const conflicts: Promise<ConflictSpawnResult>[] = [];
+  const refinements: Promise<RefinementSpawnResult>[] = [];
   const heartbeat = createHeartbeat(now, scheduleInterval, log);
 
   for (const action of actions) {
@@ -269,6 +303,37 @@ export async function act(
         });
         break;
       }
+      case "refine-pr": {
+        await startRefinementRound(action.pr, action.round, exec);
+        const refinementLog = log.child({ pr: action.pr });
+        refinementLog({
+          kind: "refinement-round-started",
+          level: "info",
+          msg: `started Refinement round ${action.round} for PR #${action.pr} (ticket #${action.ticket})`,
+          ticket: action.ticket,
+          round: action.round,
+        });
+        refinements.push(
+          dispatchRefinement(
+            action.pr,
+            action.ticket,
+            action.headRef,
+            action.round,
+          ).then((outcome) => ({ outcome, log: refinementLog })),
+        );
+        break;
+      }
+      case "refinement-give-up":
+        await giveUpOnPr(action.pr, action.ticket, action.rounds, exec);
+        log({
+          kind: "refinement-give-up",
+          level: "warn",
+          msg: `gave up Refining PR #${action.pr} after ${action.rounds} rounds (ticket #${action.ticket} → ready-for-human)`,
+          pr: action.pr,
+          ticket: action.ticket,
+          rounds: action.rounds,
+        });
+        break;
       case "spawn": {
         const workerLog = log.child({
           ticket: action.ticket,
@@ -353,6 +418,28 @@ export async function act(
       });
     }
   }
+  // Refinement-round Workers settle the same way: the branch is pushed back
+  // only when the round actually committed a fix — a round that changed
+  // nothing leaves the PR as it was, for the next Tick to judge afresh.
+  const settledRefinements = await Promise.allSettled(refinements);
+  for (const result of settledRefinements) {
+    if (result.status !== "fulfilled") continue;
+    const { outcome, log: refinementLog } = result.value;
+    refinementLog({
+      kind: "refinement-outcome",
+      level: "info",
+      msg: describeRefinement(outcome),
+      newCommits: outcome.newCommits,
+    });
+    if (outcome.newCommits > 0) {
+      await pushAgentBranch(outcome.headRef, exec);
+      refinementLog({
+        kind: "refinement-pushed",
+        level: "info",
+        msg: "pushed the Refinement fix",
+      });
+    }
+  }
 
   const rejected = settled.find((result) => result.status === "rejected");
   if (rejected) throw rejected.reason;
@@ -360,6 +447,10 @@ export async function act(
     (result) => result.status === "rejected",
   );
   if (rejectedConflict) throw rejectedConflict.reason;
+  const rejectedRefinement = settledRefinements.find(
+    (result) => result.status === "rejected",
+  );
+  if (rejectedRefinement) throw rejectedRefinement.reason;
   for (const result of settled) {
     if (result.status === "fulfilled" && result.value.prFailure !== undefined) {
       const { prFailure, log: workerLog } = result.value;

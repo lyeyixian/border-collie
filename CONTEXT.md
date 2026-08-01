@@ -57,6 +57,18 @@ _Avoid_: merge commit (every update is a rebase, keeping agent branches linear s
 The one Worker variant dispatched against a PR rather than a Ticket: a fresh-context session, isolated in a worktree on the conflicted PR's own branch, that completes an in-progress rebase of it onto the base. One per conflict — on failure the PR gets a marker comment asking for a human (the PR-level analogue of Escalation), which vetoes any further session. It is not an Attempt and counts toward no ticket's cap.
 _Avoid_: conflict attempt (Attempts are ticket-scoped; this is not one)
 
+**Refinement round**:
+A failing check, a formal PR review, or a foreign (non-border-collie) comment on an open agent PR not carrying the `operator-steered` label — a marker comment counts the round, then a Worker investigates and commits a fix, which the Orchestrator pushes straight to the PR's branch once the round settles. Bounded at three rounds per PR. Like the Conflict Worker, it is not an Attempt and counts toward no ticket's cap.
+_Avoid_: refinement attempt (Attempts are ticket-scoped; this is not one)
+
+**Refinement give-up**:
+The PR-scoped give-up when a PR's Refinement rounds are exhausted and it still needs one: swap its ticket's `ready-for-agent` → `ready-for-human`, leave forensic comments on both the ticket and the PR, and mark the PR so no further round is ever judged. Distinct from Escalation, which fires on a Ticket's own exhausted Attempts rather than a PR's exhausted rounds — a Ticket with an open agent PR never reaches Escalation (the open PR vetoes it), so the two never compete for the same ticket.
+_Avoid_: escalation (Ticket-scoped; this is PR-scoped)
+
+**Operator-steered**:
+The `operator-steered` label, added by hand to a PR the operator has attached a conversational cloud session to. The automatic Refinement loop skips any PR carrying it, so the two never write over each other; it does not affect Conflict Worker dispatch or the rest of PR upkeep.
+_Avoid_: claimed (that label is Ticket-scoped and agent-held — see "Claim")
+
 **Complete**:
 Terminal state of a run: every ticket in Scope merged and closed.
 

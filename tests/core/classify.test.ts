@@ -63,16 +63,17 @@ describe("classifyInfrastructure", () => {
 });
 
 describe("parseResultEvent", () => {
-  it("reads subtype, cost, and turns from the last result event", () => {
+  it("reads subtype, cost, turns, and duration from the last result event", () => {
     const tail = [
       '{"type":"assistant","message":{}}',
-      '{"type":"result","subtype":"success","total_cost_usd":1.25,"num_turns":40}',
+      '{"type":"result","subtype":"success","total_cost_usd":1.25,"num_turns":40,"duration_ms":54000}',
     ].join("\n");
 
     expect(parseResultEvent(tail)).toEqual({
       subtype: "success",
       totalCostUsd: 1.25,
       numTurns: 40,
+      durationMs: 54000,
     });
   });
 
@@ -98,6 +99,7 @@ describe("parseResultEvent", () => {
       subtype: undefined,
       totalCostUsd: undefined,
       numTurns: undefined,
+      durationMs: undefined,
     });
   });
 });
@@ -136,6 +138,8 @@ function outcome(
     infra: undefined,
     costUsd: undefined,
     turns: undefined,
+    durationMs: undefined,
+    subtype: undefined,
     costOverrun: false,
     ok: true,
     ...overrides,

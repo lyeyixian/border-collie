@@ -3,11 +3,16 @@ import type { ResolvedConfig } from "../../src/core/config.js";
 import type { WorkerHeartbeat } from "../../src/core/heartbeat.js";
 import {
   buildCompleteReport,
+  buildForensicReport,
   buildPlanReport,
   buildStuckReport,
   type CompleteReport,
+  FORENSIC_FINAL_TURNS,
+  type ForensicReport,
+  MAX_FORENSIC_LENGTH,
   type PlanReport,
   renderCompleteReport,
+  renderForensicReport,
   renderHeartbeat,
   renderPlanReport,
   renderStuckReport,
@@ -17,6 +22,7 @@ import type {
   Action,
   OpenAgentPr,
   Ticket,
+  WorkerOutcome,
   WorldSnapshot,
 } from "../../src/core/types.js";
 
@@ -47,6 +53,8 @@ function openPr(ticket: number): OpenAgentPr {
     behind: false,
     ci: "passing",
     conflictWorkerAsked: false,
+    operatorSteered: false,
+    refinement: { rounds: 0, triggerDue: false, givenUp: false },
   };
 }
 
@@ -193,6 +201,8 @@ describe("buildPlanReport", () => {
         ticket({ number: 5, title: "Merged but open" }),
         ticket({ number: 6, title: "Behind base" }),
         ticket({ number: 7, title: "Green draft" }),
+        ticket({ number: 8, title: "Refining" }),
+        ticket({ number: 9, title: "Refinement exhausted" }),
       ],
       openAgentPrs: [],
       mergedAgentPrs: [],
@@ -211,6 +221,14 @@ describe("buildPlanReport", () => {
         headRef: "border-collie/ticket-6-attempt-1",
       },
       { type: "mark-ready", pr: 70, ticket: 7 },
+      {
+        type: "refine-pr",
+        pr: 80,
+        ticket: 8,
+        headRef: "border-collie/ticket-8-attempt-1",
+        round: 2,
+      },
+      { type: "refinement-give-up", pr: 90, ticket: 9, rounds: 3 },
     ];
 
     const report = buildPlanReport(config(), actionWorld, actions, {
@@ -237,6 +255,13 @@ describe("buildPlanReport", () => {
       { type: "update-branch", pr: 60, title: "Behind base" },
       { type: "conflict-worker", pr: 61, title: "Behind base" },
       { type: "mark-ready", pr: 70, title: "Green draft" },
+      { type: "refine-pr", pr: 80, title: "Refining", round: 2 },
+      {
+        type: "refinement-give-up",
+        pr: 90,
+        title: "Refinement exhausted",
+        rounds: 3,
+      },
     ]);
   });
 
@@ -305,6 +330,13 @@ describe("renderPlanReport", () => {
         { type: "update-branch", pr: 50, title: "Behind base" },
         { type: "conflict-worker", pr: 60, title: "Conflicted" },
         { type: "mark-ready", pr: 70, title: "Green draft" },
+        { type: "refine-pr", pr: 80, title: "Refining", round: 2 },
+        {
+          type: "refinement-give-up",
+          pr: 90,
+          title: "Refinement exhausted",
+          rounds: 3,
+        },
       ],
       dryRun: true,
     };
@@ -323,6 +355,8 @@ describe("renderPlanReport", () => {
         "  update PR #50 — Behind base (behind base, mechanical rebase)",
         "  conflict Worker for PR #60 — Conflicted (resolve merge conflicts)",
         "  mark PR #70 ready — Green draft (CI green)",
+        "  Refine PR #80 — Refining (round 2, failing check or review feedback)",
+        "  give up Refining PR #90 — Refinement exhausted (3 rounds exhausted → ready-for-human)",
         "Dry run: no writes performed.",
       ].join("\n"),
     );
@@ -559,6 +593,243 @@ describe("renderCompleteReport", () => {
         "  #2 — Walking skeleton",
         "  #7 — Hard one (closed by a human after Escalation)",
       ].join("\n"),
+    );
+  });
+});
+
+function outcome(overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
+  return {
+    ticket: 7,
+    attempt: 2,
+    branch: "border-collie/ticket-7-attempt-2",
+    base: "base-sha",
+    transcript: ".border-collie/transcripts/ticket-7-attempt-2.jsonl",
+    model: "sonnet",
+    exitCode: 1,
+    newCommits: 0,
+    failure: "budget",
+    infra: undefined,
+    costUsd: 9.5,
+    turns: 200,
+    durationMs: 723_000,
+    subtype: "error_max_turns",
+    costOverrun: false,
+    ok: false,
+    ...overrides,
+  };
+}
+
+const textBlock = (text: string) => ({ type: "text", text });
+const toolUseBlock = (name: string, input: unknown = {}) => ({
+  type: "tool_use",
+  id: `toolu_${name}_${Math.random()}`,
+  name,
+  input,
+});
+
+/** One assistant stream-json line, content blocks in order. */
+const assistantLine = (...content: unknown[]) =>
+  JSON.stringify({ type: "assistant", message: { content } });
+
+/** `count` assistant turns, each calling `toolName` once with `input` — a Worker stuck looping the same call. */
+function loopingTranscript(
+  count: number,
+  toolName: string,
+  input: unknown = { command: "pytest" },
+): string {
+  return Array.from({ length: count }, () =>
+    assistantLine(toolUseBlock(toolName, input)),
+  ).join("\n");
+}
+
+describe("buildForensicReport", () => {
+  it("carries the outcome's own result facts untouched, independent of the transcript", () => {
+    const report = buildForensicReport(outcome(), "");
+
+    expect(report.facts).toEqual({
+      turns: 200,
+      costUsd: 9.5,
+      durationMs: 723_000,
+      subtype: "error_max_turns",
+    });
+  });
+
+  it("yields empty evidence for an empty or unparseable transcript, without throwing", () => {
+    const report = buildForensicReport(outcome(), "not json\n{ broken\n\n");
+
+    expect(report.histogram).toEqual([]);
+    expect(report.finalTurns).toEqual([]);
+  });
+
+  it("tallies every tool call across the whole session, not just the final turns window", () => {
+    const transcript = [
+      ...Array.from({ length: 4 }, () => assistantLine(toolUseBlock("Read"))),
+      ...Array.from({ length: 6 }, () => assistantLine(toolUseBlock("Bash"))),
+      ...Array.from({ length: 2 }, () => assistantLine(toolUseBlock("Edit"))),
+    ].join("\n");
+
+    const report = buildForensicReport(outcome(), transcript);
+
+    expect(report.histogram).toEqual([
+      { name: "Bash", count: 6 },
+      { name: "Read", count: 4 },
+      { name: "Edit", count: 2 },
+    ]);
+    // Every turn beyond the final-turns window still counted: 12 turns total
+    // against an 8-turn window.
+    expect(report.histogram.reduce((sum, tally) => sum + tally.count, 0)).toBe(
+      12,
+    );
+  });
+
+  it("renders only the session's final turns, numbered against the whole session", () => {
+    const transcript = Array.from({ length: 10 }, (_, i) =>
+      assistantLine(textBlock(`turn ${i + 1}`)),
+    ).join("\n");
+
+    const report = buildForensicReport(outcome(), transcript);
+
+    expect(report.finalTurns).toHaveLength(FORENSIC_FINAL_TURNS);
+    expect(report.finalTurns[0]).toMatchObject({ index: 3, text: "turn 3" });
+    expect(report.finalTurns.at(-1)).toMatchObject({
+      index: 10,
+      text: "turn 10",
+    });
+  });
+
+  it("drops empty text, keeping a tool-only turn readable", () => {
+    const transcript = assistantLine(toolUseBlock("Bash", { command: "ls" }));
+
+    const report = buildForensicReport(outcome(), transcript);
+
+    expect(report.finalTurns).toEqual([
+      { index: 1, text: undefined, toolCalls: ['Bash({"command":"ls"})'] },
+    ]);
+  });
+
+  it("diagnoses a turn-cap breach from the whole-session histogram, where the final turns alone would not", () => {
+    // 200 turns, all the same looping Bash call — exactly what burns a turn
+    // cap. The rendered tail only ever shows the last FORENSIC_FINAL_TURNS.
+    const transcript = loopingTranscript(200, "Bash", {
+      command: "pytest -k flaky",
+    });
+
+    const report = buildForensicReport(
+      outcome({ failure: "budget", subtype: "error_max_turns", turns: 200 }),
+      transcript,
+    );
+
+    expect(report.histogram).toEqual([{ name: "Bash", count: 200 }]);
+    expect(report.finalTurns).toHaveLength(FORENSIC_FINAL_TURNS);
+    // The tail alone (8 identical-looking calls) is indistinguishable from
+    // ordinary progress; only the whole-session count proves the loop.
+    expect(report.histogram[0]?.count).toBeGreaterThan(FORENSIC_FINAL_TURNS);
+
+    // The rendered comment text itself must carry that proof, not just the
+    // intermediate report struct — this is what a human actually reads.
+    const rendered = renderForensicReport(report);
+    expect(rendered).toContain("- Bash: 200");
+    expect(rendered).toContain("terminated `error_max_turns`");
+    const renderedTurnCount = (rendered.match(/^Turn \d+:$/gm) ?? []).length;
+    expect(renderedTurnCount).toBe(FORENSIC_FINAL_TURNS);
+    expect(renderedTurnCount).toBeLessThan(200);
+  });
+});
+
+describe("renderForensicReport", () => {
+  function report(overrides: Partial<ForensicReport> = {}): ForensicReport {
+    return {
+      facts: {
+        turns: 200,
+        costUsd: 9.5,
+        durationMs: 723_000,
+        subtype: "error_max_turns",
+      },
+      histogram: [{ name: "Bash", count: 200 }],
+      finalTurns: [
+        {
+          index: 199,
+          text: "Running the tests again.",
+          toolCalls: ['Bash({"command":"pytest -k flaky"})'],
+        },
+      ],
+      ...overrides,
+    };
+  }
+
+  it("renders turns, cost, duration, and the terminating subtype", () => {
+    const rendered = renderForensicReport(report());
+
+    expect(rendered).toContain("200 turns");
+    expect(rendered).toContain("$9.50");
+    expect(rendered).toContain("12m3s");
+    expect(rendered).toContain("error_max_turns");
+  });
+
+  it("renders 'unknown' facts when no result event survived (e.g. a stall or timeout)", () => {
+    const rendered = renderForensicReport(
+      report({
+        facts: {
+          turns: undefined,
+          costUsd: undefined,
+          durationMs: undefined,
+          subtype: undefined,
+        },
+      }),
+    );
+
+    expect(rendered).toContain("unknown turns, unknown, unknown");
+    expect(rendered).toContain("terminated `unknown`");
+  });
+
+  it("renders the tool histogram as a readable list, not raw stream-json", () => {
+    const rendered = renderForensicReport(
+      report({
+        histogram: [
+          { name: "Bash", count: 6 },
+          { name: "Read", count: 4 },
+        ],
+      }),
+    );
+
+    expect(rendered).toContain("- Bash: 6");
+    expect(rendered).toContain("- Read: 4");
+    expect(rendered).not.toContain('"type"');
+  });
+
+  it("renders final turns readably, distinguishing narration from tool calls", () => {
+    const rendered = renderForensicReport(report());
+
+    expect(rendered).toContain("Turn 199:");
+    expect(rendered).toContain("Running the tests again.");
+    expect(rendered).toContain('→ Bash({"command":"pytest -k flaky"})');
+    expect(rendered).not.toContain('"type":"assistant"');
+  });
+
+  it("notes when no tool calls or final turns were recorded, rather than rendering nothing", () => {
+    const rendered = renderForensicReport(
+      report({ histogram: [], finalTurns: [] }),
+    );
+
+    expect(rendered).toContain("(no tool calls recorded)");
+    expect(rendered).toContain("(none recorded)");
+  });
+
+  it("stays within the hard size ceiling even for a pathological report", () => {
+    const huge = report({
+      histogram: Array.from({ length: 5000 }, (_, i) => ({
+        name: `tool-${i}`,
+        count: i,
+      })),
+      finalTurns: Array.from({ length: FORENSIC_FINAL_TURNS }, (_, i) => ({
+        index: i + 1,
+        text: "x".repeat(10_000),
+        toolCalls: [],
+      })),
+    });
+
+    expect(renderForensicReport(huge).length).toBeLessThanOrEqual(
+      MAX_FORENSIC_LENGTH,
     );
   });
 });

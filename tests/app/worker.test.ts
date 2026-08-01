@@ -49,6 +49,8 @@ function outcome(overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
     infra: undefined,
     costUsd: undefined,
     turns: undefined,
+    durationMs: undefined,
+    subtype: undefined,
     costOverrun: false,
     ok: true,
     ...overrides,

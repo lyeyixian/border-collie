@@ -2,6 +2,7 @@ import { openPrForOutcome } from "../adapters/pr.js";
 import { readScope, realExec, withDebugLogging } from "../adapters/tracker.js";
 import {
   dispatchConflictWorker,
+  dispatchRefinementWorker,
   dispatchWorker,
   realSpawnWorkerProcess,
 } from "../adapters/worker.js";
@@ -107,6 +108,22 @@ export async function tickOnce(
           pr,
           ticket,
           headRef,
+          {
+            model: config.model,
+            timeoutMs: config.timeoutMinutes * 60_000,
+            stallMs: config.stallMinutes * 60_000,
+            maxTurns: config.maxTurns,
+          },
+          exec,
+          realSpawnWorkerProcess,
+          log,
+        ),
+      dispatchRefinement: (pr, ticket, headRef, round) =>
+        dispatchRefinementWorker(
+          pr,
+          ticket,
+          headRef,
+          round,
           {
             model: config.model,
             timeoutMs: config.timeoutMinutes * 60_000,

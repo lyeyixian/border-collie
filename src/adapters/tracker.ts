@@ -13,13 +13,18 @@ import {
   INFRA_DESCRIPTIONS,
   type InfraReason,
   MAX_ATTEMPTS,
+  MAX_REFINEMENT_ROUNDS,
   type Mergeability,
   type MergedAgentPr,
+  OPERATOR_STEERED_LABEL,
   type OpenAgentPr,
   parseAttemptMarker,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
+  REFINEMENT_GIVE_UP_MARKER,
+  REFINEMENT_ROUND_MARKER,
   RELEASE_MARKER,
+  type RefinementSignal,
   type Ticket,
   ticketFromAgentBranch,
   VOID_MARKER,
@@ -217,6 +222,8 @@ interface GhPrListItem {
   /** GraphQL mergeability: MERGEABLE | CONFLICTING | UNKNOWN. Independent of the draft flag. */
   mergeable?: string;
   statusCheckRollup?: RollupCheck[];
+  labels?: { name: string }[];
+  createdAt?: string;
 }
 
 function mergeabilityOf(raw: string | undefined): Mergeability {
@@ -283,22 +290,124 @@ function ciFromRollup(rollup: RollupCheck[]): CiState {
   return pending ? "pending" : "passing";
 }
 
+/** What one pass over a PR's issue-comment thread decides for PR upkeep. */
+interface PrCommentSignals {
+  conflictWorkerAsked: boolean;
+  refinement: RefinementSignal;
+}
+
+/** The more recent of two possibly-absent timestamps. */
+function maxDefined(
+  a: number | undefined,
+  b: number | undefined,
+): number | undefined {
+  if (a === undefined) return b;
+  if (b === undefined) return a;
+  return Math.max(a, b);
+}
+
 /**
- * True when a conflict-resolution Worker already asked for human help on this
- * PR — the unresolved marker sits in its comment thread. Read only for
- * conflicted PRs, where it alone decides whether another Worker is dispatched.
+ * The latest formal PR-review activity — GitHub's Review flow, a distinct API
+ * surface from the Conversation-tab comments read below: inline review
+ * comments (`pulls/{pr}/comments`) and review submissions (`pulls/{pr}/reviews`)
+ * that either request changes or carry a body (an approval with no comment is
+ * not feedback needing a fix). Only called when it could still change the
+ * Refinement trigger verdict — `readPrCommentSignals` skips it otherwise, so
+ * this never runs for a conflicted, operator-steered, already-given-up, or
+ * already-failing-check PR.
  */
-async function readConflictWorkerAsked(
+async function readPrReviewActivity(
   pr: number,
   exec: Exec,
-): Promise<boolean> {
-  const comments = await readPages<{ body?: string }>(
+): Promise<number | undefined> {
+  const [reviewComments, reviews] = await Promise.all([
+    readPages<{ created_at?: string }>(
+      `repos/{owner}/{repo}/pulls/${pr}/comments?per_page=100`,
+      exec,
+    ),
+    readPages<{ state?: string; submitted_at?: string; body?: string | null }>(
+      `repos/{owner}/{repo}/pulls/${pr}/reviews?per_page=100`,
+      exec,
+    ),
+  ]);
+  const timestamps = [
+    ...reviewComments.map((c) => commentTimestamp(c.created_at)),
+    ...reviews
+      .filter(
+        (r) => r.state === "CHANGES_REQUESTED" || (r.body ?? "").trim() !== "",
+      )
+      .map((r) => commentTimestamp(r.submitted_at)),
+  ].filter((ms): ms is number => ms !== undefined);
+  return timestamps.length > 0 ? Math.max(...timestamps) : undefined;
+}
+
+/**
+ * One read of a PR's issue-comment thread, serving every PR-upkeep marker
+ * check that lives in its comments: whether a conflict Worker already asked
+ * for a human (CONTEXT.md "Conflict Worker"), and the Refinement round state
+ * (CONTEXT.md "Refinement round") — the round count, whether give-up already
+ * fired, and whether a fresh trigger warrants another round. A trigger is a
+ * failing check (independent of comments — passed in already computed), a
+ * formal PR review (`readPrReviewActivity`), or a foreign comment — one
+ * carrying none of border-collie's own markers — posted after the latest
+ * round comment, or after the PR opened when there has been none.
+ * `checkRefinementTrigger` is false for a conflicted PR (plan.ts's conflict
+ * handling is exclusive, so the verdict is never consulted) or an
+ * operator-steered one (CONTEXT.md "Operator-steered") — the round-marker
+ * scan still runs either way, since a conflicted PR's conflict-unresolved
+ * marker lives in the same thread and an operator-steered PR's round count
+ * must survive the label being lifted later, but the extra review-activity
+ * reads are skipped as dead weight.
+ */
+async function readPrCommentSignals(
+  pr: number,
+  createdAtMs: number,
+  ci: CiState,
+  checkRefinementTrigger: boolean,
+  exec: Exec,
+): Promise<PrCommentSignals> {
+  const comments = await readPages<{ body?: string; created_at?: string }>(
     `repos/{owner}/{repo}/issues/${pr}/comments?per_page=100`,
     exec,
   );
-  return comments.some((comment) =>
-    comment.body?.includes(CONFLICT_UNRESOLVED_MARKER),
+  let conflictWorkerAsked = false;
+  let rounds = 0;
+  let givenUp = false;
+  let latestRoundAtMs = createdAtMs;
+  let latestForeignCommentAtMs: number | undefined;
+  for (const comment of comments) {
+    const body = comment.body ?? "";
+    if (body.includes(CONFLICT_UNRESOLVED_MARKER)) {
+      conflictWorkerAsked = true;
+    } else if (body.includes(REFINEMENT_ROUND_MARKER)) {
+      rounds += 1;
+      latestRoundAtMs = commentTimestamp(comment.created_at) ?? latestRoundAtMs;
+    } else if (body.includes(REFINEMENT_GIVE_UP_MARKER)) {
+      givenUp = true;
+    } else {
+      latestForeignCommentAtMs =
+        commentTimestamp(comment.created_at) ?? latestForeignCommentAtMs;
+    }
+  }
+  if (!checkRefinementTrigger || givenUp) {
+    return {
+      conflictWorkerAsked,
+      refinement: { rounds, triggerDue: false, givenUp },
+    };
+  }
+  const latestReviewAtMs =
+    ci === "failing" ? undefined : await readPrReviewActivity(pr, exec);
+  const latestTriggerAtMs = maxDefined(
+    latestForeignCommentAtMs,
+    latestReviewAtMs,
   );
+  const triggerDue =
+    ci === "failing" ||
+    (latestTriggerAtMs !== undefined && latestTriggerAtMs > latestRoundAtMs);
+  return {
+    conflictWorkerAsked,
+    refinement: { rounds, triggerDue, givenUp: false },
+  };
 }
 
 /**
@@ -306,8 +415,9 @@ async function readConflictWorkerAsked(
  * CI rollup), read in one `gh pr list` call — capped at 100, far above the
  * max_open_prs the fleet throttles itself to. Non-agent branches are dropped.
  * Behind-ness is then read per cleanly-mergeable PR (a conflicted one is
- * handled before any update, an unknown one left for the next Tick), and a
- * conflicted PR's comments for the unresolved marker.
+ * handled before any update, an unknown one left for the next Tick), and
+ * every PR's comment thread once for the conflict and Refinement marker
+ * signals together (`readPrCommentSignals`).
  */
 async function listOpenAgentPrs(exec: Exec): Promise<OpenAgentPr[]> {
   const stdout = await exec("gh", [
@@ -318,7 +428,7 @@ async function listOpenAgentPrs(exec: Exec): Promise<OpenAgentPr[]> {
     "--limit",
     "100",
     "--json",
-    "number,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup",
+    "number,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,createdAt",
   ]);
   const items = JSON.parse(stdout) as GhPrListItem[];
   const prs: OpenAgentPr[] = [];
@@ -328,6 +438,18 @@ async function listOpenAgentPrs(exec: Exec): Promise<OpenAgentPr[]> {
     if (ticket === undefined) continue;
     const mergeable = mergeabilityOf(item.mergeable);
     const base = item.baseRefName ?? "";
+    const ci = ciFromRollup(item.statusCheckRollup ?? []);
+    const operatorSteered = (item.labels ?? []).some(
+      (label) => label.name === OPERATOR_STEERED_LABEL,
+    );
+    const createdAtMs = commentTimestamp(item.createdAt) ?? 0;
+    const signals = await readPrCommentSignals(
+      item.number,
+      createdAtMs,
+      ci,
+      !operatorSteered && mergeable !== "conflicted",
+      exec,
+    );
     prs.push({
       number: item.number,
       ticket,
@@ -338,11 +460,10 @@ async function listOpenAgentPrs(exec: Exec): Promise<OpenAgentPr[]> {
         mergeable === "mergeable" && base !== ""
           ? await prBehindBase(base, headRef, exec)
           : false,
-      ci: ciFromRollup(item.statusCheckRollup ?? []),
-      conflictWorkerAsked:
-        mergeable === "conflicted"
-          ? await readConflictWorkerAsked(item.number, exec)
-          : false,
+      ci,
+      conflictWorkerAsked: signals.conflictWorkerAsked,
+      operatorSteered,
+      refinement: signals.refinement,
     });
   }
   return prs;
@@ -554,11 +675,15 @@ export async function createDraftPr(
  * Act phase: release a ticket whose Attempt just failed, embedding the
  * attempt's forensic record in the release comment — the tracker is the only
  * state store, so this comment IS the attempt history that the next Tick's
- * retry ladder and a later Escalation read back.
+ * retry ladder and a later Escalation read back. `forensics` (the rendered
+ * result facts, tool histogram, and final turns — see `renderForensicReport`)
+ * is appended so the comment is triageable on its own, without the transcript
+ * path a runner may have already discarded.
  */
 export async function releaseFailedTicket(
   ticket: number,
   failure: AttemptFailure,
+  forensics: string,
   exec: Exec = realExec,
 ): Promise<void> {
   const body = [
@@ -566,6 +691,8 @@ export async function releaseFailedTicket(
     attemptMarker(failure),
     `🐕 Attempt ${failure.attempt} failed: ${FAILURE_DESCRIPTIONS[failure.reason]} (model ${failure.model}).`,
     `Worktree torn down; branch \`${failure.branch}\` abandoned; transcript at \`${failure.transcript}\`.`,
+    "",
+    forensics,
   ].join("\n");
   await release(ticket, body, exec);
 }
@@ -681,5 +808,76 @@ export async function commentConflictUnresolved(
     String(pr),
     "--body",
     CONFLICT_UNRESOLVED_COMMENT,
+  ]);
+}
+
+const refinementRoundComment = (round: number) =>
+  `${REFINEMENT_ROUND_MARKER}\n🐕 Refinement round ${round} of ${MAX_REFINEMENT_ROUNDS}: a failing check or review feedback needs a fix — dispatching a Worker to investigate and commit one.`;
+
+/**
+ * Act phase: start a Refinement round (CONTEXT.md "Refinement round") — the
+ * marker comment first, before the round's Worker ever dispatches, so a
+ * crashed Worker still charges the round it was given rather than letting a
+ * retry-on-crash exceed MAX_REFINEMENT_ROUNDS uncounted (the same
+ * charge-before-spend shape as `claimTicket`'s Attempt count).
+ */
+export async function startRefinementRound(
+  pr: number,
+  round: number,
+  exec: Exec = realExec,
+): Promise<void> {
+  await exec("gh", [
+    "pr",
+    "comment",
+    String(pr),
+    "--body",
+    refinementRoundComment(round),
+  ]);
+}
+
+const refinementGiveUpTicketComment = (pr: number, rounds: number) =>
+  `🐕 Refinement give-up: pull request #${pr} exhausted ${rounds} round${rounds === 1 ? "" : "s"} of ${MAX_REFINEMENT_ROUNDS} without a clean check and review — this ticket needs a human. See #${pr} for the Refinement history.`;
+
+const refinementGiveUpPrComment = (rounds: number) =>
+  `${REFINEMENT_GIVE_UP_MARKER}\n🐕 border-collie gave up refining this pull request after ${rounds} round${rounds === 1 ? "" : "s"} of ${MAX_REFINEMENT_ROUNDS} — handing its ticket to a human. See the refinement-round comments above for what each round tried.`;
+
+/**
+ * Act phase: give up Refining a pull request whose rounds are exhausted but
+ * still needs one (CONTEXT.md "Refinement give-up") — the PR-scoped analogue
+ * of Escalation. The Ticket's forensic comment and label swap land first,
+ * the PR's give-up marker last: that marker is the sole thing
+ * `readPrCommentSignals` trusts to veto every further round, so posting it
+ * only once the Ticket side is durable means a crash mid-way retries the
+ * whole sequence next Tick (worst case a duplicate Ticket comment) rather
+ * than stranding the Ticket `ready-for-agent` with no round left to spend.
+ */
+export async function giveUpOnPr(
+  pr: number,
+  ticket: number,
+  rounds: number,
+  exec: Exec = realExec,
+): Promise<void> {
+  await exec("gh", [
+    "issue",
+    "comment",
+    String(ticket),
+    "--body",
+    refinementGiveUpTicketComment(pr, rounds),
+  ]);
+  await exec("gh", [
+    "issue",
+    "edit",
+    String(ticket),
+    "--remove-label",
+    READY_FOR_AGENT,
+    "--add-label",
+    READY_FOR_HUMAN,
+  ]);
+  await exec("gh", [
+    "pr",
+    "comment",
+    String(pr),
+    "--body",
+    refinementGiveUpPrComment(rounds),
   ]);
 }
