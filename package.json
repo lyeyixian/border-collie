@@ -40,8 +40,7 @@
     "dev": "tsx src/main.ts",
     "logs:pretty": "node scripts/logs-pretty.mjs",
     "smoke": "scripts/smoke.sh",
-    "sync:version": "node scripts/sync-workflow-version.mjs",
-    "version": "pnpm run sync:version && git add .github/workflows"
+    "sync:version": "node scripts/sync-workflow-version.mjs"
   },
   "devDependencies": {
     "@biomejs/biome": "^2.5.5",

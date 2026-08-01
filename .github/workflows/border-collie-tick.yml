@@ -83,13 +83,13 @@ jobs:
         with:
           node-version: 24
 
-      # The Orchestrator is installed, never built from the checkout above
-      # (issue #93). This file is also what `init` scaffolds into a target
-      # repo (src/core/scaffold.ts), and that repo is the one being herded —
-      # it has no dist/ of ours to run and need not be a Node project at all.
-      # The version is pinned rather than floating because the cron above runs
-      # unattended; `pnpm run sync:version` keeps it in step with
-      # package.json, and a test fails the build if it ever drifts.
+      # The Orchestrator is installed, never built from the checkout above:
+      # this repository is the one being herded, not the herder, so it holds
+      # no build of border-collie to run and need not be a Node project at
+      # all. Pinned rather than floating because the cron above fires
+      # unattended, and a floating install would hand a sleeping fleet
+      # whatever released overnight — re-scaffold with `border-collie init
+      # --force` to move to a newer version deliberately.
       - name: Install border-collie
         run: npm install -g border-collie@0.3.0
 

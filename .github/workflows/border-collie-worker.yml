@@ -84,10 +84,10 @@ jobs:
           node-version: 24
 
       # Installed, never built from the checkout above — see the same step in
-      # border-collie-tick.yml for why (issue #93). Nothing here installs the
-      # *target* repo's own dependencies: a scaffolded repo need not be a Node
-      # project, so preparing a toolchain to build and test in is the Worker
-      # session's own job, guided by the target repo's CLAUDE.md.
+      # border-collie-tick.yml for why. Note what this does *not* do: it never
+      # installs this repository's own dependencies, because a herded repo
+      # need not be a Node project. Preparing a toolchain to build and test in
+      # is the Worker session's own job, guided by this repository's CLAUDE.md.
       - name: Install border-collie
         run: npm install -g border-collie@0.3.0
 
