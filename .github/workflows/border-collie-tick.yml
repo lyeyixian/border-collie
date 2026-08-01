@@ -79,16 +79,19 @@ jobs:
           # clone doesn't have.
           fetch-depth: 0
 
-      - uses: pnpm/action-setup@v6
-
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm run build
+      # The Orchestrator is installed, never built from the checkout above
+      # (issue #93). This file is also what `init` scaffolds into a target
+      # repo (src/core/scaffold.ts), and that repo is the one being herded —
+      # it has no dist/ of ours to run and need not be a Node project at all.
+      # The version is pinned rather than floating because the cron above runs
+      # unattended; `pnpm run sync:version` keeps it in step with
+      # package.json, and a test fails the build if it ever drifts.
+      - name: Install border-collie
+        run: npm install -g border-collie@0.3.0
 
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code@latest
@@ -104,4 +107,4 @@ jobs:
           # this Tick makes (claims, comments, labels, closures) rides the
           # same credential rather than juggling two.
           GH_TOKEN: ${{ steps.app-token.outputs.token }}
-        run: node dist/main.js tick
+        run: border-collie tick
