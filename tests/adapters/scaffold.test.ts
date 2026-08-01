@@ -7,7 +7,7 @@ import {
   loadTemplate,
   writeScaffoldFile,
 } from "../../src/adapters/scaffold.js";
-import { SCAFFOLD_FILES } from "../../src/core/scaffold.js";
+import { pinnedCliVersion, SCAFFOLD_FILES } from "../../src/core/scaffold.js";
 
 describe("fileExists", () => {
   it("is false for a path that isn't there", () => {
@@ -56,4 +56,24 @@ describe("loadTemplate", () => {
       expect(loadTemplate(relPath)).toBe(fromPackageRoot);
     }
   });
+});
+
+/**
+ * The drift guard for the version the templates pin (issue #93). `init` hands
+ * a target repo these files verbatim, so the pin is what that repo will run
+ * forever after — and a pin naming a version this package isn't would either
+ * install code the operator never scaffolded or fail outright. Nothing about
+ * a bumped package.json updates a yml on its own, so the invariant is checked
+ * here and kept true mechanically by `pnpm run sync:version` (the `version`
+ * lifecycle script, README "Release process").
+ */
+describe("the scaffolded templates' pinned version", () => {
+  const packageVersion = JSON.parse(readFileSync("package.json", "utf8"))
+    .version as string;
+
+  for (const relPath of SCAFFOLD_FILES) {
+    it(`matches this package's own version in ${relPath}`, () => {
+      expect(pinnedCliVersion(loadTemplate(relPath))).toBe(packageVersion);
+    });
+  }
 });

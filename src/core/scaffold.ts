@@ -18,6 +18,26 @@ export const SCAFFOLD_FILES: readonly string[] = [
   ".github/workflows/border-collie-worker.yml",
 ];
 
+/**
+ * How the scaffolded workflows install the Orchestrator (issue #93). A target
+ * repo is not this repo: it has no `dist/` to run and no lockfile of ours to
+ * install from, so the workflows install the published CLI rather than
+ * building the checkout — the checkout is the repo being herded, never the
+ * herder. The pin is deliberate: the Tick's half-hourly cron runs unattended,
+ * and a floating `@latest` would hand an unattended fleet a breaking release.
+ */
+const CLI_PIN_PATTERN = /npm install -g border-collie@(\S+)/;
+
+/**
+ * The version a scaffolded workflow pins the Orchestrator to, or null if it
+ * names none — a template that floats is as much a failure of the invariant
+ * as one naming the wrong version, so an unpinned install reads as null
+ * rather than as some default.
+ */
+export function pinnedCliVersion(template: string): string | null {
+  return CLI_PIN_PATTERN.exec(template)?.[1] ?? null;
+}
+
 export type ScaffoldOutcome = "written" | "overwritten" | "skipped-exists";
 
 export interface ScaffoldAction {
@@ -91,5 +111,9 @@ export function renderChecklist(): string {
    number (run \`border-collie --help\` for the full config shape).
 
 Worker skills install automatically inside each Worker job — no separate
-setup step is needed for those.`;
+setup step is needed for those.
+
+The scaffolded workflows install border-collie from npm at a pinned version,
+so this repository needs no build of its own to run one and keeps that
+version until you re-scaffold with \`border-collie init --force\`.`;
 }

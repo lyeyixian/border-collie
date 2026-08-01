@@ -43,7 +43,7 @@ This writes `.github/workflows/border-collie-tick.yml` (the Orchestrator, which 
 
 Releases are tag-driven (see `.github/workflows/release.yml`):
 
-1. Bump the version and tag it: `npm version <patch|minor|major>`.
+1. Bump the version and tag it: `npm version <patch|minor|major>`. This also rewrites the `border-collie@<version>` pin in both scaffolded workflows (the `version` lifecycle script, `scripts/sync-workflow-version.mjs`) and stages the result into the version commit; a test fails the build if the pin and `package.json` ever drift apart.
 2. Push the tag: `git push --follow-tags`.
 3. Pushing a `v*` tag runs the release workflow: the same lint/typecheck/test/build/smoke gates as CI, a guard that the tag matches `package.json`'s version, a publish to npm over OIDC trusted publishing (no npm token stored in the repo), and a GitHub Release with generated notes.
 
@@ -65,6 +65,12 @@ Writes that must retrigger a workflow — dispatching a Worker's job, and a bran
 
 - `BORDER_COLLIE_APP_ID` (repository variable — not sensitive) and `BORDER_COLLIE_APP_PRIVATE_KEY` (repository secret): a GitHub App installed on this repository with contents, issues, and pull request write access, and Actions read/write access to dispatch and read back Worker job runs (deliberately excluding the separate Workflows permission, so a Worker can never rewrite the workflow *file* that runs it).
 - `CLAUDE_CODE_OAUTH_TOKEN`: a subscription OAuth token (`claude setup-token`) for the headless sessions the Tick still runs inline — Conflict Workers and Refinement rounds.
+
+Both workflows install the published CLI (`npm install -g border-collie@<version>`) rather than building the repository they check out. The checkout is the repo being *herded*, not the herder: a scaffolded target repo has no build of this package to run, and need not be a Node project at all. One consequence for this repository specifically — it is a consumer of its own package like any other, so a change to fleet behaviour reaches the fleet only once it is released, not when it merges.
+
+The pinned version is deliberate rather than `@latest`: the cron backstop runs unattended, and a floating install would hand a sleeping fleet a breaking release. A repo keeps whatever version scaffolded it until its workflows are re-scaffolded with `border-collie init --force`.
+
+Nothing in the Worker job installs the *target* repo's own dependencies — preparing a toolchain to build and test in is the Worker session's own job, guided by the target repo's `CLAUDE.md`.
 
 `border-collie init` scaffolds both workflow files above into a fresh repository and prints this same checklist.
 

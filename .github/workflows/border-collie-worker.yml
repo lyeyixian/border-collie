@@ -32,7 +32,7 @@ on:
           Wall-clock ceiling in minutes for the job itself. GitHub Actions
           expressions cannot add a margin onto timeout_minutes at dispatch
           time, so this is its own input — keep it a few minutes above
-          timeout_minutes, covering setup (checkout, install, build, skills)
+          timeout_minutes, covering setup (checkout, installs, skills)
           before the watchdog starts and settlement (the tracker write)
           after it fires, so GitHub Actions never races the watchdog that
           kills the claude subprocess and settles the Attempt
@@ -79,16 +79,17 @@ jobs:
         with:
           token: ${{ steps.app-token.outputs.token }}
 
-      - uses: pnpm/action-setup@v6
-
       - uses: actions/setup-node@v7
         with:
           node-version: 24
-          cache: pnpm
 
-      - run: pnpm install --frozen-lockfile
-
-      - run: pnpm run build
+      # Installed, never built from the checkout above — see the same step in
+      # border-collie-tick.yml for why (issue #93). Nothing here installs the
+      # *target* repo's own dependencies: a scaffolded repo need not be a Node
+      # project, so preparing a toolchain to build and test in is the Worker
+      # session's own job, guided by the target repo's CLAUDE.md.
+      - name: Install border-collie
+        run: npm install -g border-collie@0.3.0
 
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code@latest
@@ -116,7 +117,7 @@ jobs:
           ATTEMPT: ${{ inputs.attempt }}
           TIMEOUT_MINUTES: ${{ inputs.timeout_minutes }}
         run: |
-          pnpm exec border-collie worker "$TICKET" "$ATTEMPT" \
+          border-collie worker "$TICKET" "$ATTEMPT" \
             --in-place \
             --timeout-minutes "$TIMEOUT_MINUTES"
 

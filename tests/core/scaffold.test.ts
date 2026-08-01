@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  pinnedCliVersion,
   planScaffold,
   renderChecklist,
   renderScaffoldReport,
@@ -38,6 +39,34 @@ describe("planScaffold", () => {
       relPath: second,
       outcome: "written",
     });
+  });
+});
+
+describe("pinnedCliVersion", () => {
+  it("reads the version a template pins the orchestrator to", () => {
+    const template = [
+      "      - name: Install border-collie",
+      "        run: npm install -g border-collie@1.2.3",
+    ].join("\n");
+
+    expect(pinnedCliVersion(template)).toBe("1.2.3");
+  });
+
+  it("is null for a template that installs nothing", () => {
+    expect(pinnedCliVersion("name: Worker\n")).toBeNull();
+  });
+
+  it("ignores another package's pin on a neighbouring line", () => {
+    const template = [
+      "        run: npm install -g @anthropic-ai/claude-code@latest",
+      "        run: npm install -g border-collie@0.9.0",
+    ].join("\n");
+
+    expect(pinnedCliVersion(template)).toBe("0.9.0");
+  });
+
+  it("is null when the install floats instead of pinning", () => {
+    expect(pinnedCliVersion("run: npm install -g border-collie\n")).toBeNull();
   });
 });
 
@@ -108,6 +137,11 @@ describe("renderChecklist", () => {
   it("excludes the Workflows permission, so a Worker can never rewrite its own workflow", () => {
     expect(checklist).toContain("Leave Workflows ungranted");
     expect(checklist).not.toMatch(/Workflows:\s*Read/);
+  });
+
+  it("says how the orchestrator itself arrives, so no build is expected of the target repo", () => {
+    expect(checklist).toContain("install border-collie from npm");
+    expect(checklist).toContain("border-collie init --force");
   });
 
   it("lists the minimum repository permissions", () => {
