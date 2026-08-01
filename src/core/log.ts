@@ -78,7 +78,8 @@ export type LogEvent = LogEventBase &
         kind: "worker-paths";
         ticket: number;
         attempt: number;
-        worktree: string;
+        /** The worktree (local path) or the checkout itself (`--in-place`, issue #75) the Worker ran in. */
+        path: string;
         transcript: string;
       }
     | {

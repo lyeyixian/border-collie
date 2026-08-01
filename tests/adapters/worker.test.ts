@@ -44,6 +44,7 @@ const CONFIG: WorkerConfig = {
   stallMs: 30_000,
   maxTurns: 200,
   maxCostUsd: 20,
+  inPlace: false,
 };
 
 /**
@@ -153,7 +154,7 @@ describe("dispatchWorker", () => {
         msg: `Worker for #4 (attempt 1): worktree ${WORKTREE}, transcript ${TRANSCRIPT}`,
         ticket: 4,
         attempt: 1,
-        worktree: WORKTREE,
+        path: WORKTREE,
         transcript: TRANSCRIPT,
       },
     ]);
@@ -524,6 +525,75 @@ describe("dispatchRemoteWorker", () => {
         "attempt=2",
       ],
     ]);
+  });
+});
+
+describe("dispatchWorker (in-place, issue #75)", () => {
+  const IN_PLACE_CONFIG: WorkerConfig = { ...CONFIG, inPlace: true };
+
+  it("checks the branch out directly in the current directory, running claude there — no worktree, no lock", async () => {
+    const { exec, calls } = fakeExec({ newCommits: "3" });
+    const { spawn, requests } = fakeSpawn(0);
+
+    await dispatchWorker(4, IN_PLACE_CONFIG, exec, spawn);
+
+    expect(calls).toEqual([
+      ["git", "fetch", "origin"],
+      ["git", "checkout", "-B", BRANCH, "origin/HEAD"],
+      ["git", "rev-parse", BRANCH],
+      ["git", "rev-list", "--count", `base-sha..${BRANCH}`],
+    ]);
+    expect(requests[0]).toMatchObject({ cwd: ".", transcriptPath: TRANSCRIPT });
+  });
+
+  it("logs the checkout (not worktree) and transcript paths at debug, before spawning", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0);
+    const { log, events } = recordingLog();
+
+    await dispatchWorker(4, IN_PLACE_CONFIG, exec, spawn, log);
+
+    expect(events).toEqual([
+      {
+        kind: "worker-paths",
+        level: "debug",
+        msg: `Worker for #4 (attempt 1): checkout ., transcript ${TRANSCRIPT}`,
+        ticket: 4,
+        attempt: 1,
+        path: ".",
+        transcript: TRANSCRIPT,
+      },
+    ]);
+  });
+
+  it("never removes a worktree, even when spawning throws, then rethrows", async () => {
+    const { exec, calls } = fakeExec();
+    const { spawn } = fakeSpawn(new Error("spawn claude ENOENT"));
+
+    await expect(
+      dispatchWorker(4, IN_PLACE_CONFIG, exec, spawn),
+    ).rejects.toThrow("ENOENT");
+
+    expect(calls).toEqual([
+      ["git", "fetch", "origin"],
+      ["git", "checkout", "-B", BRANCH, "origin/HEAD"],
+      ["git", "rev-parse", BRANCH],
+    ]);
+  });
+
+  it("succeeds when the process exits cleanly and new commits exist on the branch", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0);
+
+    const outcome = await dispatchWorker(4, IN_PLACE_CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({
+      ticket: 4,
+      branch: BRANCH,
+      base: "base-sha",
+      newCommits: 3,
+      ok: true,
+    });
   });
 });
 
