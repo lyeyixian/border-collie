@@ -206,6 +206,20 @@ export function conflictWorkerPrompt(): string {
   ].join("\n");
 }
 
+/**
+ * The entire Refinement-round Worker prompt (CONTEXT.md "Refinement round"):
+ * investigate the pull request's own failing checks and review feedback,
+ * then commit a fix. The plain-English half stands in when a slash command
+ * is unavailable; pins the do-not-push contract the Orchestrator relies on —
+ * the Orchestrator judges whether anything changed and pushes it back
+ * itself, the same split as the conflict-resolution Worker.
+ */
+export function refinementWorkerPrompt(): string {
+  return [
+    "This pull request has a failing check or open review feedback. Look at its CI check runs and its review comments (for example `gh pr checks` and `gh pr view --comments`) to find what needs to change, then commit a fix addressing them. Change nothing beyond what the checks or the reviewer's feedback requires, and do not push — leave the fix committed on the current branch.",
+  ].join("\n");
+}
+
 /** Best-effort worktree removal: absent or stale worktrees are fine. */
 async function removeWorktree(worktree: string, exec: Exec): Promise<void> {
   await exec("git", ["worktree", "remove", "--force", worktree]).catch(
@@ -550,5 +564,100 @@ export async function dispatchConflictWorker(
       await exec("git", ["-C", worktree, "rebase", "--abort"]).catch(() => {});
       await removeWorktree(worktree, exec);
     });
+  }
+}
+
+/** One finished Refinement-round Worker session, as observed by the Orchestrator. */
+export interface RefinementOutcome {
+  pr: number;
+  ticket: number;
+  /** Head branch the Worker ran in; pushed back by the caller when it committed something. */
+  headRef: string;
+  /** Transcript file path, for post-mortems — namespaced per round, so a later round never clobbers an earlier one's evidence. */
+  transcript: string;
+  exitCode: number | null;
+  /** Commits the Worker added on top of the branch's tip when it started. */
+  newCommits: number;
+}
+
+/**
+ * Dispatch one Refinement-round Worker against one open agent PR (CONTEXT.md
+ * "Refinement round"): cut a worktree on the PR's own head branch (no rebase
+ * setup — a round investigates the PR as it stands, unlike the conflict
+ * Worker), run headless claude in it, then report whether it committed
+ * anything. The branch is the PR's existing head (checked out from origin),
+ * never a fresh one — a pushed fix has to land on the same branch the PR is
+ * already open from. `-B` and the up-front removal reset any leftover of a
+ * crashed round on the same branch. The Worker never pushes (the prompt
+ * pins that contract); the caller judges `newCommits` and pushes only when
+ * the round actually changed something, mirroring the conflict Worker's own
+ * split between judging and pushing.
+ */
+export async function dispatchRefinementWorker(
+  pr: number,
+  ticket: number,
+  headRef: string,
+  round: number,
+  config: ClaudeRunConfig,
+  exec: Exec = realExec,
+  spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
+  log: Log = noopLog,
+): Promise<RefinementOutcome> {
+  const worktree = join(RUN_DIR, "refinement-worktrees", `pr-${pr}`);
+  const transcript = join(
+    RUN_DIR,
+    "transcripts",
+    `pr-${pr}-refinement-round-${round}.jsonl`,
+  );
+  const stderrLog = join(
+    RUN_DIR,
+    "transcripts",
+    `pr-${pr}-refinement-round-${round}.stderr.log`,
+  );
+
+  const base = await withGitLock(async () => {
+    await removeWorktree(worktree, exec);
+    await exec("git", ["worktree", "prune"]);
+    await exec("git", ["fetch", "origin"]);
+    await exec("git", [
+      "worktree",
+      "add",
+      worktree,
+      "-B",
+      headRef,
+      `origin/${headRef}`,
+    ]);
+    return (await exec("git", ["rev-parse", headRef])).trim();
+  });
+  log({
+    kind: "refinement-worker-paths",
+    level: "debug",
+    msg: `Refinement Worker for PR #${pr} (round ${round}): worktree ${worktree}, transcript ${transcript}`,
+    pr,
+    round,
+    worktree,
+    transcript,
+  });
+
+  try {
+    const { exitCode } = await spawnProcess({
+      cmd: "claude",
+      args: claudeArgs(refinementWorkerPrompt(), config.model, config.maxTurns),
+      cwd: worktree,
+      transcriptPath: transcript,
+      stderrPath: stderrLog,
+      timeoutMs: config.timeoutMs,
+      stallMs: config.stallMs,
+    });
+    const newCommits = Number(
+      (
+        await withGitLock(() =>
+          exec("git", ["rev-list", "--count", `${base}..${headRef}`]),
+        )
+      ).trim(),
+    );
+    return { pr, ticket, headRef, transcript, exitCode, newCommits };
+  } finally {
+    await withGitLock(() => removeWorktree(worktree, exec));
   }
 }

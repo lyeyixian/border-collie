@@ -1,9 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { Exec } from "../../src/adapters/tracker.js";
-import type { ConflictOutcome } from "../../src/adapters/worker.js";
+import type {
+  ConflictOutcome,
+  RefinementOutcome,
+} from "../../src/adapters/worker.js";
 import {
   act,
   type DispatchConflictWorker,
+  type DispatchRefinementWorker,
   type DispatchWorker,
   type IntervalScheduler,
   type OpenPr,
@@ -14,6 +18,10 @@ import {
   CLAIM_LABEL,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
+  READY_FOR_AGENT,
+  READY_FOR_HUMAN,
+  REFINEMENT_GIVE_UP_MARKER,
+  REFINEMENT_ROUND_MARKER,
   RELEASE_MARKER,
   VOID_MARKER,
   type WorkerOutcome,
@@ -86,6 +94,10 @@ const noConflict: DispatchConflictWorker = async (pr) => {
   throw new Error(`unexpected conflict dispatch of PR #${pr}`);
 };
 
+const noRefinement: DispatchRefinementWorker = async (pr) => {
+  throw new Error(`unexpected Refinement dispatch of PR #${pr}`);
+};
+
 /** Records which outcomes reach PR opening; answers with a predictable URL. */
 function recordingOpenPr(): { openPr: OpenPr; opened: number[] } {
   const opened: number[] = [];
@@ -134,6 +146,21 @@ function conflictOutcome(
   };
 }
 
+function refinementOutcome(
+  pr: number,
+  overrides: Partial<RefinementOutcome> = {},
+): RefinementOutcome {
+  return {
+    pr,
+    ticket: pr,
+    headRef: `border-collie/ticket-${pr}-attempt-1`,
+    transcript: `.border-collie/transcripts/pr-${pr}-refinement-round-1.jsonl`,
+    exitCode: 0,
+    newCommits: 1,
+    ...overrides,
+  };
+}
+
 describe("act", () => {
   it("executes releases and claims in plan order via the tracker", async () => {
     const { exec, calls } = recordingExec();
@@ -149,6 +176,7 @@ describe("act", () => {
         dispatch: noDispatch,
         openPr,
         dispatchConflict: noConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval,
@@ -195,6 +223,7 @@ describe("act", () => {
         dispatch: noDispatch,
         openPr,
         dispatchConflict: noConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval,
@@ -231,6 +260,7 @@ describe("act", () => {
       dispatch: noDispatch,
       openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval,
@@ -275,6 +305,7 @@ describe("act", () => {
         dispatch,
         openPr,
         dispatchConflict: noConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval,
@@ -377,6 +408,7 @@ describe("act", () => {
       dispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval,
@@ -403,6 +435,7 @@ describe("act", () => {
       dispatch: noDispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval,
@@ -449,6 +482,7 @@ describe("act", () => {
       dispatch,
       openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval,
@@ -473,6 +507,7 @@ describe("act", () => {
       dispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval,
@@ -514,6 +549,7 @@ describe("act", () => {
         dispatch,
         openPr: recordingOpenPr().openPr,
         dispatchConflict: noConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval,
@@ -541,6 +577,7 @@ describe("act", () => {
       dispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval,
@@ -569,6 +606,7 @@ describe("act", () => {
           dispatch,
           openPr,
           dispatchConflict: noConflict,
+          dispatchRefinement: noRefinement,
           exec,
           now,
           scheduleInterval,
@@ -595,6 +633,7 @@ describe("act", () => {
         dispatch,
         openPr,
         dispatchConflict: noConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval,
@@ -625,6 +664,7 @@ describe("act: heartbeat", () => {
       dispatch: noDispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval: scheduler.scheduleInterval,
@@ -652,6 +692,7 @@ describe("act: heartbeat", () => {
       dispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval: scheduler.scheduleInterval,
@@ -695,6 +736,7 @@ describe("act: heartbeat", () => {
       dispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now: () => clock.ms,
       scheduleInterval: scheduler.scheduleInterval,
@@ -751,6 +793,7 @@ describe("act: heartbeat", () => {
         dispatch,
         openPr,
         dispatchConflict: noConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval: scheduler.scheduleInterval,
@@ -787,6 +830,7 @@ describe("act: heartbeat", () => {
         dispatch,
         openPr: recordingOpenPr().openPr,
         dispatchConflict: noConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval: scheduler.scheduleInterval,
@@ -807,6 +851,7 @@ describe("act: PR upkeep", () => {
       dispatch: noDispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval,
@@ -832,6 +877,7 @@ describe("act: PR upkeep", () => {
       dispatch: noDispatch,
       openPr: recordingOpenPr().openPr,
       dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
       exec,
       now,
       scheduleInterval,
@@ -871,6 +917,7 @@ describe("act: PR upkeep", () => {
         dispatch: noDispatch,
         openPr: recordingOpenPr().openPr,
         dispatchConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval,
@@ -918,6 +965,7 @@ describe("act: PR upkeep", () => {
         dispatch: noDispatch,
         openPr: recordingOpenPr().openPr,
         dispatchConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval,
@@ -989,6 +1037,7 @@ describe("act: PR upkeep", () => {
         dispatch,
         openPr: recordingOpenPr().openPr,
         dispatchConflict,
+        dispatchRefinement: noRefinement,
         exec,
         now,
         scheduleInterval,
@@ -1026,6 +1075,293 @@ describe("act: PR upkeep", () => {
           dispatch,
           openPr: recordingOpenPr().openPr,
           dispatchConflict,
+          dispatchRefinement: noRefinement,
+          exec,
+          now,
+          scheduleInterval,
+          log,
+        },
+      ),
+    ).rejects.toThrow("claude ENOENT");
+
+    expect(msgs(events)).toContain(
+      "Worker succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+    );
+  });
+});
+
+describe("act: Refinement", () => {
+  it("posts the round marker before dispatching the Refinement Worker", async () => {
+    const { exec, calls } = recordingExec();
+    const { log, events } = recordingLog();
+    let commentedBeforeDispatch = false;
+    const dispatchRefinement: DispatchRefinementWorker = async (
+      pr,
+      ticket,
+      headRef,
+    ) => {
+      commentedBeforeDispatch = calls.length === 1;
+      return refinementOutcome(pr, { ticket, headRef, newCommits: 0 });
+    };
+
+    await act(
+      [
+        {
+          type: "refine-pr",
+          pr: 30,
+          ticket: 3,
+          headRef: "border-collie/ticket-3-attempt-1",
+          round: 1,
+        },
+      ],
+      {
+        dispatch: noDispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict: noConflict,
+        dispatchRefinement,
+        exec,
+        now,
+        scheduleInterval,
+        log,
+      },
+    );
+
+    expect(commentedBeforeDispatch).toBe(true);
+    expect(calls).toEqual([
+      [
+        "gh",
+        "pr",
+        "comment",
+        "30",
+        "--body",
+        expect.stringContaining(REFINEMENT_ROUND_MARKER),
+      ],
+    ]);
+    expect(events.map((e) => e.kind)).toEqual([
+      "refinement-round-started",
+      "refinement-outcome",
+    ]);
+    expect(msgs(events)).toEqual([
+      "started Refinement round 1 for PR #30 (ticket #3)",
+      "Refinement Worker finished: 0 new commits on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-refinement-round-1.jsonl)",
+    ]);
+  });
+
+  it("pushes the branch when the Refinement round commits a fix", async () => {
+    const { exec, calls } = recordingExec();
+    const { log, events } = recordingLog();
+    const dispatchRefinement: DispatchRefinementWorker = async (
+      pr,
+      ticket,
+      headRef,
+    ) => refinementOutcome(pr, { ticket, headRef, newCommits: 2 });
+
+    await act(
+      [
+        {
+          type: "refine-pr",
+          pr: 30,
+          ticket: 3,
+          headRef: "border-collie/ticket-3-attempt-1",
+          round: 1,
+        },
+      ],
+      {
+        dispatch: noDispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict: noConflict,
+        dispatchRefinement,
+        exec,
+        now,
+        scheduleInterval,
+        log,
+      },
+    );
+
+    expect(calls.at(-1)).toEqual([
+      "git",
+      "push",
+      "--force",
+      "origin",
+      "border-collie/ticket-3-attempt-1",
+    ]);
+    expect(events.map((e) => e.kind)).toEqual([
+      "refinement-round-started",
+      "refinement-outcome",
+      "refinement-pushed",
+    ]);
+  });
+
+  it("does not push when the Refinement round committed nothing", async () => {
+    const { exec, calls } = recordingExec();
+    const { log, events } = recordingLog();
+    const dispatchRefinement: DispatchRefinementWorker = async (
+      pr,
+      ticket,
+      headRef,
+    ) => refinementOutcome(pr, { ticket, headRef, newCommits: 0 });
+
+    await act(
+      [
+        {
+          type: "refine-pr",
+          pr: 30,
+          ticket: 3,
+          headRef: "border-collie/ticket-3-attempt-1",
+          round: 1,
+        },
+      ],
+      {
+        dispatch: noDispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict: noConflict,
+        dispatchRefinement,
+        exec,
+        now,
+        scheduleInterval,
+        log,
+      },
+    );
+
+    expect(calls.some((c) => c[1] === "push")).toBe(false);
+    expect(events.map((e) => e.kind)).not.toContain("refinement-pushed");
+  });
+
+  it("gives up Refining via the tracker: Ticket comment, label swap, then the PR's give-up marker", async () => {
+    const { exec, calls } = recordingExec();
+    const { log, events } = recordingLog();
+
+    await act([{ type: "refinement-give-up", pr: 30, ticket: 3, rounds: 3 }], {
+      dispatch: noDispatch,
+      openPr: recordingOpenPr().openPr,
+      dispatchConflict: noConflict,
+      dispatchRefinement: noRefinement,
+      exec,
+      now,
+      scheduleInterval,
+      log,
+    });
+
+    expect(calls).toEqual([
+      [
+        "gh",
+        "issue",
+        "comment",
+        "3",
+        "--body",
+        expect.stringContaining("Refinement give-up"),
+      ],
+      [
+        "gh",
+        "issue",
+        "edit",
+        "3",
+        "--remove-label",
+        READY_FOR_AGENT,
+        "--add-label",
+        READY_FOR_HUMAN,
+      ],
+      [
+        "gh",
+        "pr",
+        "comment",
+        "30",
+        "--body",
+        expect.stringContaining(REFINEMENT_GIVE_UP_MARKER),
+      ],
+    ]);
+    expect(events).toEqual([
+      {
+        kind: "refinement-give-up",
+        level: "warn",
+        msg: "gave up Refining PR #30 after 3 rounds (ticket #3 → ready-for-human)",
+        pr: 30,
+        ticket: 3,
+        rounds: 3,
+      },
+    ]);
+  });
+
+  it("runs Refinement Workers concurrently with dispatch Workers and reports both", async () => {
+    const { exec } = recordingExec();
+    const { log, events } = recordingLog();
+    const inFlight: string[] = [];
+    let bothInFlight!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      bothInFlight = resolve;
+    });
+    const dispatch: DispatchWorker = async (ticket) => {
+      inFlight.push(`worker-${ticket}`);
+      if (inFlight.length === 2) bothInFlight();
+      await gate;
+      return outcome(ticket);
+    };
+    const dispatchRefinement: DispatchRefinementWorker = async (
+      pr,
+      ticket,
+      headRef,
+    ) => {
+      inFlight.push(`refine-${pr}`);
+      if (inFlight.length === 2) bothInFlight();
+      await gate;
+      return refinementOutcome(pr, { ticket, headRef, newCommits: 1 });
+    };
+
+    await act(
+      [
+        {
+          type: "refine-pr",
+          pr: 40,
+          ticket: 4,
+          headRef: "border-collie/ticket-4-attempt-1",
+          round: 1,
+        },
+        { type: "spawn", ticket: 2, attempt: 1 },
+      ],
+      {
+        dispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict: noConflict,
+        dispatchRefinement,
+        exec,
+        now,
+        scheduleInterval,
+        log,
+      },
+    );
+
+    expect(inFlight.sort()).toEqual(["refine-40", "worker-2"]);
+    expect(msgs(events)).toContain("pushed the Refinement fix");
+    expect(msgs(events)).toContain(
+      "Worker succeeded: 2 new commits on border-collie/ticket-2 (transcript: .border-collie/transcripts/ticket-2.jsonl)",
+    );
+  });
+
+  it("reports settled Workers before rethrowing a Refinement Worker's infrastructure failure", async () => {
+    const { exec } = recordingExec();
+    const { log, events } = recordingLog();
+    const dispatch: DispatchWorker = async (ticket) => outcome(ticket);
+    const dispatchRefinement: DispatchRefinementWorker = async () => {
+      throw new Error("claude ENOENT");
+    };
+
+    await expect(
+      act(
+        [
+          {
+            type: "refine-pr",
+            pr: 40,
+            ticket: 4,
+            headRef: "border-collie/ticket-4-attempt-1",
+            round: 1,
+          },
+          { type: "spawn", ticket: 2, attempt: 1 },
+        ],
+        {
+          dispatch,
+          openPr: recordingOpenPr().openPr,
+          dispatchConflict: noConflict,
+          dispatchRefinement,
           exec,
           now,
           scheduleInterval,

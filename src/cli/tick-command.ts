@@ -40,6 +40,13 @@ merge, its body taken from the Worker's final message (mechanical fallback:
 ticket + commit subjects). Dispatch pauses while open agent PRs sit at
 max_open_prs and resumes as merges land.
 
+A failing check, a formal PR review, or a foreign comment on an open agent PR
+(not carrying the operator-steered label) starts a Refinement round: a
+marker comment counts it, then a Worker investigates and commits a fix,
+pushed once the round settles. Bounded at three rounds per PR — once
+exhausted and the PR still needs one, its ticket swaps to ready-for-human
+with a forensic comment on both, and no further round is ever judged.
+
 ${WORKER_DEATH_PROSE} the tick prints a notice so the operator knows to
 re-run once the environment recovers. A standalone tick keeps no memory of
 its own, but the circuit breaker it derives from the tracker's void markers

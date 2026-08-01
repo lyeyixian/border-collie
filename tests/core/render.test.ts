@@ -47,6 +47,8 @@ function openPr(ticket: number): OpenAgentPr {
     behind: false,
     ci: "passing",
     conflictWorkerAsked: false,
+    operatorSteered: false,
+    refinement: { rounds: 0, triggerDue: false, givenUp: false },
   };
 }
 
@@ -193,6 +195,8 @@ describe("buildPlanReport", () => {
         ticket({ number: 5, title: "Merged but open" }),
         ticket({ number: 6, title: "Behind base" }),
         ticket({ number: 7, title: "Green draft" }),
+        ticket({ number: 8, title: "Refining" }),
+        ticket({ number: 9, title: "Refinement exhausted" }),
       ],
       openAgentPrs: [],
       mergedAgentPrs: [],
@@ -211,6 +215,14 @@ describe("buildPlanReport", () => {
         headRef: "border-collie/ticket-6-attempt-1",
       },
       { type: "mark-ready", pr: 70, ticket: 7 },
+      {
+        type: "refine-pr",
+        pr: 80,
+        ticket: 8,
+        headRef: "border-collie/ticket-8-attempt-1",
+        round: 2,
+      },
+      { type: "refinement-give-up", pr: 90, ticket: 9, rounds: 3 },
     ];
 
     const report = buildPlanReport(config(), actionWorld, actions, {
@@ -237,6 +249,13 @@ describe("buildPlanReport", () => {
       { type: "update-branch", pr: 60, title: "Behind base" },
       { type: "conflict-worker", pr: 61, title: "Behind base" },
       { type: "mark-ready", pr: 70, title: "Green draft" },
+      { type: "refine-pr", pr: 80, title: "Refining", round: 2 },
+      {
+        type: "refinement-give-up",
+        pr: 90,
+        title: "Refinement exhausted",
+        rounds: 3,
+      },
     ]);
   });
 
@@ -305,6 +324,13 @@ describe("renderPlanReport", () => {
         { type: "update-branch", pr: 50, title: "Behind base" },
         { type: "conflict-worker", pr: 60, title: "Conflicted" },
         { type: "mark-ready", pr: 70, title: "Green draft" },
+        { type: "refine-pr", pr: 80, title: "Refining", round: 2 },
+        {
+          type: "refinement-give-up",
+          pr: 90,
+          title: "Refinement exhausted",
+          rounds: 3,
+        },
       ],
       dryRun: true,
     };
@@ -323,6 +349,8 @@ describe("renderPlanReport", () => {
         "  update PR #50 — Behind base (behind base, mechanical rebase)",
         "  conflict Worker for PR #60 — Conflicted (resolve merge conflicts)",
         "  mark PR #70 ready — Green draft (CI green)",
+        "  Refine PR #80 — Refining (round 2, failing check or review feedback)",
+        "  give up Refining PR #90 — Refinement exhausted (3 rounds exhausted → ready-for-human)",
         "Dry run: no writes performed.",
       ].join("\n"),
     );

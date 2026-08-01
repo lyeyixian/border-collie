@@ -34,7 +34,9 @@ export type PlanActionLine =
   | { type: "close"; ticket: number; title: string; prUrl: string }
   | { type: "update-branch"; pr: number; title: string }
   | { type: "conflict-worker"; pr: number; title: string }
-  | { type: "mark-ready"; pr: number; title: string };
+  | { type: "mark-ready"; pr: number; title: string }
+  | { type: "refine-pr"; pr: number; title: string; round: number }
+  | { type: "refinement-give-up"; pr: number; title: string; rounds: number };
 
 export interface PlanReport {
   scopeLabel: string;
@@ -82,6 +84,15 @@ function toPlanActionLine(
       return { type: "conflict-worker", pr: action.pr, title };
     case "mark-ready":
       return { type: "mark-ready", pr: action.pr, title };
+    case "refine-pr":
+      return { type: "refine-pr", pr: action.pr, title, round: action.round };
+    case "refinement-give-up":
+      return {
+        type: "refinement-give-up",
+        pr: action.pr,
+        title,
+        rounds: action.rounds,
+      };
   }
 }
 
@@ -155,6 +166,10 @@ function renderPlanActionLine(line: PlanActionLine): string {
       return `  conflict Worker for PR #${line.pr} — ${line.title} (resolve merge conflicts)`;
     case "mark-ready":
       return `  mark PR #${line.pr} ready — ${line.title} (CI green)`;
+    case "refine-pr":
+      return `  Refine PR #${line.pr} — ${line.title} (round ${line.round}, failing check or review feedback)`;
+    case "refinement-give-up":
+      return `  give up Refining PR #${line.pr} — ${line.title} (${line.rounds} rounds exhausted → ready-for-human)`;
   }
 }
 

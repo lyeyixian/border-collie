@@ -6,10 +6,12 @@ import {
   createDraftPr,
   type Exec,
   escalateTicket,
+  giveUpOnPr,
   markPrReady,
   readScope,
   releaseFailedTicket,
   releaseTicket,
+  startRefinementRound,
   updatePrBranch,
   voidAttempt,
   withDebugLogging,
@@ -21,6 +23,10 @@ import {
   CLAIM_LABEL,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
+  READY_FOR_AGENT,
+  READY_FOR_HUMAN,
+  REFINEMENT_GIVE_UP_MARKER,
+  REFINEMENT_ROUND_MARKER,
   RELEASE_MARKER,
   VOID_MARKER,
 } from "../../src/core/types.js";
@@ -95,6 +101,12 @@ const comments = (n: number) =>
   `repos/{owner}/{repo}/issues/${n}/comments?per_page=100`;
 const blockedBy = (n: number) =>
   `repos/{owner}/{repo}/issues/${n}/dependencies/blocked_by?per_page=100`;
+/** Inline PR review comments — GitHub's Review flow, distinct from `comments`. */
+const pullComments = (n: number) =>
+  `repos/{owner}/{repo}/pulls/${n}/comments?per_page=100`;
+/** PR review submissions (Approve/Request-changes/Comment). */
+const pullReviews = (n: number) =>
+  `repos/{owner}/{repo}/pulls/${n}/reviews?per_page=100`;
 const CLOSED_PULLS = "repos/{owner}/{repo}/pulls?state=closed&per_page=100";
 const compare = (base: string, head: string) =>
   `repos/{owner}/{repo}/compare/${base}...${head}`;
@@ -138,7 +150,7 @@ describe("readScope", () => {
       "--limit",
       "100",
       "--json",
-      "number,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup",
+      "number,headRefName,baseRefName,isDraft,mergeable,statusCheckRollup,labels,createdAt",
     ]);
   });
 
@@ -558,6 +570,9 @@ describe("readScope", () => {
       api: {
         [SUB_ISSUES]: [[issue({ number: 5 })]],
         [comments(5)]: [[]],
+        [comments(50)]: [[]],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
         [CLOSED_PULLS]: [[]],
       },
       prList: [
@@ -578,6 +593,8 @@ describe("readScope", () => {
         behind: false,
         ci: "none",
         conflictWorkerAsked: false,
+        operatorSteered: false,
+        refinement: { rounds: 0, triggerDue: false, givenUp: false },
       },
     ]);
   });
@@ -588,6 +605,9 @@ describe("readScope", () => {
       api: {
         [SUB_ISSUES]: [[issue({ number: 5 })]],
         [comments(5)]: [[]],
+        [comments(50)]: [[]],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
         [CLOSED_PULLS]: [[]],
         // The head is two commits behind its base.
         [compare("main", head)]: { behind_by: 2 },
@@ -620,6 +640,9 @@ describe("readScope", () => {
         [comments(5)]: [[]],
         [comments(6)]: [[]],
         [comments(50)]: [[]],
+        [comments(60)]: [[]],
+        [pullComments(60)]: [[]],
+        [pullReviews(60)]: [[]],
         [CLOSED_PULLS]: [[]],
       },
       prList: [
@@ -641,7 +664,7 @@ describe("readScope", () => {
     ).toBe(false);
   });
 
-  it("reads a conflicted PR's comments for the unresolved marker, and skips that read otherwise", async () => {
+  it("reads every open PR's comments once, for the conflict-unresolved marker and the Refinement signal together", async () => {
     const { exec, calls } = fakeExec({
       api: {
         [SUB_ISSUES]: [[issue({ number: 5 })]],
@@ -650,6 +673,10 @@ describe("readScope", () => {
         [comments(50)]: [
           [{ body: `${CONFLICT_UNRESOLVED_MARKER}\n🐕 human, please` }],
         ],
+        // PR #60 is clean — no border-collie markers at all.
+        [comments(60)]: [[]],
+        [pullComments(60)]: [[]],
+        [pullReviews(60)]: [[]],
         [CLOSED_PULLS]: [[]],
       },
       prList: [
@@ -670,6 +697,8 @@ describe("readScope", () => {
         behind: false,
         ci: "none",
         conflictWorkerAsked: true,
+        operatorSteered: false,
+        refinement: { rounds: 0, triggerDue: false, givenUp: false },
       },
       {
         number: 60,
@@ -680,11 +709,14 @@ describe("readScope", () => {
         behind: false,
         ci: "none",
         conflictWorkerAsked: false,
+        operatorSteered: false,
+        refinement: { rounds: 0, triggerDue: false, givenUp: false },
       },
     ]);
-    // The clean PR #60's comments are never read.
+    // Both PRs' comments are read — the single pass serves the conflict check
+    // and the Refinement signal at once.
     expect(calls.map(op)).toContain(comments(50));
-    expect(calls.map(op)).not.toContain(comments(60));
+    expect(calls.map(op)).toContain(comments(60));
   });
 
   it("classifies a pending check rollup as pending and a failing one as failing", async () => {
@@ -693,6 +725,13 @@ describe("readScope", () => {
         [SUB_ISSUES]: [[issue({ number: 5 }), issue({ number: 6 })]],
         [comments(5)]: [[]],
         [comments(6)]: [[]],
+        [comments(50)]: [[]],
+        [comments(60)]: [[]],
+        // PR #50 is pending, not failing, so its Refinement trigger still
+        // consults formal review activity; PR #60 is already failing, which
+        // short-circuits that read.
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
         [CLOSED_PULLS]: [[]],
       },
       prList: [
@@ -724,6 +763,9 @@ describe("readScope", () => {
       api: {
         [SUB_ISSUES]: [[issue({ number: 5 })]],
         [comments(5)]: [[]],
+        [comments(50)]: [[]],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
         [CLOSED_PULLS]: [[]],
       },
       prList: [prItem({ number: 50, mergeable: "UNKNOWN" })],
@@ -799,6 +841,305 @@ describe("readScope", () => {
     expect(world.mergedAgentPrs).toEqual([
       { ticket: 5, url: "https://github.com/o/r/pull/52" },
     ]);
+  });
+});
+
+describe("readScope: Refinement signal", () => {
+  it("counts Refinement rounds from round marker comments", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [
+          [
+            {
+              body: REFINEMENT_ROUND_MARKER,
+              created_at: "2026-07-20T10:00:00Z",
+            },
+            {
+              body: REFINEMENT_ROUND_MARKER,
+              created_at: "2026-07-21T10:00:00Z",
+            },
+          ],
+        ],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50 })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement).toEqual({
+      rounds: 2,
+      triggerDue: false,
+      givenUp: false,
+    });
+  });
+
+  it("is due when a foreign comment lands after the latest round", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [
+          [
+            {
+              body: REFINEMENT_ROUND_MARKER,
+              created_at: "2026-07-20T10:00:00Z",
+            },
+            {
+              body: "please also fix the typo",
+              created_at: "2026-07-21T10:00:00Z",
+            },
+          ],
+        ],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50 })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement).toEqual({
+      rounds: 1,
+      triggerDue: true,
+      givenUp: false,
+    });
+  });
+
+  it("is not due when the only foreign comment predates the latest round", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [
+          [
+            { body: "please fix the typo", created_at: "2026-07-19T10:00:00Z" },
+            {
+              body: REFINEMENT_ROUND_MARKER,
+              created_at: "2026-07-20T10:00:00Z",
+            },
+          ],
+        ],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50 })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement.triggerDue).toBe(false);
+  });
+
+  it("is due when an inline review comment lands after the latest round (GitHub's Review flow, not the Conversation tab)", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [
+          [
+            {
+              body: REFINEMENT_ROUND_MARKER,
+              created_at: "2026-07-20T10:00:00Z",
+            },
+          ],
+        ],
+        [pullComments(50)]: [[{ created_at: "2026-07-21T10:00:00Z" }]],
+        [pullReviews(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50 })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement).toEqual({
+      rounds: 1,
+      triggerDue: true,
+      givenUp: false,
+    });
+  });
+
+  it("is due on a Request-changes review with no body, and on a Comment review with one", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [[]],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [
+          [
+            {
+              state: "CHANGES_REQUESTED",
+              body: "",
+              submitted_at: "2026-07-19T10:00:00Z",
+            },
+          ],
+        ],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50 })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement.triggerDue).toBe(true);
+  });
+
+  it("ignores an approving review with no comment — not feedback needing a fix", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [[]],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [
+          [
+            {
+              state: "APPROVED",
+              body: "",
+              submitted_at: "2026-07-19T10:00:00Z",
+            },
+          ],
+        ],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50 })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement.triggerDue).toBe(false);
+  });
+
+  it("never reads formal review activity for a conflicted PR — the read would be dead weight", async () => {
+    const { exec, calls } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50, mergeable: "CONFLICTING" })],
+    });
+
+    await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(calls.map(op)).not.toContain(pullComments(50));
+    expect(calls.map(op)).not.toContain(pullReviews(50));
+  });
+
+  it("is due on a fresh PR the moment a foreign comment lands, with no round yet", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [
+          [{ body: "please fix the typo", created_at: "2026-07-19T10:00:00Z" }],
+        ],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50, createdAt: "2026-07-18T10:00:00Z" })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement).toEqual({
+      rounds: 0,
+      triggerDue: true,
+      givenUp: false,
+    });
+  });
+
+  it("is due on a failing check regardless of comments, without reading formal review activity", async () => {
+    const { exec, calls } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [
+        prItem({
+          number: 50,
+          statusCheckRollup: [{ status: "COMPLETED", conclusion: "FAILURE" }],
+        }),
+      ],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement.triggerDue).toBe(true);
+    // A failing check already settles the verdict — the extra reads would be dead weight.
+    expect(calls.map(op)).not.toContain(pullComments(50));
+    expect(calls.map(op)).not.toContain(pullReviews(50));
+  });
+
+  it("never triggers once the give-up marker has posted, even on a failing check", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [[{ body: REFINEMENT_GIVE_UP_MARKER }]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [
+        prItem({
+          number: 50,
+          statusCheckRollup: [{ status: "COMPLETED", conclusion: "FAILURE" }],
+        }),
+      ],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement).toEqual({
+      rounds: 0,
+      triggerDue: false,
+      givenUp: true,
+    });
+  });
+
+  it("reads the operator-steered label and forces triggerDue false, without hiding the round count", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [
+          [
+            {
+              body: REFINEMENT_ROUND_MARKER,
+              created_at: "2026-07-20T10:00:00Z",
+            },
+          ],
+        ],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [
+        prItem({
+          number: 50,
+          labels: [{ name: "operator-steered" }],
+          statusCheckRollup: [{ status: "COMPLETED", conclusion: "FAILURE" }],
+        }),
+      ],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.operatorSteered).toBe(true);
+    expect(world.openAgentPrs[0]?.refinement).toEqual({
+      rounds: 1,
+      triggerDue: false,
+      givenUp: false,
+    });
   });
 });
 
@@ -1054,6 +1395,69 @@ describe("commentConflictUnresolved", () => {
         expect.stringContaining(CONFLICT_UNRESOLVED_MARKER),
       ],
     ]);
+  });
+});
+
+describe("startRefinementRound", () => {
+  it("comments the round marker, naming the round", async () => {
+    const { exec, calls } = recordingExec();
+
+    await startRefinementRound(30, 2, exec);
+
+    expect(calls).toEqual([
+      [
+        "gh",
+        "pr",
+        "comment",
+        "30",
+        "--body",
+        expect.stringContaining(REFINEMENT_ROUND_MARKER),
+      ],
+    ]);
+    const body = calls[0]?.[5] ?? "";
+    expect(body).toContain("round 2");
+  });
+});
+
+describe("giveUpOnPr", () => {
+  it("comments the Ticket and swaps its labels first, then marks the PR given up last", async () => {
+    const { exec, calls } = recordingExec();
+
+    await giveUpOnPr(30, 5, 3, exec);
+
+    expect(calls).toEqual([
+      [
+        "gh",
+        "issue",
+        "comment",
+        "5",
+        "--body",
+        expect.stringContaining("Refinement give-up"),
+      ],
+      [
+        "gh",
+        "issue",
+        "edit",
+        "5",
+        "--remove-label",
+        READY_FOR_AGENT,
+        "--add-label",
+        READY_FOR_HUMAN,
+      ],
+      [
+        "gh",
+        "pr",
+        "comment",
+        "30",
+        "--body",
+        expect.stringContaining(REFINEMENT_GIVE_UP_MARKER),
+      ],
+    ]);
+    const ticketBody = calls[0]?.[5] ?? "";
+    expect(ticketBody).toContain("#30");
+    expect(ticketBody).toContain("3 rounds");
+    const prBody = calls[2]?.[5] ?? "";
+    expect(prBody).toContain("3 rounds");
   });
 });
 

@@ -37,6 +37,8 @@ function openPr(ticket: number): OpenAgentPr {
     behind: false,
     ci: "passing",
     conflictWorkerAsked: false,
+    operatorSteered: false,
+    refinement: { rounds: 0, triggerDue: false, givenUp: false },
   };
 }
 
