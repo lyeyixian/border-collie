@@ -5,6 +5,7 @@ import { fileTransport } from "tslog/transports/file";
 import { loadConfigFile } from "../adapters/config-file.js";
 import { probeEnvironment, RUN_DIR } from "../adapters/worker.js";
 import type { IntervalScheduler } from "../app/act.js";
+import { initScaffoldOnce } from "../app/init.js";
 import { type TickResult, tickOnce } from "../app/tick.js";
 import { workerAttemptOnce } from "../app/worker.js";
 import {
@@ -20,6 +21,7 @@ import {
   type LogEvent,
   scrubCredentials,
 } from "../core/log.js";
+import type { ScaffoldAction } from "../core/scaffold.js";
 import type { WorkerOutcome } from "../core/types.js";
 import { reportBlockText } from "./console-report.js";
 
@@ -46,6 +48,8 @@ export interface Context extends CommandContext {
     inPlace: boolean,
   ) => Promise<WorkerOutcome>;
   readonly probe: (model: string) => Promise<boolean>;
+  /** `init` (issue #76): scaffold the workflows into the target repo at cwd. */
+  readonly initScaffold: (force: boolean) => ScaffoldAction[];
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   /** The fleet heartbeat's scheduler; see src/app/act.ts. */
@@ -220,6 +224,7 @@ export function buildRealContext(
     runWorker: (config, ticket, attempt, inPlace) =>
       workerAttemptOnce(config, ticket, attempt, inPlace, { log }),
     probe: (model) => probeEnvironment(model),
+    initScaffold: (force) => initScaffoldOnce(cwd, force),
     now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     scheduleInterval,

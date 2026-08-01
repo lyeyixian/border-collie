@@ -12,8 +12,7 @@ on:
   workflow_run:
     # Must match the `name:` the Worker workflow declares (issue #75,
     # border-collie-worker.yml) — workflow_run matches on that name, not the
-    # file name. This trigger is inert (never fires) until that workflow
-    # exists with this exact name.
+    # file name.
     workflows: [Worker]
     types: [completed]
   workflow_dispatch:
@@ -58,7 +57,10 @@ jobs:
         id: app-token
         uses: actions/create-github-app-token@v2
         with:
-          app-id: ${{ secrets.BORDER_COLLIE_APP_ID }}
+          # A repository variable, not a secret: the App ID isn't sensitive
+          # (matches the Worker workflow's own use of vars for the same
+          # value).
+          app-id: ${{ vars.BORDER_COLLIE_APP_ID }}
           private-key: ${{ secrets.BORDER_COLLIE_APP_PRIVATE_KEY }}
 
       - uses: actions/checkout@v7

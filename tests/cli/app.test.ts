@@ -9,6 +9,7 @@ import {
   type WorkerAttemptConfig,
 } from "../../src/core/config.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
+import type { ScaffoldAction } from "../../src/core/scaffold.js";
 import type {
   Ticket,
   WorkerOutcome,
@@ -104,6 +105,7 @@ interface FakeContext {
   probeCalls: string[];
   events: LogEvent[];
   verbosityCalls: boolean[];
+  initScaffoldCalls: boolean[];
 }
 
 function fakeContext(
@@ -111,6 +113,7 @@ function fakeContext(
     loadConfig?: (flags: Flags) => ResolvedConfig;
     tickResults?: { world: WorldSnapshot; infraFailures?: number }[];
     runWorkerOutcome?: WorkerOutcome;
+    initScaffoldResult?: ScaffoldAction[];
   } = {},
 ): FakeContext {
   const stdoutLines: string[] = [];
@@ -130,8 +133,10 @@ function fakeContext(
   const probeCalls: string[] = [];
   const events: LogEvent[] = [];
   const verbosityCalls: boolean[] = [];
+  const initScaffoldCalls: boolean[] = [];
   const tickResults = overrides.tickResults ?? [{ world: CLOSED_WORLD }];
   const runWorkerOutcome = overrides.runWorkerOutcome ?? workerOutcome();
+  const initScaffoldResult = overrides.initScaffoldResult ?? [];
 
   const context: Context = {
     process: {
@@ -181,6 +186,10 @@ function fakeContext(
     setVerbose: (verbose) => {
       verbosityCalls.push(verbose);
     },
+    initScaffold: (force) => {
+      initScaffoldCalls.push(force);
+      return initScaffoldResult;
+    },
   };
 
   return {
@@ -193,6 +202,7 @@ function fakeContext(
     probeCalls,
     events,
     verbosityCalls,
+    initScaffoldCalls,
   };
 }
 
@@ -485,6 +495,42 @@ describe("worker command", () => {
   });
 });
 
+describe("init command", () => {
+  it("routes `init` to a scaffold with force defaulted to false", async () => {
+    const fake = fakeContext();
+
+    await runCli(["init"], fake.context);
+
+    expect(fake.initScaffoldCalls).toEqual([false]);
+    expect(fake.context.process.exitCode).toBeFalsy();
+  });
+
+  it("forwards --force through to the scaffold", async () => {
+    const fake = fakeContext();
+
+    await runCli(["init", "--force"], fake.context);
+
+    expect(fake.initScaffoldCalls).toEqual([true]);
+  });
+
+  it("prints the scaffold report and the secrets/permissions checklist", async () => {
+    const fake = fakeContext({
+      initScaffoldResult: [
+        {
+          relPath: ".github/workflows/border-collie-tick.yml",
+          outcome: "written",
+        },
+      ],
+    });
+
+    await runCli(["init"], fake.context);
+
+    expect(fake.stdout()).toContain(".github/workflows/border-collie-tick.yml");
+    expect(fake.stdout()).toContain("BORDER_COLLIE_APP_PRIVATE_KEY");
+    expect(fake.stdout()).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  });
+});
+
 describe("exit-code contract", () => {
   it("tick exits 0", async () => {
     const fake = fakeContext();
@@ -549,6 +595,7 @@ describe("help", () => {
     expect(fake.stdout()).toContain("tick");
     expect(fake.stdout()).toContain("run");
     expect(fake.stdout()).toContain("worker");
+    expect(fake.stdout()).toContain("init");
   });
 
   it("supports the -h alias", async () => {

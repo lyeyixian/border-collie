@@ -29,6 +29,14 @@ or install it globally:
 npm install -g border-collie
 ```
 
+To run the fleet in GitHub Actions instead of on your own machine, scaffold the workflows into your target repository:
+
+```
+npx border-collie init
+```
+
+This writes `.github/workflows/border-collie-tick.yml` (the Orchestrator, which also runs Conflict and Refinement Workers inline) and `.github/workflows/border-collie-worker.yml` (one job per dispatched Worker, skills setup included) — never overwriting a file already there unless `--force` is passed — then prints a checklist of the secrets and the minimum GitHub App permissions to supply before the first run (see "Continuous operation" below). Credentials come from a GitHub App you create and install yourself; border-collie hosts no shared service or webhook.
+
 ## Release process
 
 Releases are tag-driven (see `.github/workflows/release.yml`):
@@ -53,8 +61,10 @@ This repository dogfoods itself: `.github/workflows/border-collie-tick.yml` runs
 
 Writes that must retrigger a workflow — dispatching a Worker's job, and a branch this Tick pushes back to an open PR — authenticate with a GitHub App installation token rather than the default `GITHUB_TOKEN`, which GitHub's own recursive-trigger guard silently ignores for exactly those writes. Running the workflow requires:
 
-- `BORDER_COLLIE_APP_ID` and `BORDER_COLLIE_APP_PRIVATE_KEY`: a GitHub App installed on this repository with contents, issues, and pull request write access, and workflow-run read access (deliberately excluding workflow write, so a Worker can never rewrite the workflow that runs it).
+- `BORDER_COLLIE_APP_ID` (repository variable — not sensitive) and `BORDER_COLLIE_APP_PRIVATE_KEY` (repository secret): a GitHub App installed on this repository with contents, issues, and pull request write access, and Actions read/write access to dispatch and read back Worker job runs (deliberately excluding the separate Workflows permission, so a Worker can never rewrite the workflow *file* that runs it).
 - `CLAUDE_CODE_OAUTH_TOKEN`: a subscription OAuth token (`claude setup-token`) for the headless sessions the Tick still runs inline — Conflict Workers and Refinement rounds.
+
+`border-collie init` scaffolds both workflow files above into a fresh repository and prints this same checklist.
 
 ## Status
 
