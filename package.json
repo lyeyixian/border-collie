@@ -23,7 +23,9 @@
     "border-collie": "./dist/main.js"
   },
   "files": [
-    "dist"
+    "dist",
+    ".github/workflows/border-collie-tick.yml",
+    ".github/workflows/border-collie-worker.yml"
   ],
   "publishConfig": {
     "access": "public",

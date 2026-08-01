@@ -109,3 +109,47 @@ describe("buildRealContext's durable log file", () => {
     expect(fileName).toMatch(/^\d{4}-\d{2}-\d{2}T.*\.jsonl$/);
   });
 });
+
+/**
+ * Another real-filesystem integration test: `initScaffold` writes this
+ * package's own workflow templates into a target repo, so this proves the
+ * whole chain — package-relative template lookup through to a file the
+ * target repo can actually run — rather than trusting the injected-deps
+ * unit tests that stand in for it in tests/app/init.test.ts.
+ */
+describe("buildRealContext's initScaffold", () => {
+  it("scaffolds both workflow files into a fresh target repo, matching this package's own", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "border-collie-context-test-"));
+    const context = buildRealContext(dir);
+
+    const actions = context.initScaffold(false);
+
+    expect(actions).toEqual([
+      {
+        relPath: ".github/workflows/border-collie-tick.yml",
+        outcome: "written",
+      },
+      {
+        relPath: ".github/workflows/border-collie-worker.yml",
+        outcome: "written",
+      },
+    ]);
+    for (const { relPath } of actions) {
+      expect(readFileSync(join(dir, relPath), "utf8")).toBe(
+        readFileSync(relPath, "utf8"),
+      );
+    }
+  });
+
+  it("skips a file already present, and only overwrites it with --force", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "border-collie-context-test-"));
+    const context = buildRealContext(dir);
+    context.initScaffold(false);
+
+    const skipped = context.initScaffold(false);
+    expect(skipped.every((a) => a.outcome === "skipped-exists")).toBe(true);
+
+    const forced = context.initScaffold(true);
+    expect(forced.every((a) => a.outcome === "overwritten")).toBe(true);
+  });
+});

@@ -51,4 +51,18 @@ actual_version=$("$bin" --version) || die "border-collie --version exited non-ze
 [ "$actual_version" = "$expected_version" ] ||
   die "border-collie --version printed '$actual_version', expected '$expected_version'"
 
+# `init`'s workflow templates ship alongside dist/ (package.json "files"),
+# read at runtime relative to the installed package root — a path that only
+# resolves correctly once the tarball is unpacked cold like this, with no
+# workspace symlinks and no source tree to fall back on.
+log "Running border-collie init against a fresh target repo"
+target_dir=$(mktemp -d)
+(cd "$target_dir" && "$bin" init >/dev/null) ||
+  die "border-collie init exited non-zero"
+for f in border-collie-tick.yml border-collie-worker.yml; do
+  path="$target_dir/.github/workflows/$f"
+  [ -s "$path" ] || die "init did not scaffold a non-empty $f"
+done
+rm -rf "$target_dir"
+
 log "Smoke passed"
