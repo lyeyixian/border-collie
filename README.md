@@ -17,6 +17,8 @@ while open tickets remain:
 
 ## Install
 
+border-collie targets your own repositories and your own Tickets — see [triage labels](docs/agents/triage-labels.md) for what applying `ready-for-agent` asserts about trusting a Ticket's text to an autonomous agent with write access to the repository. Don't point it at a repository that accepts issues or pull requests from strangers.
+
 Requires Node >=24.
 
 ```
