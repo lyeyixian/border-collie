@@ -98,6 +98,10 @@ export interface WorkerOutcome {
   costUsd: number | undefined;
   /** Agentic turns taken, from the transcript's result event when one survived. */
   turns: number | undefined;
+  /** Wall-clock duration of the whole session in ms, from the transcript's result event when one survived. */
+  durationMs: number | undefined;
+  /** How the session's result event says it ended ("success", "error_max_turns", ...), from the transcript's result event when one survived. */
+  subtype: string | undefined;
   /**
    * The Attempt spent past the cost cap. An alarm, not a failure: a finished
    * Attempt keeps its work and its PR — the overrun is surfaced so an

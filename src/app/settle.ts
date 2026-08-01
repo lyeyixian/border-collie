@@ -1,9 +1,11 @@
+import { type ReadFile, realReadFile } from "../adapters/pr.js";
 import {
   type Exec,
   releaseFailedTicket,
   voidAttempt,
 } from "../adapters/tracker.js";
 import type { Log } from "../core/log.js";
+import { buildForensicReport, renderForensicReport } from "../core/render.js";
 import type { WorkerOutcome } from "../core/types.js";
 
 function describeOutcome(outcome: WorkerOutcome): string {
@@ -35,6 +37,7 @@ export async function settleAttempt(
   prUrl: string | undefined,
   log: Log,
   exec: Exec,
+  readTranscript: ReadFile = realReadFile,
 ): Promise<void> {
   log({
     kind: "worker-outcome",
@@ -76,6 +79,14 @@ export async function settleAttempt(
       reason: outcome.infra,
     });
   } else if (outcome.failure) {
+    // Read now, while the transcript still sits on this runner's disk — a
+    // later reader of the rendered comment may be on a machine where it
+    // never existed. An unreadable transcript still yields the outcome's own
+    // facts (see `buildForensicReport`), so this never blocks the release.
+    const transcript = await readTranscript(outcome.transcript).catch(() => "");
+    const forensics = renderForensicReport(
+      buildForensicReport(outcome, transcript),
+    );
     await releaseFailedTicket(
       outcome.ticket,
       {
@@ -85,6 +96,7 @@ export async function settleAttempt(
         branch: outcome.branch,
         transcript: outcome.transcript,
       },
+      forensics,
       exec,
     );
     log({

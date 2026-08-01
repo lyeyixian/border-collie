@@ -536,11 +536,15 @@ export async function createDraftPr(
  * Act phase: release a ticket whose Attempt just failed, embedding the
  * attempt's forensic record in the release comment — the tracker is the only
  * state store, so this comment IS the attempt history that the next Tick's
- * retry ladder and a later Escalation read back.
+ * retry ladder and a later Escalation read back. `forensics` (the rendered
+ * result facts, tool histogram, and final turns — see `renderForensicReport`)
+ * is appended so the comment is triageable on its own, without the transcript
+ * path a runner may have already discarded.
  */
 export async function releaseFailedTicket(
   ticket: number,
   failure: AttemptFailure,
+  forensics: string,
   exec: Exec = realExec,
 ): Promise<void> {
   const body = [
@@ -548,6 +552,8 @@ export async function releaseFailedTicket(
     attemptMarker(failure),
     `🐕 Attempt ${failure.attempt} failed: ${FAILURE_DESCRIPTIONS[failure.reason]} (model ${failure.model}).`,
     `Worktree torn down; branch \`${failure.branch}\` abandoned; transcript at \`${failure.transcript}\`.`,
+    "",
+    forensics,
   ].join("\n");
   await release(ticket, body, exec);
 }

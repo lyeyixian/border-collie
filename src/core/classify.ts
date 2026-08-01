@@ -61,6 +61,7 @@ export interface ResultEvent {
   subtype: string | undefined;
   totalCostUsd: number | undefined;
   numTurns: number | undefined;
+  durationMs: number | undefined;
 }
 
 /**
@@ -90,6 +91,8 @@ export function parseResultEvent(tail: string): ResultEvent | undefined {
     totalCostUsd:
       typeof last.total_cost_usd === "number" ? last.total_cost_usd : undefined,
     numTurns: typeof last.num_turns === "number" ? last.num_turns : undefined,
+    durationMs:
+      typeof last.duration_ms === "number" ? last.duration_ms : undefined,
   };
 }
 

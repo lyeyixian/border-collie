@@ -907,10 +907,15 @@ describe("createDraftPr", () => {
 });
 
 describe("releaseFailedTicket", () => {
-  it("removes the claim label first, then posts a release comment carrying the attempt record", async () => {
+  it("removes the claim label first, then posts a release comment carrying the attempt record and forensics", async () => {
     const { exec, calls } = recordingExec();
 
-    await releaseFailedTicket(5, FAILURE, exec);
+    await releaseFailedTicket(
+      5,
+      FAILURE,
+      "**Result:** forensic evidence",
+      exec,
+    );
 
     expect(calls).toEqual([
       ["gh", "issue", "edit", "5", "--remove-label", CLAIM_LABEL],
@@ -927,6 +932,7 @@ describe("releaseFailedTicket", () => {
     expect(body).toContain(attemptMarker(FAILURE));
     expect(body).toContain("no output events");
     expect(body).toContain(FAILURE.transcript);
+    expect(body).toContain("**Result:** forensic evidence");
   });
 });
 
