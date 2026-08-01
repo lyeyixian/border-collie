@@ -8,6 +8,7 @@ import {
   escalateTicket,
   markPrReady,
   readScope,
+  readTicketTitle,
   releaseFailedTicket,
   releaseTicket,
   updatePrBranch,
@@ -1054,6 +1055,29 @@ describe("commentConflictUnresolved", () => {
         expect.stringContaining(CONFLICT_UNRESOLVED_MARKER),
       ],
     ]);
+  });
+});
+
+describe("readTicketTitle", () => {
+  it("reads a single ticket's title directly, outside of Scope", async () => {
+    const { exec, calls } = fakeExec({
+      api: { "repos/{owner}/{repo}/issues/7": { title: "Walking skeleton" } },
+    });
+
+    const title = await readTicketTitle(7, exec);
+
+    expect(title).toBe("Walking skeleton");
+    expect(calls).toEqual([["gh", "api", "repos/{owner}/{repo}/issues/7"]]);
+  });
+
+  it("falls back to a generic title when the issue carries none", async () => {
+    const { exec } = fakeExec({
+      api: { "repos/{owner}/{repo}/issues/7": {} },
+    });
+
+    const title = await readTicketTitle(7, exec);
+
+    expect(title).toBe("Ticket #7");
   });
 });
 

@@ -6,9 +6,14 @@ import {
   ConfigError,
   type Flags,
   type ResolvedConfig,
+  type WorkerAttemptConfig,
 } from "../../src/core/config.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
-import type { Ticket, WorldSnapshot } from "../../src/core/types.js";
+import type {
+  Ticket,
+  WorkerOutcome,
+  WorldSnapshot,
+} from "../../src/core/types.js";
 
 /** A `Log` recording every event into `events`; this fake context never derives a sub-logger, but the type requires `child`. */
 function recordingLog(events: LogEvent[]): Log {
@@ -42,6 +47,26 @@ function world(tickets: Ticket[]): WorldSnapshot {
 const CLOSED_WORLD = world([ticket({ number: 1, state: "closed" })]);
 const STUCK_WORLD = world([ticket({ number: 1, labels: ["ready-for-human"] })]);
 
+function workerOutcome(overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
+  return {
+    ticket: 7,
+    attempt: 1,
+    branch: "border-collie/ticket-7",
+    base: "base-sha",
+    transcript: ".border-collie/transcripts/ticket-7.jsonl",
+    model: "sonnet",
+    exitCode: 0,
+    newCommits: 2,
+    failure: undefined,
+    infra: undefined,
+    costUsd: undefined,
+    turns: undefined,
+    costOverrun: false,
+    ok: true,
+    ...overrides,
+  };
+}
+
 const FAKE_RESOLVED_CONFIG: ResolvedConfig = {
   scope: { kind: "parent", parent: 1 },
   maxWorkers: 3,
@@ -65,6 +90,11 @@ interface FakeContext {
     dryRun: boolean;
     dispatchPaused: boolean | undefined;
   }[];
+  runWorkerCalls: {
+    config: WorkerAttemptConfig;
+    ticket: number;
+    attempt: number;
+  }[];
   probeCalls: string[];
   events: LogEvent[];
   verbosityCalls: boolean[];
@@ -74,6 +104,7 @@ function fakeContext(
   overrides: {
     loadConfig?: (flags: Flags) => ResolvedConfig;
     tickResults?: { world: WorldSnapshot; infraFailures?: number }[];
+    runWorkerOutcome?: WorkerOutcome;
   } = {},
 ): FakeContext {
   const stdoutLines: string[] = [];
@@ -84,10 +115,16 @@ function fakeContext(
     dryRun: boolean;
     dispatchPaused: boolean | undefined;
   }[] = [];
+  const runWorkerCalls: {
+    config: WorkerAttemptConfig;
+    ticket: number;
+    attempt: number;
+  }[] = [];
   const probeCalls: string[] = [];
   const events: LogEvent[] = [];
   const verbosityCalls: boolean[] = [];
   const tickResults = overrides.tickResults ?? [{ world: CLOSED_WORLD }];
+  const runWorkerOutcome = overrides.runWorkerOutcome ?? workerOutcome();
 
   const context: Context = {
     process: {
@@ -96,6 +133,15 @@ function fakeContext(
       exitCode: null,
     },
     loadConfig: (flags) => {
+      loadConfigCalls.push(flags);
+      return overrides.loadConfig
+        ? overrides.loadConfig(flags)
+        : FAKE_RESOLVED_CONFIG;
+    },
+    // Same fake resolver as `loadConfig` (structurally a `ResolvedConfig`
+    // satisfies `WorkerAttemptConfig` too) — the worker command's config
+    // error test drives this through the same `overrides.loadConfig`.
+    loadWorkerConfig: (flags) => {
       loadConfigCalls.push(flags);
       return overrides.loadConfig
         ? overrides.loadConfig(flags)
@@ -112,6 +158,10 @@ function fakeContext(
         infraFailures: next.infraFailures ?? 0,
         dispatchPaused: dispatchPaused ?? false,
       };
+    },
+    runWorker: async (config, ticket, attempt) => {
+      runWorkerCalls.push({ config, ticket, attempt });
+      return runWorkerOutcome;
     },
     probe: async (model) => {
       probeCalls.push(model);
@@ -132,6 +182,7 @@ function fakeContext(
     stderr: () => stderrLines.join(""),
     loadConfigCalls,
     tickCalls,
+    runWorkerCalls,
     probeCalls,
     events,
     verbosityCalls,
@@ -288,6 +339,119 @@ describe("command routing", () => {
     expect(fake.stderr()).toContain("--dry-run only applies to tick");
     expect(fake.tickCalls).toHaveLength(0);
   });
+
+  it("routes `worker` with its ticket/attempt positional args to runWorker", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "7", "2"], fake.context);
+
+    expect(fake.runWorkerCalls).toEqual([
+      { config: FAKE_RESOLVED_CONFIG, ticket: 7, attempt: 2 },
+    ]);
+  });
+});
+
+describe("worker command", () => {
+  it("forwards --model and --retry-model overrides to config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["worker", "7", "1", "--model", "haiku", "--retry-model", "opus4"],
+      fake.context,
+    );
+
+    expect(fake.loadConfigCalls).toEqual([
+      { model: "haiku", retryModel: "opus4" },
+    ]);
+  });
+
+  it("omits unset flags from config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "7", "1"], fake.context);
+
+    expect(fake.loadConfigCalls).toEqual([{}]);
+  });
+
+  it("lowers the console's minimum level to debug when --verbose is passed", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "7", "1", "--verbose"], fake.context);
+
+    expect(fake.verbosityCalls).toEqual([true]);
+  });
+
+  it("rejects a non-integer ticket without calling runWorker", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "abc", "1"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.runWorkerCalls).toHaveLength(0);
+  });
+
+  it("rejects a non-integer attempt without calling runWorker", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "7", "abc"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.runWorkerCalls).toHaveLength(0);
+  });
+
+  it("exits 0 when the Attempt succeeded", async () => {
+    const fake = fakeContext({ runWorkerOutcome: workerOutcome({ ok: true }) });
+
+    await runCli(["worker", "7", "1"], fake.context);
+
+    expect(fake.context.process.exitCode).toBeFalsy();
+  });
+
+  it("exits non-zero when the Attempt failed on its ticket", async () => {
+    const fake = fakeContext({
+      runWorkerOutcome: workerOutcome({
+        ok: false,
+        failure: "nonzero-exit",
+        exitCode: 1,
+        newCommits: 0,
+      }),
+    });
+
+    await runCli(["worker", "7", "1"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+  });
+
+  it("exits non-zero when the Attempt was voided by an infrastructure failure", async () => {
+    const fake = fakeContext({
+      runWorkerOutcome: workerOutcome({
+        ok: false,
+        infra: "usage-limit",
+        exitCode: 1,
+        newCommits: 0,
+      }),
+    });
+
+    await runCli(["worker", "7", "1"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+  });
+
+  it("a config error prints a one-line message, exits 1, and never calls runWorker", async () => {
+    const fake = fakeContext({
+      loadConfig: () => {
+        throw new ConfigError("worker_max_turns must be a positive integer");
+      },
+    });
+
+    await runCli(["worker", "7", "1"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.stderr().trim()).toBe(
+      "worker_max_turns must be a positive integer",
+    );
+    expect(fake.runWorkerCalls).toHaveLength(0);
+  });
 });
 
 describe("exit-code contract", () => {
@@ -353,6 +517,7 @@ describe("help", () => {
     expect(fake.stdout()).toContain("USAGE");
     expect(fake.stdout()).toContain("tick");
     expect(fake.stdout()).toContain("run");
+    expect(fake.stdout()).toContain("worker");
   });
 
   it("supports the -h alias", async () => {
@@ -379,6 +544,24 @@ describe("help", () => {
 
     expect(fake.stdout()).toContain("idempotent pass");
     expect(fake.stdout()).toContain("--max-workers");
+  });
+
+  it("documents --verbose and the shared worker-death prose in worker's per-command help", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "--help"], fake.context);
+
+    expect(fake.stdout()).toContain("--verbose");
+    expect(fake.stdout()).toContain("forensic attempt");
+  });
+
+  it("does not offer scope/concurrency flags on worker's per-command help", async () => {
+    const fake = fakeContext();
+
+    await runCli(["worker", "--help"], fake.context);
+
+    expect(fake.stdout()).not.toContain("--max-workers");
+    expect(fake.stdout()).not.toContain("--parent");
   });
 });
 

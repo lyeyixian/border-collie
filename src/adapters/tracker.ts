@@ -425,6 +425,24 @@ export async function readScope(
   return { tickets, openAgentPrs, mergedAgentPrs };
 }
 
+/**
+ * A single ticket's title, read directly rather than through `readScope`: the
+ * Worker entrypoint (issue #71) has no world snapshot of its own — just the
+ * ticket and Attempt it was told to run — so it fetches the one field its PR
+ * title needs.
+ */
+export async function readTicketTitle(
+  ticket: number,
+  exec: Exec = realExec,
+): Promise<string> {
+  const stdout = await exec("gh", [
+    "api",
+    `repos/{owner}/{repo}/issues/${ticket}`,
+  ]);
+  const issue = JSON.parse(stdout) as { title?: string };
+  return issue.title ?? `Ticket #${ticket}`;
+}
+
 const CLAIM_COMMENT = `${CLAIM_MARKER}\n🐕 Claimed by border-collie: a Worker will be dispatched against this ticket. This claim is agent-held — see CONTEXT.md "Claim".`;
 
 const RELEASE_COMMENT = `${RELEASE_MARKER}\n🐕 border-collie released an orphaned claim (no live Worker, no open agent PR). The ticket is dispatchable again.`;

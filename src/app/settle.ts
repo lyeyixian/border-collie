@@ -26,9 +26,9 @@ function describeOutcome(outcome: WorkerOutcome): string {
  * stays tellable apart from a sibling Attempt settling concurrently.
  *
  * A single per-outcome unit shareable by anything that finishes an Attempt
- * and needs the same write — today the act phase, once every Worker in a
- * Tick has settled and correlated failures are reclassified; later a Worker
- * settling its own Attempt in its own process (issue #71).
+ * and needs the same write — the act phase, once every Worker in a Tick has
+ * settled and correlated failures are reclassified, and a Worker settling
+ * its own Attempt in its own process (src/app/worker.ts, issue #71).
  */
 export async function settleAttempt(
   outcome: WorkerOutcome,

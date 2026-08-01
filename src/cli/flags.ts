@@ -53,9 +53,11 @@ export function resolveConfigFromFlags(
 
 /**
  * stricli's built-in number parser accepts floats; the flags below are
- * strictly digits-only, so they keep this custom parser instead.
+ * strictly digits-only, so they keep this custom parser instead. Exported
+ * for the worker command's ticket/attempt positional arguments, which want
+ * the same strictness.
  */
-function parseInteger(input: string): number {
+export function parseInteger(input: string): number {
   if (!/^\d+$/.test(input)) {
     throw new SyntaxError(`must be an integer, got "${input}"`);
   }

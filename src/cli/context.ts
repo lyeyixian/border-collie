@@ -6,10 +6,13 @@ import { loadConfigFile } from "../adapters/config-file.js";
 import { probeEnvironment, RUN_DIR } from "../adapters/worker.js";
 import type { IntervalScheduler } from "../app/act.js";
 import { type TickResult, tickOnce } from "../app/tick.js";
+import { workerAttemptOnce } from "../app/worker.js";
 import {
   type Flags,
   type ResolvedConfig,
   resolveConfig,
+  resolveWorkerConfig,
+  type WorkerAttemptConfig,
 } from "../core/config.js";
 import {
   type Log,
@@ -17,17 +20,26 @@ import {
   type LogEvent,
   scrubCredentials,
 } from "../core/log.js";
+import type { WorkerOutcome } from "../core/types.js";
 import { reportBlockText } from "./console-report.js";
 
 /** Every effect a command handler needs, injected so handlers never import them directly. */
 export interface Context extends CommandContext {
   readonly process: StricliProcess;
   readonly loadConfig: (flags: Flags) => ResolvedConfig;
+  /** Config resolution for the worker command: no Scope required (issue #71); see `resolveWorkerConfig`. */
+  readonly loadWorkerConfig: (flags: Flags) => WorkerAttemptConfig;
   readonly tick: (
     config: ResolvedConfig,
     dryRun: boolean,
     dispatchPaused?: boolean,
   ) => Promise<TickResult>;
+  /** A Worker settling its own Attempt (issue #71); see src/app/worker.ts. */
+  readonly runWorker: (
+    config: WorkerAttemptConfig,
+    ticket: number,
+    attempt: number,
+  ) => Promise<WorkerOutcome>;
   readonly probe: (model: string) => Promise<boolean>;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
@@ -181,8 +193,12 @@ export function buildRealContext(cwd: string = process.cwd()): Context {
   return {
     process: cliProcess,
     loadConfig: (flags) => resolveConfig(loadConfigFile(cwd), flags),
+    loadWorkerConfig: (flags) =>
+      resolveWorkerConfig(loadConfigFile(cwd), flags),
     tick: (config, dryRun, dispatchPaused) =>
       tickOnce(config, dryRun, dispatchPaused, { log, now, scheduleInterval }),
+    runWorker: (config, ticket, attempt) =>
+      workerAttemptOnce(config, ticket, attempt, { log }),
     probe: (model) => probeEnvironment(model),
     now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),

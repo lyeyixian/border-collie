@@ -3,6 +3,7 @@ import {
   ConfigError,
   modelForAttempt,
   resolveConfig,
+  resolveWorkerConfig,
 } from "../../src/core/config.js";
 
 describe("resolveConfig", () => {
@@ -297,5 +298,77 @@ describe("resolveConfig", () => {
     expect(() => resolveConfig({ max_workers: "many" }, { all: true })).toThrow(
       ConfigError,
     );
+  });
+});
+
+describe("resolveWorkerConfig", () => {
+  it("resolves with no config file and no scope flags at all (issue #71: a Worker attempt needs no Scope)", () => {
+    const resolved = resolveWorkerConfig(undefined, {});
+
+    expect(resolved).toEqual({
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      pollSeconds: 30,
+      model: "sonnet",
+      retryModel: "opus",
+      timeoutMinutes: 45,
+      stallMinutes: 10,
+      maxTurns: 200,
+      maxCostUsd: 20,
+    });
+    expect(resolved).not.toHaveProperty("scope");
+  });
+
+  it("ignores a parent in the config file — no scope is ever resolved", () => {
+    const resolved = resolveWorkerConfig({ parent: 1 }, {});
+
+    expect(resolved).not.toHaveProperty("scope");
+  });
+
+  it("lets --model and --retry-model override the config file", () => {
+    const resolved = resolveWorkerConfig(
+      { worker_model: "haiku" },
+      { model: "opus", retryModel: "haiku" },
+    );
+
+    expect(resolved.model).toBe("opus");
+    expect(resolved.retryModel).toBe("haiku");
+  });
+
+  it("takes the Worker timeout, stall window, and budget backstops from the config file", () => {
+    const resolved = resolveWorkerConfig(
+      {
+        worker_timeout_minutes: 90,
+        worker_stall_minutes: 5,
+        worker_max_turns: 80,
+        worker_max_cost_usd: 7.5,
+      },
+      {},
+    );
+
+    expect(resolved.timeoutMinutes).toBe(90);
+    expect(resolved.stallMinutes).toBe(5);
+    expect(resolved.maxTurns).toBe(80);
+    expect(resolved.maxCostUsd).toBe(7.5);
+  });
+
+  it("rejects a malformed config file the same way resolveConfig does", () => {
+    expect(() => resolveWorkerConfig("not an object", {})).toThrow(ConfigError);
+    expect(() => resolveWorkerConfig({ worker_model: "" }, {})).toThrow(
+      ConfigError,
+    );
+  });
+
+  it("resolves the working-hours window the same way resolveConfig does", () => {
+    const resolved = resolveWorkerConfig(
+      { timezone: "Europe/London", work_start_hour: 9, work_end_hour: 18 },
+      {},
+    );
+
+    expect(resolved.workingHours).toEqual({
+      timezone: "Europe/London",
+      startHour: 9,
+      endHour: 18,
+    });
   });
 });
