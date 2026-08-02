@@ -91,7 +91,7 @@ jobs:
       # whatever released overnight — re-scaffold with `border-collie init
       # --force` to move to a newer version deliberately.
       - name: Install border-collie
-        run: npm install -g border-collie@0.3.0
+        run: npm install -g border-collie@0.4.0
 
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code@latest
