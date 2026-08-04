@@ -201,26 +201,35 @@ export function workerPrompt(ticket: number): string {
 }
 
 /**
- * The entire conflict-resolution Worker prompt: run the merge-conflict skill
- * against a rebase the Orchestrator has already started, then stop. The
- * plain-English half stands in when the slash command is unavailable, and
- * pins the contract the Orchestrator relies on — finish the rebase, touch
- * nothing else, do not push. A rebase, not a merge, so the agent branch stays
- * linear and the operator's "Rebase and merge" strategy keeps working.
+ * The entire conflict-resolution Worker prompt: finish a rebase the
+ * Orchestrator has already started, then stop. Inline rather than delegated to
+ * a slash command, so the procedure is versioned and tested with the code
+ * rather than with whatever plugin the Worker's environment happens to carry
+ * (ADR 0007) — and so the two clauses drawn from measured failure modes can be
+ * stated at all: git will happily finish a rebase around a resolution that
+ * silently dropped one side, and an agentic loop with no answer in either side
+ * iterates until its output merely looks clean. Abstaining needs no plumbing:
+ * stopping mid-rebase leaves the branch at its conflicted tip, which the
+ * caller already reads as unresolved and hands to a human.
  */
-export function conflictWorkerPrompt(): string {
+export function conflictWorkerPrompt(ticket: number): string {
   return [
-    "/resolving-merge-conflicts",
+    "A rebase of this pull request's branch onto the base branch is already in progress and has conflicts. Resolve every conflict and continue the rebase until every commit is applied — a rebase, never a merge, so this branch stays linear.",
     "",
-    "A rebase of this pull request's branch onto the base branch is already in progress and has conflicts. Resolve every conflict and continue the rebase until every commit is applied. Change nothing beyond what resolving the conflicts requires, and do not push — leave the completed rebase on the current branch.",
+    `Before editing a conflicted region, read the primary sources behind both sides rather than the conflicting text alone: the commit messages the two sides came from, this pull request, and the ticket it implements, #${ticket} (\`git log\`, \`gh pr view\`, \`gh issue view ${ticket}\`). Resolve for what each side was trying to do — its intent — not for what makes the markers go away.`,
+    "",
+    "Both sides' intent must survive the resolution, or the conflict is not resolved. Never drop one side of a conflict to make it disappear — taking one side wholesale, deleting the other side's work, or reverting it is not a resolution.",
+    "",
+    "Change nothing beyond what resolving the conflicts requires, and do not push — leave the rebase on the current branch, where the Orchestrator will pick it up.",
+    "",
+    "Stop rather than guess. If resolving a conflict needs information present in neither side, leave the rebase where it stands, unfinished, and stop: an unresolved conflict is handed to a human, which is the right outcome. A guessed resolution is not.",
   ].join("\n");
 }
 
 /**
  * The entire Refinement-round Worker prompt (CONTEXT.md "Refinement round"):
  * investigate the pull request's own failing checks and review feedback,
- * then commit a fix. The plain-English half stands in when a slash command
- * is unavailable; pins the do-not-push contract the Orchestrator relies on —
+ * then commit a fix. Pins the do-not-push contract the Orchestrator relies on —
  * the Orchestrator judges whether anything changed and pushes it back
  * itself, the same split as the conflict-resolution Worker.
  */
@@ -542,8 +551,8 @@ export interface ConflictOutcome {
 /**
  * Dispatch one conflict-resolution Worker against one conflicted agent PR: cut
  * a worktree on the PR's own head branch, start the rebase onto the base so
- * the merge-conflict skill has an in-progress conflict to resolve, run
- * headless claude, then judge whether the rebase completed. A rebase, never a
+ * the Worker has an in-progress conflict to resolve, run headless claude, then
+ * judge whether the rebase completed. A rebase, never a
  * merge commit: the branch stays linear, so the operator's "Rebase and merge"
  * strategy keeps working (a resolution recorded in a merge commit is dropped
  * when that strategy replays the branch's commits, re-conflicting them). The
@@ -602,7 +611,11 @@ export async function dispatchConflictWorker(
   try {
     const { exitCode, endedBy } = await spawnProcess({
       cmd: "claude",
-      args: claudeArgs(conflictWorkerPrompt(), config.model, config.maxTurns),
+      args: claudeArgs(
+        conflictWorkerPrompt(ticket),
+        config.model,
+        config.maxTurns,
+      ),
       cwd: worktree,
       transcriptPath: transcript,
       stderrPath: stderrLog,
