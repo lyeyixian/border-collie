@@ -669,12 +669,56 @@ function fakeConflictExec(opts: { rebased?: boolean } = {}): {
 }
 
 describe("conflictWorkerPrompt", () => {
-  it("runs the merge-conflict skill against a rebase and pins the do-not-push contract", () => {
-    const prompt = conflictWorkerPrompt();
+  it("carries its procedure inline, invoking no slash command", () => {
+    const lines = conflictWorkerPrompt(4).split("\n");
 
-    expect(prompt).toContain("/resolving-merge-conflicts");
-    expect(prompt).toContain("rebase");
+    expect(lines.some((line) => line.startsWith("/"))).toBe(false);
+  });
+
+  it("tells the Worker to finish the rebase that is already in progress", () => {
+    const prompt = conflictWorkerPrompt(4);
+
+    expect(prompt).toContain("already in progress");
+    expect(prompt).toContain("continue the rebase");
+  });
+
+  it("pins a rebase rather than a merge, so the agent branch stays linear", () => {
+    expect(conflictWorkerPrompt(4)).toContain("never a merge");
+  });
+
+  it("pins the touch-nothing-else and do-not-push contract the Orchestrator relies on", () => {
+    const prompt = conflictWorkerPrompt(4);
+
+    expect(prompt).toContain(
+      "Change nothing beyond what resolving the conflicts requires",
+    );
     expect(prompt).toContain("do not push");
+  });
+
+  it("sends the Worker to the primary sources behind each side, to resolve from intent", () => {
+    const prompt = conflictWorkerPrompt(4);
+
+    expect(prompt).toContain("commit messages");
+    expect(prompt).toContain("pull request");
+    expect(prompt).toContain("intent");
+  });
+
+  it("names the originating ticket, so the Worker can read it without inferring the number", () => {
+    expect(conflictWorkerPrompt(4)).toContain("#4");
+  });
+
+  it("forbids dropping one side of a conflict to make it disappear", () => {
+    const prompt = conflictWorkerPrompt(4);
+
+    expect(prompt).toContain("Never drop one side of a conflict");
+    expect(prompt).toContain("Both sides' intent must survive");
+  });
+
+  it("tells the Worker to stop rather than guess when neither side carries the answer", () => {
+    const prompt = conflictWorkerPrompt(4);
+
+    expect(prompt).toContain("Stop rather than guess");
+    expect(prompt).toContain("present in neither side");
   });
 });
 
@@ -716,7 +760,7 @@ describe("dispatchConflictWorker", () => {
       cwd: CONFLICT_WT,
       transcriptPath: CONFLICT_TRANSCRIPT,
     });
-    expect(requests[0]?.args).toContain(conflictWorkerPrompt());
+    expect(requests[0]?.args).toContain(conflictWorkerPrompt(3));
     expect(requests[0]?.args).toContain("sonnet");
   });
 
