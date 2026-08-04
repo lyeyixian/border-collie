@@ -57,6 +57,7 @@ export type LogEvent = LogEventBase &
     | { kind: "attempt-released"; reason: FailureReason }
     | { kind: "conflict-outcome"; resolved: boolean }
     | { kind: "conflict-pushed" }
+    | { kind: "conflict-drafted" }
     | { kind: "conflict-unresolved" }
     | { kind: "refinement-outcome"; newCommits: number }
     | { kind: "refinement-pushed" }

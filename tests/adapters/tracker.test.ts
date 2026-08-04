@@ -8,6 +8,7 @@ import {
   escalateTicket,
   giveUpOnPr,
   liveWorkerTickets,
+  markPrDraft,
   markPrReady,
   readScope,
   readTicketTitle,
@@ -1558,6 +1559,19 @@ describe("markPrReady", () => {
     await markPrReady(30, exec);
 
     expect(calls).toEqual([["gh", "pr", "ready", "30"]]);
+  });
+});
+
+describe("markPrDraft", () => {
+  it("converts a PR to draft with one unconditional write, so an already-draft PR is unaffected", async () => {
+    const { exec, calls } = recordingExec();
+
+    await markPrDraft(30, exec);
+
+    // No read of the PR's current draft state precedes it: `gh pr ready
+    // --undo` warns and exits clean against a PR that is already a draft, so
+    // the same single write leaves such a PR exactly as it was.
+    expect(calls).toEqual([["gh", "pr", "ready", "30", "--undo"]]);
   });
 });
 

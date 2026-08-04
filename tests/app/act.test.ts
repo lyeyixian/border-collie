@@ -962,7 +962,7 @@ describe("act: PR upkeep", () => {
     ]);
   });
 
-  it("pushes the branch when the conflict Worker resolves the merge", async () => {
+  it("pushes the branch and converts the PR to draft when the conflict Worker resolves the merge", async () => {
     const { exec, calls } = recordingExec();
     const { log, events } = recordingLog();
     const dispatchConflict: DispatchConflictWorker = async (
@@ -992,19 +992,24 @@ describe("act: PR upkeep", () => {
       },
     );
 
+    // The draft conversion follows the push, and rides the same injected
+    // command-execution dependency the rest of PR upkeep writes through.
     expect(calls).toEqual([
       ["git", "push", "--force", "origin", "border-collie/ticket-3-attempt-1"],
+      ["gh", "pr", "ready", "30", "--undo"],
     ]);
     expect(events.map((e) => e.kind)).toEqual([
       "conflict-dispatch",
       "conflict-outcome",
       "conflict-pushed",
+      "conflict-drafted",
     ]);
     expect(events.every((e) => e.level === "info")).toBe(true);
     expect(msgs(events)).toEqual([
       "dispatched conflict Worker (ticket #3)",
       "Conflict Worker resolved the conflicts on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-conflict.jsonl)",
       "pushed the resolved rebase",
+      "converted the PR to draft for a re-read before it can merge",
     ]);
     // Bound by the Conflict Worker's sub-logger, not repeated per call site.
     expect(events.every((e) => (e as { pr?: number }).pr === 30)).toBe(true);
@@ -1040,6 +1045,8 @@ describe("act: PR upkeep", () => {
       },
     );
 
+    // The unresolved marker and nothing else: an unresolved conflict pushes
+    // nothing, so there is no resolution to hold back from merging either.
     expect(calls).toEqual([
       [
         "gh",
@@ -1063,6 +1070,49 @@ describe("act: PR upkeep", () => {
     ]);
     // Bound by the Conflict Worker's sub-logger, not repeated per call site.
     expect(events.every((e) => (e as { pr?: number }).pr === 30)).toBe(true);
+  });
+
+  it("does not convert the PR to draft when pushing the resolution fails", async () => {
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "git") throw new Error("push rejected");
+      return "";
+    };
+    const dispatchConflict: DispatchConflictWorker = async (
+      pr,
+      ticket,
+      headRef,
+    ) => conflictOutcome(pr, { ticket, headRef, resolved: true });
+
+    await expect(
+      act(
+        [
+          {
+            type: "conflict-worker",
+            pr: 30,
+            ticket: 3,
+            headRef: "border-collie/ticket-3-attempt-1",
+          },
+        ],
+        {
+          dispatch: noDispatch,
+          openPr: recordingOpenPr().openPr,
+          dispatchConflict,
+          dispatchRefinement: noRefinement,
+          exec,
+          now,
+          scheduleInterval,
+          log: noopLog(),
+        },
+      ),
+    ).rejects.toThrow("push rejected");
+
+    // Nothing reached the PR: an unpushed resolution leaves the PR exactly as
+    // the operator last saw it, so drafting it would only obstruct them.
+    expect(calls).toEqual([
+      ["git", "push", "--force", "origin", "border-collie/ticket-3-attempt-1"],
+    ]);
   });
 
   it("runs conflict Workers concurrently with dispatch Workers and reports both", async () => {
