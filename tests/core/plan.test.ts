@@ -71,6 +71,19 @@ function world(
   };
 }
 
+/** A claimed ticket with an open agent PR — the backdrop the PR-scoped cases need. */
+function claimedTicket(
+  number: number,
+  overrides: Partial<Ticket> = {},
+): Ticket {
+  return ticket({
+    number,
+    labels: ["ready-for-agent", CLAIM_LABEL],
+    hasAgentClaim: true,
+    ...overrides,
+  });
+}
+
 /** A world whose open agent PRs are given in full — for the PR-upkeep cases. */
 function worldWithPrs(
   tickets: Ticket[],
@@ -792,81 +805,6 @@ describe("plan: PR upkeep", () => {
     expect(actions).toEqual([{ type: "update-branch", pr: 30, ticket: 3 }]);
   });
 
-  it("dispatches one conflict Worker for a conflicted PR with no human ask yet", () => {
-    const actions = plan(
-      worldWithPrs(
-        [
-          ticket({
-            number: 3,
-            labels: ["ready-for-agent", CLAIM_LABEL],
-            hasAgentClaim: true,
-          }),
-        ],
-        [openPr(3, { number: 30, mergeable: "conflicted" })],
-      ),
-      { maxWorkers: 3, maxOpenPrs: 5 },
-    );
-
-    expect(actions).toEqual([
-      {
-        type: "conflict-worker",
-        pr: 30,
-        ticket: 3,
-        headRef: "border-collie/ticket-3-attempt-1",
-      },
-    ]);
-  });
-
-  it("never re-dispatches a conflict Worker once one has asked for a human", () => {
-    const actions = plan(
-      worldWithPrs(
-        [
-          ticket({
-            number: 3,
-            labels: ["ready-for-agent", CLAIM_LABEL],
-            hasAgentClaim: true,
-          }),
-        ],
-        [
-          openPr(3, {
-            number: 30,
-            mergeable: "conflicted",
-            conflictWorkerAsked: true,
-          }),
-        ],
-      ),
-      { maxWorkers: 3, maxOpenPrs: 5 },
-    );
-
-    expect(actions).toEqual([]);
-  });
-
-  it("neither updates nor readies a conflicted PR (conflict handling is exclusive)", () => {
-    const actions = plan(
-      worldWithPrs(
-        [
-          ticket({
-            number: 3,
-            labels: ["ready-for-agent", CLAIM_LABEL],
-            hasAgentClaim: true,
-          }),
-        ],
-        [
-          openPr(3, {
-            number: 30,
-            mergeable: "conflicted",
-            behind: true,
-            draft: true,
-            conflictWorkerAsked: true,
-          }),
-        ],
-      ),
-      { maxWorkers: 3, maxOpenPrs: 5 },
-    );
-
-    expect(actions).toEqual([]);
-  });
-
   it("plans no branch update while GitHub is still computing mergeability", () => {
     // A ready (non-draft) PR with unknown mergeability: we cannot tell whether
     // it is behind, so neither update nor ready is due — leave it for next Tick.
@@ -1063,15 +1001,6 @@ describe("plan: PR upkeep", () => {
 });
 
 describe("plan: Refinement", () => {
-  /** A claimed ticket with an open agent PR — the backdrop every Refinement case needs. */
-  function claimedTicket(number: number): Ticket {
-    return ticket({
-      number,
-      labels: ["ready-for-agent", CLAIM_LABEL],
-      hasAgentClaim: true,
-    });
-  }
-
   it("starts round 1 when a fresh trigger is due and no round has run yet", () => {
     const actions = plan(
       worldWithPrs(
@@ -1323,6 +1252,232 @@ describe("plan: Refinement", () => {
         headRef: "border-collie/ticket-3-attempt-1",
         round: 1,
       },
+    ]);
+  });
+});
+
+describe("plan: conflict scheduling", () => {
+  /** A conflicted open agent PR for a ticket — PR number `ticket * 10`. */
+  function conflictedPr(
+    ticketNumber: number,
+    overrides: Partial<OpenAgentPr> = {},
+  ): OpenAgentPr {
+    return openPr(ticketNumber, { mergeable: "conflicted", ...overrides });
+  }
+
+  function conflictWorker(pr: number, ticket: number) {
+    return {
+      type: "conflict-worker",
+      pr,
+      ticket,
+      headRef: `border-collie/ticket-${ticket}-attempt-1`,
+    };
+  }
+
+  it("dispatches one conflict Worker for a conflicted PR with no human ask yet", () => {
+    const actions = plan(worldWithPrs([claimedTicket(3)], [conflictedPr(3)]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+    });
+
+    expect(actions).toEqual([conflictWorker(30, 3)]);
+  });
+
+  it("dispatches exactly one conflict Worker when several PRs are conflicted", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4), claimedTicket(5)],
+        [conflictedPr(5), conflictedPr(3), conflictedPr(4)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([conflictWorker(30, 3)]);
+  });
+
+  it("dispatches no conflict Worker while any open agent PR is mergeable", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [conflictedPr(3), openPr(4)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("dispatches no conflict Worker while any open agent PR's mergeability is unknown", () => {
+    // GitHub has not finished computing it; it may turn out mergeable, and it
+    // self-clears within a Tick or two, so it counts as blocking.
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [conflictedPr(3), openPr(4, { mergeable: "unknown" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("keeps the gate closed for a resolved-but-still-draft PR — it remains mergeable", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [conflictedPr(3), openPr(4, { draft: true, ci: "pending" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("sends the Worker to the conflicted PR whose ticket blocks the most others", () => {
+    // Dependent counts come from inverting the blocked-by edges the snapshot
+    // already carries — no extra tracker read.
+    const actions = plan(
+      worldWithPrs(
+        [
+          claimedTicket(3),
+          claimedTicket(4),
+          claimedTicket(5),
+          ticket({ number: 8, openBlockers: 1, blockedBy: [5] }),
+          ticket({ number: 9, openBlockers: 1, blockedBy: [5] }),
+          ticket({ number: 10, openBlockers: 1, blockedBy: [4] }),
+        ],
+        [conflictedPr(3), conflictedPr(4), conflictedPr(5)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([conflictWorker(50, 5)]);
+  });
+
+  it("breaks a tie in dependent count by lowest PR number", () => {
+    const actions = plan(
+      worldWithPrs(
+        [
+          claimedTicket(3),
+          claimedTicket(4),
+          ticket({ number: 8, openBlockers: 1, blockedBy: [3] }),
+          ticket({ number: 9, openBlockers: 1, blockedBy: [4] }),
+        ],
+        // Listed highest-numbered first, so first-past-the-post would fail.
+        [conflictedPr(3, { number: 41 }), conflictedPr(4, { number: 40 })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([conflictWorker(40, 4)]);
+  });
+
+  it("never re-dispatches a conflict Worker once one has asked for a human", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [conflictedPr(3, { conflictWorkerAsked: true })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("passes over a PR a human now owns and takes the next front-runner", () => {
+    const actions = plan(
+      worldWithPrs(
+        [
+          claimedTicket(3),
+          claimedTicket(4),
+          ticket({ number: 8, openBlockers: 1, blockedBy: [3] }),
+          ticket({ number: 9, openBlockers: 1, blockedBy: [3] }),
+        ],
+        [conflictedPr(3, { conflictWorkerAsked: true }), conflictedPr(4)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([conflictWorker(40, 4)]);
+  });
+
+  it("neither updates, readies nor Refines the front-runner (conflict handling is exclusive)", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          conflictedPr(3, {
+            behind: true,
+            draft: true,
+            ci: "passing",
+            refinement: { rounds: 0, triggerDue: true, givenUp: false },
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([conflictWorker(30, 3)]);
+  });
+
+  it("neither updates nor readies a conflicted PR a human owns (conflict handling is exclusive)", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [
+          conflictedPr(3, {
+            behind: true,
+            draft: true,
+            conflictWorkerAsked: true,
+          }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("suppresses the Conflict Worker within working hours (quota-consuming)", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [conflictedPr(3), conflictedPr(4)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, withinWorkingHours: true },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("suppresses conflict handling entirely while the circuit breaker is open", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [conflictedPr(3), conflictedPr(4)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("leaves Ticket dispatch and the headroom cap untouched", () => {
+    // A conflicted PR occupies headroom exactly as any other open agent PR
+    // does; the conflict gate does not otherwise touch dispatch.
+    const actions = plan(
+      {
+        tickets: [claimedTicket(3), ticket({ number: 7 })],
+        openAgentPrs: [conflictedPr(3)],
+        mergedAgentPrs: [],
+      },
+      { maxWorkers: 3, maxOpenPrs: 2 },
+    );
+
+    expect(actions).toEqual([
+      conflictWorker(30, 3),
+      { type: "claim", ticket: 7 },
+      { type: "spawn", ticket: 7, attempt: 1 },
     ]);
   });
 });

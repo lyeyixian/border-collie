@@ -3,6 +3,7 @@ import {
   CLAIM_LABEL,
   MAX_ATTEMPTS,
   MAX_REFINEMENT_ROUNDS,
+  type OpenAgentPr,
   type PlanConfig,
   READY_FOR_AGENT,
   type Ticket,
@@ -100,17 +101,89 @@ function isEscalationDue(ticket: Ticket, world: WorldSnapshot): boolean {
 }
 
 /**
+ * True when the operator has something to merge right now — the mergeable
+ * gate (ADR 0007), which is closed exactly while this holds. A conflicted PR
+ * cannot be merged, so resolving one while a sibling is mergeable is
+ * speculation the very next merge invalidates. A PR whose mergeability GitHub
+ * has not finished computing counts as mergeable here: it may turn out to be,
+ * and it self-clears within a Tick or two.
+ */
+function hasMergeablePr(world: WorldSnapshot): boolean {
+  return world.openAgentPrs.some((pr) => pr.mergeable !== "conflicted");
+}
+
+/**
+ * Dependents per ticket: the blocked-by edges the snapshot already carries,
+ * inverted. A pure computation over data this Tick has already fetched — the
+ * front-runner ordering costs no additional tracker read.
+ */
+function dependentCounts(tickets: Ticket[]): Map<number, number> {
+  const counts = new Map<number, number>();
+  for (const ticket of tickets) {
+    for (const blocker of ticket.blockedBy) {
+      counts.set(blocker, (counts.get(blocker) ?? 0) + 1);
+    }
+  }
+  return counts;
+}
+
+/**
+ * Conflict scheduling: the repo-wide half of PR upkeep, and the one decision
+ * in it that cannot be made per PR. At most one Conflict Worker goes per
+ * Tick, and only while nothing is mergeable — the invariant of ADR 0007,
+ * stated as a property of the world snapshot rather
+ * than as a lock, so it needs nothing held between Ticks and a restarted
+ * Orchestrator reaches the same verdict (ADR 0001). It is deliberately
+ * stronger than "one at a time": a conflicted PR also waits behind a sibling
+ * that is merely mergeable and unmerged, including one that is mergeable but
+ * still a draft.
+ *
+ * The Worker goes to the conflicted PR whose merge unblocks the most
+ * downstream Tickets, lowest PR number breaking ties — the same deterministic
+ * ordering the rest of the plan phase uses. A PR whose conflict a Worker
+ * already handed to a human (the unresolved marker) is passed over rather
+ * than holding the single slot: it is a human's to finish, and waiting on it
+ * would stall every other conflict behind a queue that never drains.
+ *
+ * The Conflict Worker is quota-consuming, so the working-hours gate
+ * (CONTEXT.md "Working hours") suppresses it, exactly as it suppresses claims,
+ * spawns and Refinement rounds.
+ */
+function conflictScheduling(
+  world: WorldSnapshot,
+  withinWorkingHours: boolean,
+): Action[] {
+  if (withinWorkingHours || hasMergeablePr(world)) return [];
+  const counts = dependentCounts(world.tickets);
+  const dependents = (pr: OpenAgentPr) => counts.get(pr.ticket) ?? 0;
+  const [frontRunner] = world.openAgentPrs
+    .filter((pr) => pr.mergeable === "conflicted" && !pr.conflictWorkerAsked)
+    .sort((a, b) => dependents(b) - dependents(a) || a.number - b.number);
+  return frontRunner
+    ? [
+        {
+          type: "conflict-worker",
+          pr: frontRunner.number,
+          ticket: frontRunner.ticket,
+          headRef: frontRunner.headRef,
+        },
+      ]
+    : [];
+}
+
+/**
  * PR upkeep: after a merge advances the base, keep the remaining open agent
  * PRs current — mechanical writes plus the two Refinement actions, up to one
- * of each kind per PR. Conflict handling comes first and is exclusive — a
- * conflicted PR is neither updated, readied, nor Refined until the merge is
- * resolved: a one-shot conflict Worker unless one has already asked for a
- * human. A cleanly-mergeable PR that has fallen behind gets the mechanical
- * branch update, and its ready flip waits for the next Tick, judged against the
- * updated head (the update re-runs CI). Draft→ready is otherwise decided on CI
- * alone — a green draft, or one in a repo with no CI configured, flips to
- * ready-for-review — and independent of mergeability, so a fresh no-CI draft
- * surfaces even while GitHub is still computing whether it is behind.
+ * of each kind per PR. Conflict handling is exclusive and is scheduled
+ * repo-wide instead (`conflictScheduling`): a conflicted PR is neither
+ * updated, readied, nor Refined until the merge is resolved, so this loop
+ * skips it entirely. A cleanly-mergeable PR that has fallen behind gets the
+ * mechanical branch update, and its ready flip waits for the next Tick, judged
+ * against the updated head (the update re-runs CI). Draft→ready is otherwise
+ * decided on CI alone — a green draft, or one in a repo with no CI configured,
+ * flips to ready-for-review — and independent of mergeability, so a fresh
+ * no-CI draft surfaces even while GitHub is still computing whether it is
+ * behind.
  *
  * Refinement (CONTEXT.md "Refinement round") is judged independently of the
  * ready flip — a failing check keeps `pr.draft && ci === "passing"` false
@@ -120,8 +193,8 @@ function isEscalationDue(ticket: Ticket, world: WorldSnapshot): boolean {
  * MAX_REFINEMENT_ROUNDS means Refinement give-up (CONTEXT.md "Refinement
  * give-up"), handing the Ticket to a human; otherwise a round is due.
  *
- * The Conflict Worker and a Refinement round are both quota-consuming, so the
- * working-hours gate (CONTEXT.md "Working hours") suppresses them; the
+ * A Refinement round is quota-consuming, so the working-hours gate (CONTEXT.md
+ * "Working hours") suppresses it — as it does the Conflict Worker; the
  * mechanical update, the ready flip, and Refinement give-up are not — give-up
  * is mechanical bookkeeping, the same reasoning that keeps Escalation
  * unsuppressed — and run regardless.
@@ -131,17 +204,7 @@ function prUpkeep(world: WorldSnapshot, withinWorkingHours: boolean): Action[] {
   for (const pr of [...world.openAgentPrs].sort(
     (a, b) => a.number - b.number,
   )) {
-    if (pr.mergeable === "conflicted") {
-      if (!pr.conflictWorkerAsked && !withinWorkingHours) {
-        actions.push({
-          type: "conflict-worker",
-          pr: pr.number,
-          ticket: pr.ticket,
-          headRef: pr.headRef,
-        });
-      }
-      continue;
-    }
+    if (pr.mergeable === "conflicted") continue;
     if (pr.mergeable === "mergeable" && pr.behind) {
       actions.push({ type: "update-branch", pr: pr.number, ticket: pr.ticket });
       continue;
@@ -185,10 +248,13 @@ function prUpkeep(world: WorldSnapshot, withinWorkingHours: boolean): Action[] {
  * caller binds attempt ≥ 2 to the stronger retry model. Dispatch is capped
  * by both max_workers and the headroom left under max_open_prs: every spawn
  * becomes an open PR, so claiming only into that headroom throttles the
- * fleet to human review bandwidth, resuming as merges land. PR upkeep sits
- * between closure and recovery: it keeps the PRs a merge just left behind
- * current, and consumes no Worker slots (the conflict Worker aside). While the
- * circuit breaker is open (dispatchPaused) only closes are planned. The
+ * fleet to human review bandwidth, resuming as merges land. Conflict
+ * scheduling and PR upkeep sit between closure and recovery, in that order —
+ * the repo-wide conflict decision (at most one Conflict Worker a Tick, and
+ * only while nothing is mergeable) ahead of the mechanical per-PR writes that
+ * keep the PRs a merge just left behind current. Neither consumes a Worker
+ * slot (the conflict Worker aside). While the circuit breaker is open
+ * (dispatchPaused) only closes are planned. The
  * working-hours gate (CONTEXT.md "Working hours", withinWorkingHours) is a
  * narrower, independent suppression: only the quota-consuming actions —
  * claims, spawns, the conflict Worker — drop out, so closes, releases,
@@ -247,6 +313,7 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
 
   return [
     ...closes,
+    ...conflictScheduling(world, withinWorkingHours),
     ...prUpkeep(world, withinWorkingHours),
     ...releases,
     ...escalations,
