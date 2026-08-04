@@ -54,7 +54,7 @@ Keeping the open agent PRs a merge left behind current, each Tick: a cleanly-mer
 _Avoid_: merge commit (every update is a rebase, keeping agent branches linear so the "Rebase and merge" strategy stays available)
 
 **Conflict Worker**:
-The one Worker variant dispatched against a PR rather than a Ticket: a fresh-context session, isolated in a worktree on the conflicted PR's own branch, that completes an in-progress rebase of it onto the base. One per conflict — on failure the PR gets a marker comment asking for a human (the PR-level analogue of Escalation), which vetoes any further session. It is not an Attempt and counts toward no ticket's cap.
+The one Worker variant dispatched against a PR rather than a Ticket: a fresh-context session, isolated in a worktree on the conflicted PR's own branch, that completes an in-progress rebase of it onto the base. One per conflict — on failure the PR gets a marker comment asking for a human (the PR-level analogue of Escalation), which vetoes any further session. On success the Orchestrator pushes the resolved branch and converts the PR to draft, so a resolution git merely finished cannot be merged before it has been re-read; the draft-to-ready flip lifts that hold once the target repository's own CI comes back green (ADR 0007). It is not an Attempt and counts toward no ticket's cap.
 _Avoid_: conflict attempt (Attempts are ticket-scoped; this is not one)
 
 **Refinement round**:

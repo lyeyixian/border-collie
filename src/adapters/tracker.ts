@@ -892,6 +892,24 @@ export async function markPrReady(
   await exec("gh", ["pr", "ready", String(pr)]);
 }
 
+/**
+ * Act phase: convert a PR back to draft, so it cannot be merged until someone
+ * looks at it again (ADR 0007). A draft is GitHub's own merge veto, which is
+ * why nothing here needs to know the target repository's toolchain: the
+ * verifier is that repository's CI, read through the standing the world
+ * snapshot already models, and the existing draft→ready flip lifts the veto
+ * once it comes back green. The inverse of `markPrReady` and issued the same
+ * way — a single unconditional write, with no read of the PR's current draft
+ * state first: `gh pr ready --undo` warns and exits clean against a PR that is
+ * already a draft, so re-drafting one changes nothing.
+ */
+export async function markPrDraft(
+  pr: number,
+  exec: Exec = realExec,
+): Promise<void> {
+  await exec("gh", ["pr", "ready", String(pr), "--undo"]);
+}
+
 const CONFLICT_UNRESOLVED_COMMENT = `${CONFLICT_UNRESOLVED_MARKER}\n🐕 border-collie ran a conflict-resolution Worker here, but it could not complete the rebase onto the base branch. This PR needs a human to resolve the conflicts — border-collie will not dispatch another Worker for it.`;
 
 /**

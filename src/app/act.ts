@@ -5,6 +5,7 @@ import {
   type Exec,
   escalateTicket,
   giveUpOnPr,
+  markPrDraft,
   markPrReady,
   releaseTicket,
   startRefinementRound,
@@ -467,6 +468,21 @@ export async function act(
         kind: "conflict-pushed",
         level: "info",
         msg: "pushed the resolved rebase",
+      });
+      // Then hold the resolution back from merging until it has been looked
+      // at (ADR 0007): a completed rebase says only that git finished, not
+      // that the resolved code still works, and the PR may already carry an
+      // approval from before the resolution existed. Only after the push,
+      // because a resolution that never reached the PR is nothing to gate —
+      // drafting there would just obstruct the operator. Not a planned
+      // Action: it is conditional on this Worker's outcome rather than
+      // derivable from the world snapshot, so it belongs inline here, on the
+      // command-execution dependency the act phase already holds.
+      await markPrDraft(outcome.pr, exec);
+      conflictLog({
+        kind: "conflict-drafted",
+        level: "info",
+        msg: "converted the PR to draft for a re-read before it can merge",
       });
     } else {
       await commentConflictUnresolved(outcome.pr, exec);
