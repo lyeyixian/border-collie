@@ -39,6 +39,24 @@ export function pinnedCliVersion(template: string): string | null {
   return CLI_PIN_PATTERN.exec(template)?.[1] ?? null;
 }
 
+/**
+ * A workflow's top-level `run-name:`, unquoted, or null if it declares none.
+ * The Worker template's is load-bearing rather than cosmetic (issue #111):
+ * Worker liveness is read back off a run's display title, so a template that
+ * declares none — or declares one YAML silently truncates at an unquoted `#`
+ * — leaves every in-flight claim looking orphaned to the next Tick. Returned
+ * raw enough that a truncated value stays visibly wrong to the caller
+ * comparing it against `workerRunName`, rather than being normalised into
+ * something that looks fine.
+ */
+const RUN_NAME_PATTERN = /^run-name:[ \t]*(.*?)[ \t]*$/m;
+
+export function declaredRunName(template: string): string | null {
+  const raw = RUN_NAME_PATTERN.exec(template)?.[1];
+  if (raw === undefined || raw === "") return null;
+  return raw.startsWith('"') && raw.endsWith('"') ? raw.slice(1, -1) : raw;
+}
+
 function versionParts(version: string): number[] {
   const release = version.split("-")[0] ?? version;
   return release.split(".").map(Number);
