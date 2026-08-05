@@ -238,6 +238,41 @@ export interface RefinementSignal {
 export const CONFLICT_UNRESOLVED_MARKER =
   "<!-- border-collie:conflict-unresolved -->";
 
+const QUEUED_BEHIND_MARKER_OPEN = "<!-- border-collie:queued-behind ";
+const QUEUED_BEHIND_MARKER_CLOSE = " -->";
+
+/**
+ * Hidden HTML marker naming the pull request a queued conflicted pull
+ * request currently waits on (ADR 0007, CONTEXT.md "PR upkeep"): the front-
+ * runner's PR number is embedded so a later Tick can tell whether the same
+ * notice already went out for the current front-runner, without needing to
+ * hold anything in memory between Ticks. Content-addressed rather than a
+ * plain presence check (contrast `CONFLICT_UNRESOLVED_MARKER`): the queue a
+ * pull request waits in is not a one-time event, so idempotency is judged by
+ * whether *this* front-runner was already named, not by whether a
+ * queued-behind comment was ever posted at all. A pull request that waits
+ * behind the same front-runner across many Ticks gets one comment; one that
+ * later queues behind a different front-runner is eligible for a fresh one.
+ */
+export function queuedBehindMarker(frontRunnerPr: number): string {
+  return `${QUEUED_BEHIND_MARKER_OPEN}${frontRunnerPr}${QUEUED_BEHIND_MARKER_CLOSE}`;
+}
+
+/**
+ * The front-runner pull request number named by a queued-behind marker
+ * comment, or undefined when the body carries none. Shape-checked like
+ * `parseAttemptMarker`: comment bodies are world input.
+ */
+export function parseQueuedBehindMarker(body: string): number | undefined {
+  const start = body.indexOf(QUEUED_BEHIND_MARKER_OPEN);
+  if (start === -1) return undefined;
+  const rest = body.slice(start + QUEUED_BEHIND_MARKER_OPEN.length);
+  const end = rest.indexOf(QUEUED_BEHIND_MARKER_CLOSE);
+  if (end === -1) return undefined;
+  const raw = rest.slice(0, end);
+  return /^\d+$/.test(raw) ? Number(raw) : undefined;
+}
+
 /**
  * Branch naming that makes a PR structurally an agent PR. Workers land with
  * a later ticket; the convention is fixed here because orphan detection
@@ -381,6 +416,15 @@ export interface OpenAgentPr {
   operatorSteered: boolean;
   /** This PR's Refinement round state (CONTEXT.md "Refinement round"). */
   refinement: RefinementSignal;
+  /**
+   * The front-runner pull request number named by this PR's latest
+   * queued-behind marker, or undefined when none has been posted yet. Read
+   * from the same comment thread as the other markers; the plan phase
+   * reposts only when the currently-computed front-runner differs from this
+   * (ADR 0007) — irrelevant, and left undefined, for a PR that is not
+   * currently conflicted.
+   */
+  queuedBehindNotified: number | undefined;
 }
 
 /** Everything the planner knows about the world, recomputed each Tick. */
@@ -427,7 +471,9 @@ export interface PlanConfig {
  * works in and pushes back. The two Refinement actions likewise carry the PR
  * and ticket: `refine-pr` the head branch to dispatch into and the round
  * number it is charging, `refinement-give-up` the round count spent, for the
- * forensic comment.
+ * forensic comment. `queued-behind` carries the front-runner pull request
+ * number the waiting one is queued behind (ADR 0007), alongside its own PR
+ * and ticket.
  */
 export type Action =
   | { type: "claim"; ticket: number }
@@ -445,4 +491,5 @@ export type Action =
       headRef: string;
       round: number;
     }
-  | { type: "refinement-give-up"; pr: number; ticket: number; rounds: number };
+  | { type: "refinement-give-up"; pr: number; ticket: number; rounds: number }
+  | { type: "queued-behind"; pr: number; ticket: number; queuedBehind: number };

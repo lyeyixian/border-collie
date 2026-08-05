@@ -2,6 +2,7 @@ import {
   claimTicket,
   closeTicket,
   commentConflictUnresolved,
+  commentQueuedBehind,
   type Exec,
   escalateTicket,
   giveUpOnPr,
@@ -241,10 +242,11 @@ function describeRefinement(outcome: RefinementOutcome): string {
  * tracker read (breaker.ts) once its Worker reports. A tracker failure
  * mid-way throws — the stateless recovery story is re-running the Tick,
  * which recomputes the world and re-plans whatever is still due. PR upkeep
- * runs alongside dispatch: the mechanical branch update and draft→ready flip
- * are immediate tracker writes; a conflict Worker runs concurrently like a
- * spawn, its resolved rebase pushed (or the PR handed to a human) once it
- * settles. While any dispatch Worker is in flight, a fleet heartbeat reports
+ * runs alongside dispatch: the mechanical branch update, draft→ready flip,
+ * and queued-behind marking (ADR 0007) are immediate tracker writes; a
+ * conflict Worker runs concurrently like a spawn, its resolved rebase pushed
+ * (or the PR handed to a human) once it settles. While any dispatch Worker is
+ * in flight, a fleet heartbeat reports
  * all of them once a minute — elapsed time and time since last output,
  * independently — and stops the moment the last one settles. A Refinement
  * round (CONTEXT.md "Refinement round") runs the same shape as a conflict
@@ -327,6 +329,17 @@ export async function act(
           level: "info",
           msg: `marked PR #${action.pr} ready for review`,
           pr: action.pr,
+        });
+        break;
+      case "queued-behind":
+        await commentQueuedBehind(action.pr, action.queuedBehind, exec);
+        log({
+          kind: "queued-behind",
+          level: "info",
+          msg: `marked PR #${action.pr} as queued behind PR #${action.queuedBehind} (ticket #${action.ticket})`,
+          pr: action.pr,
+          ticket: action.ticket,
+          queuedBehind: action.queuedBehind,
         });
         break;
       case "conflict-worker": {

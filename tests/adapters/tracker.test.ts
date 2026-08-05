@@ -3,6 +3,7 @@ import {
   claimTicket,
   closeTicket,
   commentConflictUnresolved,
+  commentQueuedBehind,
   createDraftPr,
   type Exec,
   escalateTicket,
@@ -28,6 +29,7 @@ import {
   CLAIM_LABEL,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
+  queuedBehindMarker,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
   REFINEMENT_GIVE_UP_MARKER,
@@ -896,6 +898,65 @@ describe("readScope", () => {
     expect(calls.map(op)).toContain(comments(60));
   });
 
+  it("reads the front-runner named by the latest queued-behind marker", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [[{ body: `${queuedBehindMarker(30)}\n🐕 queued` }]],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50, mergeable: "CONFLICTING" })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.queuedBehindNotified).toBe(30);
+  });
+
+  it("takes the latest queued-behind marker when the front-runner changed since the last notice", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [
+          [
+            { body: `${queuedBehindMarker(30)}\n🐕 queued behind #30` },
+            { body: `${queuedBehindMarker(40)}\n🐕 queued behind #40` },
+          ],
+        ],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50, mergeable: "CONFLICTING" })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.queuedBehindNotified).toBe(40);
+  });
+
+  it("does not treat a queued-behind marker as a foreign comment for the Refinement trigger", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [[{ body: `${queuedBehindMarker(30)}\n🐕 queued` }]],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50 })],
+    });
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.openAgentPrs[0]?.refinement.triggerDue).toBe(false);
+  });
+
   it("classifies a pending check rollup as pending and a failing one as failing", async () => {
     const { exec } = fakeExec({
       api: {
@@ -1589,6 +1650,25 @@ describe("commentConflictUnresolved", () => {
         "30",
         "--body",
         expect.stringContaining(CONFLICT_UNRESOLVED_MARKER),
+      ],
+    ]);
+  });
+});
+
+describe("commentQueuedBehind", () => {
+  it("comments the queued-behind ask carrying the front-runner's number in the marker", async () => {
+    const { exec, calls } = recordingExec();
+
+    await commentQueuedBehind(40, 30, exec);
+
+    expect(calls).toEqual([
+      [
+        "gh",
+        "pr",
+        "comment",
+        "40",
+        "--body",
+        expect.stringContaining(queuedBehindMarker(30)),
       ],
     ]);
   });

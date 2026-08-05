@@ -128,6 +128,24 @@ function dependentCounts(tickets: Ticket[]): Map<number, number> {
 }
 
 /**
+ * Every conflicted PR still eligible for automatic handling — a Worker
+ * already handed the rest to a human (the unresolved marker), which takes
+ * them out of both the front-runner race and the queue behind it, since
+ * waiting on a human is not waiting for a turn. Ordered by the same
+ * deterministic rule the rest of the plan phase uses: the PR whose merge
+ * unblocks the most downstream Tickets first, lowest PR number breaking
+ * ties. The head of this ordering is the front-runner; every PR after it is
+ * queued behind it (`queuedBehindActions` below).
+ */
+function conflictQueueOrder(world: WorldSnapshot): OpenAgentPr[] {
+  const counts = dependentCounts(world.tickets);
+  const dependents = (pr: OpenAgentPr) => counts.get(pr.ticket) ?? 0;
+  return world.openAgentPrs
+    .filter((pr) => pr.mergeable === "conflicted" && !pr.conflictWorkerAsked)
+    .sort((a, b) => dependents(b) - dependents(a) || a.number - b.number);
+}
+
+/**
  * Conflict scheduling: the repo-wide half of PR upkeep, and the one decision
  * in it that cannot be made per PR. At most one Conflict Worker goes per
  * Tick, and only while nothing is mergeable — the invariant of ADR 0007,
@@ -138,12 +156,7 @@ function dependentCounts(tickets: Ticket[]): Map<number, number> {
  * that is merely mergeable and unmerged, including one that is mergeable but
  * still a draft.
  *
- * The Worker goes to the conflicted PR whose merge unblocks the most
- * downstream Tickets, lowest PR number breaking ties — the same deterministic
- * ordering the rest of the plan phase uses. A PR whose conflict a Worker
- * already handed to a human (the unresolved marker) is passed over rather
- * than holding the single slot: it is a human's to finish, and waiting on it
- * would stall every other conflict behind a queue that never drains.
+ * The Worker goes to the front-runner of `conflictQueueOrder`.
  *
  * The Conflict Worker is quota-consuming, so the working-hours gate
  * (CONTEXT.md "Working hours") suppresses it, exactly as it suppresses claims,
@@ -154,11 +167,7 @@ function conflictScheduling(
   withinWorkingHours: boolean,
 ): Action[] {
   if (withinWorkingHours || hasMergeablePr(world)) return [];
-  const counts = dependentCounts(world.tickets);
-  const dependents = (pr: OpenAgentPr) => counts.get(pr.ticket) ?? 0;
-  const [frontRunner] = world.openAgentPrs
-    .filter((pr) => pr.mergeable === "conflicted" && !pr.conflictWorkerAsked)
-    .sort((a, b) => dependents(b) - dependents(a) || a.number - b.number);
+  const [frontRunner] = conflictQueueOrder(world);
   return frontRunner
     ? [
         {
@@ -169,6 +178,41 @@ function conflictScheduling(
         },
       ]
     : [];
+}
+
+/**
+ * Queued-behind marking: every conflicted PR behind the front-runner gets an
+ * Action naming it, so a pull request left waiting many Ticks reads as
+ * waiting rather than forgotten (ADR 0007). Unlike the Conflict Worker
+ * itself, this is mechanical bookkeeping, not a quota-consuming action — the
+ * working-hours gate does not suppress it, the same reasoning that keeps
+ * Refinement give-up unsuppressed — and it is independent of whether the
+ * mergeable gate is currently open: the front-runner is still the front-
+ * runner, and everyone else is still behind it, whether or not a Worker
+ * actually dispatches to it this Tick.
+ *
+ * Idempotent by front-runner identity rather than by episode timing
+ * (`OpenAgentPr.queuedBehindNotified`): a PR waits behind exactly one
+ * comment as long as the front-runner it names stays the front-runner, and
+ * becomes eligible for a fresh one the moment that name would change —
+ * whether because the front-runner it was queued behind resolved, merged, or
+ * was handed to a human and a new one took its place, or because this PR
+ * left the queue entirely and later re-entered behind a different PR. A PR
+ * that leaves and rejoins the queue behind the *same* front-runner, with
+ * nothing else changing, gets no repeat: the existing comment is still
+ * accurate, so there is nothing fresh to say.
+ */
+function queuedBehindActions(world: WorldSnapshot): Action[] {
+  const [frontRunner, ...waiting] = conflictQueueOrder(world);
+  if (!frontRunner) return [];
+  return waiting
+    .filter((pr) => pr.queuedBehindNotified !== frontRunner.number)
+    .map((pr) => ({
+      type: "queued-behind",
+      pr: pr.number,
+      ticket: pr.ticket,
+      queuedBehind: frontRunner.number,
+    }));
 }
 
 /**
@@ -249,17 +293,18 @@ function prUpkeep(world: WorldSnapshot, withinWorkingHours: boolean): Action[] {
  * by both max_workers and the headroom left under max_open_prs: every spawn
  * becomes an open PR, so claiming only into that headroom throttles the
  * fleet to human review bandwidth, resuming as merges land. Conflict
- * scheduling and PR upkeep sit between closure and recovery, in that order —
- * the repo-wide conflict decision (at most one Conflict Worker a Tick, and
- * only while nothing is mergeable) ahead of the mechanical per-PR writes that
- * keep the PRs a merge just left behind current. Neither consumes a Worker
- * slot (the conflict Worker aside). While the circuit breaker is open
- * (dispatchPaused) only closes are planned. The
- * working-hours gate (CONTEXT.md "Working hours", withinWorkingHours) is a
- * narrower, independent suppression: only the quota-consuming actions —
- * claims, spawns, the conflict Worker — drop out, so closes, releases,
- * escalations, and the rest of PR upkeep keep the world current while the
- * fleet is quiet.
+ * scheduling, queued-behind marking, and PR upkeep sit between closure and
+ * recovery, in that order — the repo-wide conflict decision (at most one
+ * Conflict Worker a Tick, and only while nothing is mergeable), then marking
+ * every other conflicted PR with the front-runner it waits on, ahead of the
+ * mechanical per-PR writes that keep the PRs a merge just left behind
+ * current. None of the three consumes a Worker slot (the conflict Worker
+ * aside). While the circuit breaker is open (dispatchPaused) only closes are
+ * planned. The working-hours gate (CONTEXT.md "Working hours",
+ * withinWorkingHours) is a narrower, independent suppression: only the
+ * quota-consuming actions — claims, spawns, the conflict Worker — drop out,
+ * so closes, releases, escalations, queued-behind marking, and the rest of PR
+ * upkeep keep the world current while the fleet is quiet.
  */
 export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   const openTickets = new Set(
@@ -314,6 +359,7 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   return [
     ...closes,
     ...conflictScheduling(world, withinWorkingHours),
+    ...queuedBehindActions(world),
     ...prUpkeep(world, withinWorkingHours),
     ...releases,
     ...escalations,

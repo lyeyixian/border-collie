@@ -37,7 +37,8 @@ export type PlanActionLine =
   | { type: "conflict-worker"; pr: number; title: string }
   | { type: "mark-ready"; pr: number; title: string }
   | { type: "refine-pr"; pr: number; title: string; round: number }
-  | { type: "refinement-give-up"; pr: number; title: string; rounds: number };
+  | { type: "refinement-give-up"; pr: number; title: string; rounds: number }
+  | { type: "queued-behind"; pr: number; title: string; queuedBehind: number };
 
 export interface PlanReport {
   scopeLabel: string;
@@ -93,6 +94,13 @@ function toPlanActionLine(
         pr: action.pr,
         title,
         rounds: action.rounds,
+      };
+    case "queued-behind":
+      return {
+        type: "queued-behind",
+        pr: action.pr,
+        title,
+        queuedBehind: action.queuedBehind,
       };
   }
 }
@@ -171,6 +179,8 @@ function renderPlanActionLine(line: PlanActionLine): string {
       return `  Refine PR #${line.pr} — ${line.title} (round ${line.round}, failing check or review feedback)`;
     case "refinement-give-up":
       return `  give up Refining PR #${line.pr} — ${line.title} (${line.rounds} rounds exhausted → ready-for-human)`;
+    case "queued-behind":
+      return `  mark PR #${line.pr} queued — ${line.title} (waiting behind PR #${line.queuedBehind})`;
   }
 }
 
