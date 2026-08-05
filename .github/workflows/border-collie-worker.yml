@@ -10,6 +10,19 @@
 # checkout, which a dedicated job never has.
 name: Worker
 
+# The one place a running Worker says which Ticket it is running: the REST
+# API never echoes workflow_dispatch inputs back on the run itself, so the
+# Orchestrator's liveness check reads the ticket out of the run's display
+# title instead (`liveWorkerTickets`/`workerRunName`, src/adapters/tracker.ts,
+# issue #73) and must match this string exactly. Without it every claim looks
+# orphaned to the next Tick, which releases it out from under a Worker that
+# is still running (issue #111).
+#
+# Quoted deliberately: an unquoted `#` following a space starts a YAML
+# comment, which would silently truncate this to "border-collie worker" and
+# reintroduce the same failure.
+run-name: "border-collie worker #${{ inputs.ticket }} attempt ${{ inputs.attempt }}"
+
 on:
   workflow_dispatch:
     inputs:

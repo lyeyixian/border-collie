@@ -7,7 +7,9 @@ import {
   loadTemplate,
   writeScaffoldFile,
 } from "../../src/adapters/scaffold.js";
+import { workerRunName } from "../../src/adapters/tracker.js";
 import {
+  declaredRunName,
   pinIsAhead,
   pinnedCliVersion,
   SCAFFOLD_FILES,
@@ -59,6 +61,34 @@ describe("loadTemplate", () => {
 
       expect(loadTemplate(relPath)).toBe(fromPackageRoot);
     }
+  });
+});
+
+/**
+ * The guard on the one string that ties a running Worker's job back to its
+ * Ticket (issue #111). `liveWorkerTickets` matches runs on their display
+ * title because workflow_dispatch inputs are not readable off a run, so the
+ * template's `run-name:` and `workerRunName` are two halves of one contract
+ * that nothing else checks: the tracker's own unit tests build their fake
+ * runs *with* `workerRunName`, so they stay green against a template that
+ * declares no run-name at all — which is exactly how the fleet shipped for
+ * a while, releasing live Workers' claims as orphaned every Tick.
+ */
+describe("the scaffolded Worker workflow's run-name", () => {
+  const runName = declaredRunName(
+    loadTemplate(".github/workflows/border-collie-worker.yml"),
+  );
+
+  it("declares one at all", () => {
+    expect(runName).not.toBeNull();
+  });
+
+  it("renders, from its dispatch inputs, exactly the title liveWorkerTickets matches on", () => {
+    const rendered = (runName as string)
+      .replace(/\$\{\{\s*inputs\.ticket\s*\}\}/, "5")
+      .replace(/\$\{\{\s*inputs\.attempt\s*\}\}/, "2");
+
+    expect(rendered).toBe(workerRunName(5, 2));
   });
 });
 
