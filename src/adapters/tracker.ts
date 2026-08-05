@@ -20,6 +20,8 @@ import {
   OPERATOR_STEERED_LABEL,
   type OpenAgentPr,
   parseAttemptMarker,
+  parseQueuedBehindMarker,
+  queuedBehindMarker,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
   REFINEMENT_GIVE_UP_MARKER,
@@ -316,6 +318,8 @@ function ciFromRollup(rollup: RollupCheck[]): CiState {
 interface PrCommentSignals {
   conflictWorkerAsked: boolean;
   refinement: RefinementSignal;
+  /** See `OpenAgentPr.queuedBehindNotified`. */
+  queuedBehindNotified: number | undefined;
 }
 
 /** The more recent of two possibly-absent timestamps. */
@@ -397,8 +401,10 @@ async function readPrCommentSignals(
   let givenUp = false;
   let latestRoundAtMs = createdAtMs;
   let latestForeignCommentAtMs: number | undefined;
+  let queuedBehindNotified: number | undefined;
   for (const comment of comments) {
     const body = comment.body ?? "";
+    const queuedBehind = parseQueuedBehindMarker(body);
     if (body.includes(CONFLICT_UNRESOLVED_MARKER)) {
       conflictWorkerAsked = true;
     } else if (body.includes(REFINEMENT_ROUND_MARKER)) {
@@ -406,6 +412,11 @@ async function readPrCommentSignals(
       latestRoundAtMs = commentTimestamp(comment.created_at) ?? latestRoundAtMs;
     } else if (body.includes(REFINEMENT_GIVE_UP_MARKER)) {
       givenUp = true;
+    } else if (queuedBehind !== undefined) {
+      // The latest one wins (types.ts "the latest marker comment...
+      // decides"): a PR queued behind a changing front-runner keeps only its
+      // most recent notice, and history scans oldest-first.
+      queuedBehindNotified = queuedBehind;
     } else {
       latestForeignCommentAtMs =
         commentTimestamp(comment.created_at) ?? latestForeignCommentAtMs;
@@ -415,6 +426,7 @@ async function readPrCommentSignals(
     return {
       conflictWorkerAsked,
       refinement: { rounds, triggerDue: false, givenUp },
+      queuedBehindNotified,
     };
   }
   const latestReviewAtMs =
@@ -429,6 +441,7 @@ async function readPrCommentSignals(
   return {
     conflictWorkerAsked,
     refinement: { rounds, triggerDue, givenUp: false },
+    queuedBehindNotified,
   };
 }
 
@@ -486,6 +499,7 @@ async function listOpenAgentPrs(exec: Exec): Promise<OpenAgentPr[]> {
       conflictWorkerAsked: signals.conflictWorkerAsked,
       operatorSteered,
       refinement: signals.refinement,
+      queuedBehindNotified: signals.queuedBehindNotified,
     });
   }
   return prs;
@@ -928,6 +942,30 @@ export async function commentConflictUnresolved(
     String(pr),
     "--body",
     CONFLICT_UNRESOLVED_COMMENT,
+  ]);
+}
+
+const queuedBehindComment = (frontRunnerPr: number) =>
+  `${queuedBehindMarker(frontRunnerPr)}\n🐕 This pull request is conflicted and queued behind #${frontRunnerPr} — border-collie serialises conflict resolution behind the operator's merges (ADR 0007), so it waits its turn rather than being resolved speculatively.`;
+
+/**
+ * Act phase: mark a conflicted PR as queued behind the current front-runner
+ * (ADR 0007) — mechanical bookkeeping, not a Worker dispatch, so a pull
+ * request waiting a long time still reads as waiting rather than forgotten.
+ * The plan phase (`queuedBehindActions`) already vetoes a repeat for the same
+ * front-runner, so every write here is due.
+ */
+export async function commentQueuedBehind(
+  pr: number,
+  frontRunnerPr: number,
+  exec: Exec = realExec,
+): Promise<void> {
+  await exec("gh", [
+    "pr",
+    "comment",
+    String(pr),
+    "--body",
+    queuedBehindComment(frontRunnerPr),
   ]);
 }
 

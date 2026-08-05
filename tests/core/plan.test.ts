@@ -55,6 +55,7 @@ function openPr(
     conflictWorkerAsked: false,
     operatorSteered: false,
     refinement: { rounds: 0, triggerDue: false, givenUp: false },
+    queuedBehindNotified: undefined,
     ...overrides,
   };
 }
@@ -1274,6 +1275,10 @@ describe("plan: conflict scheduling", () => {
     };
   }
 
+  function queuedBehind(pr: number, ticket: number, frontRunnerPr: number) {
+    return { type: "queued-behind", pr, ticket, queuedBehind: frontRunnerPr };
+  }
+
   it("dispatches one conflict Worker for a conflicted PR with no human ask yet", () => {
     const actions = plan(worldWithPrs([claimedTicket(3)], [conflictedPr(3)]), {
       maxWorkers: 3,
@@ -1283,7 +1288,7 @@ describe("plan: conflict scheduling", () => {
     expect(actions).toEqual([conflictWorker(30, 3)]);
   });
 
-  it("dispatches exactly one conflict Worker when several PRs are conflicted", () => {
+  it("dispatches exactly one conflict Worker when several PRs are conflicted, marking the rest queued behind it", () => {
     const actions = plan(
       worldWithPrs(
         [claimedTicket(3), claimedTicket(4), claimedTicket(5)],
@@ -1292,7 +1297,11 @@ describe("plan: conflict scheduling", () => {
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
-    expect(actions).toEqual([conflictWorker(30, 3)]);
+    expect(actions).toEqual([
+      conflictWorker(30, 3),
+      queuedBehind(40, 4, 30),
+      queuedBehind(50, 5, 30),
+    ]);
   });
 
   it("dispatches no conflict Worker while any open agent PR is mergeable", () => {
@@ -1351,7 +1360,11 @@ describe("plan: conflict scheduling", () => {
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
-    expect(actions).toEqual([conflictWorker(50, 5)]);
+    expect(actions).toEqual([
+      conflictWorker(50, 5),
+      queuedBehind(40, 4, 50),
+      queuedBehind(30, 3, 50),
+    ]);
   });
 
   it("breaks a tie in dependent count by lowest PR number", () => {
@@ -1369,7 +1382,7 @@ describe("plan: conflict scheduling", () => {
       { maxWorkers: 3, maxOpenPrs: 5 },
     );
 
-    expect(actions).toEqual([conflictWorker(40, 4)]);
+    expect(actions).toEqual([conflictWorker(40, 4), queuedBehind(41, 3, 40)]);
   });
 
   it("never re-dispatches a conflict Worker once one has asked for a human", () => {
@@ -1438,7 +1451,7 @@ describe("plan: conflict scheduling", () => {
     expect(actions).toEqual([]);
   });
 
-  it("suppresses the Conflict Worker within working hours (quota-consuming)", () => {
+  it("suppresses the Conflict Worker within working hours (quota-consuming), but still marks the queue — mechanical bookkeeping", () => {
     const actions = plan(
       worldWithPrs(
         [claimedTicket(3), claimedTicket(4)],
@@ -1447,7 +1460,7 @@ describe("plan: conflict scheduling", () => {
       { maxWorkers: 3, maxOpenPrs: 5, withinWorkingHours: true },
     );
 
-    expect(actions).toEqual([]);
+    expect(actions).toEqual([queuedBehind(40, 4, 30)]);
   });
 
   it("suppresses conflict handling entirely while the circuit breaker is open", () => {
@@ -1479,5 +1492,126 @@ describe("plan: conflict scheduling", () => {
       { type: "claim", ticket: 7 },
       { type: "spawn", ticket: 7, attempt: 1 },
     ]);
+  });
+
+  it("marks a queued PR queued behind the front-runner even while a sibling stays mergeable (gate closed)", () => {
+    // The mergeable gate closes conflict-worker dispatch (ADR 0007), but the
+    // queue order among conflicted PRs is independent of it: the front-runner
+    // is still the front-runner, and the other conflicted PR is still queued
+    // behind it, whether or not a Worker actually dispatches this Tick.
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4), claimedTicket(6)],
+        [conflictedPr(3), conflictedPr(4), openPr(6)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([queuedBehind(40, 4, 30)]);
+  });
+
+  it("marks no queue when only one PR is conflicted (it is the front-runner)", () => {
+    const actions = plan(worldWithPrs([claimedTicket(3)], [conflictedPr(3)]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+    });
+
+    expect(actions).toEqual([conflictWorker(30, 3)]);
+  });
+
+  it("excludes a PR a human already owns from both the front-runner race and the queue behind it", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [conflictedPr(3, { conflictWorkerAsked: true }), conflictedPr(4)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    // PR #30 already asked for a human — it gets neither the conflict Worker
+    // nor a queued-behind notice; there is nothing else left to queue behind
+    // PR #40, the sole remaining front-runner.
+    expect(actions).toEqual([conflictWorker(40, 4)]);
+  });
+});
+
+describe("plan: queued-behind marking", () => {
+  function conflictedPr(
+    ticketNumber: number,
+    overrides: Partial<OpenAgentPr> = {},
+  ): OpenAgentPr {
+    return openPr(ticketNumber, { mergeable: "conflicted", ...overrides });
+  }
+
+  function queuedBehind(pr: number, ticket: number, frontRunnerPr: number) {
+    return { type: "queued-behind", pr, ticket, queuedBehind: frontRunnerPr };
+  }
+
+  it("does not repost while still queued behind the same front-runner (idempotent across Ticks)", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [conflictedPr(3), conflictedPr(4, { queuedBehindNotified: 30 })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([
+      {
+        type: "conflict-worker",
+        pr: 30,
+        ticket: 3,
+        headRef: "border-collie/ticket-3-attempt-1",
+      },
+    ]);
+  });
+
+  it("reposts once queued behind a different front-runner than the one last notified", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [
+          conflictedPr(3),
+          // Previously notified as queued behind some other, now-gone PR —
+          // the front-runner is now #30, so this is a fresh episode.
+          conflictedPr(4, { queuedBehindNotified: 999 }),
+        ],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([
+      {
+        type: "conflict-worker",
+        pr: 30,
+        ticket: 3,
+        headRef: "border-collie/ticket-3-attempt-1",
+      },
+      queuedBehind(40, 4, 30),
+    ]);
+  });
+
+  it("is unaffected by working hours (mechanical bookkeeping, not quota-consuming)", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [conflictedPr(3), conflictedPr(4)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, withinWorkingHours: true },
+    );
+
+    expect(actions).toEqual([queuedBehind(40, 4, 30)]);
+  });
+
+  it("is suppressed entirely while the circuit breaker is open, like the rest of PR upkeep", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3), claimedTicket(4)],
+        [conflictedPr(3), conflictedPr(4)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, dispatchPaused: true },
+    );
+
+    expect(actions).toEqual([]);
   });
 });

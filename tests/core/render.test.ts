@@ -58,6 +58,7 @@ function openPr(ticket: number): OpenAgentPr {
     conflictWorkerAsked: false,
     operatorSteered: false,
     refinement: { rounds: 0, triggerDue: false, givenUp: false },
+    queuedBehindNotified: undefined,
   };
 }
 
@@ -206,6 +207,7 @@ describe("buildPlanReport", () => {
         ticket({ number: 7, title: "Green draft" }),
         ticket({ number: 8, title: "Refining" }),
         ticket({ number: 9, title: "Refinement exhausted" }),
+        ticket({ number: 10, title: "Queued" }),
       ],
       openAgentPrs: [],
       mergedAgentPrs: [],
@@ -232,6 +234,7 @@ describe("buildPlanReport", () => {
         round: 2,
       },
       { type: "refinement-give-up", pr: 90, ticket: 9, rounds: 3 },
+      { type: "queued-behind", pr: 100, ticket: 10, queuedBehind: 61 },
     ];
 
     const report = buildPlanReport(config(), actionWorld, actions, {
@@ -265,6 +268,7 @@ describe("buildPlanReport", () => {
         title: "Refinement exhausted",
         rounds: 3,
       },
+      { type: "queued-behind", pr: 100, title: "Queued", queuedBehind: 61 },
     ]);
   });
 
@@ -340,6 +344,7 @@ describe("renderPlanReport", () => {
           title: "Refinement exhausted",
           rounds: 3,
         },
+        { type: "queued-behind", pr: 100, title: "Queued", queuedBehind: 60 },
       ],
       dryRun: true,
     };
@@ -360,6 +365,7 @@ describe("renderPlanReport", () => {
         "  mark PR #70 ready — Green draft (CI green)",
         "  Refine PR #80 — Refining (round 2, failing check or review feedback)",
         "  give up Refining PR #90 — Refinement exhausted (3 rounds exhausted → ready-for-human)",
+        "  mark PR #100 queued — Queued (waiting behind PR #60)",
         "Dry run: no writes performed.",
       ].join("\n"),
     );

@@ -38,6 +38,12 @@ export type LogEvent = LogEventBase &
     | { kind: "close"; ticket: number; prUrl: string }
     | { kind: "update-branch"; pr: number }
     | { kind: "mark-ready"; pr: number }
+    | {
+        kind: "queued-behind";
+        pr: number;
+        ticket: number;
+        queuedBehind: number;
+      }
     | { kind: "conflict-dispatch"; ticket: number }
     | { kind: "refinement-round-started"; ticket: number; round: number }
     | {

@@ -962,6 +962,39 @@ describe("act: PR upkeep", () => {
     ]);
   });
 
+  it("marks a conflicted PR queued behind its front-runner via the tracker", async () => {
+    const { exec, calls } = recordingExec();
+    const { log, events } = recordingLog();
+
+    await act(
+      [{ type: "queued-behind", pr: 40, ticket: 4, queuedBehind: 30 }],
+      {
+        dispatch: noDispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict: noConflict,
+        dispatchRefinement: noRefinement,
+        exec,
+        now,
+        scheduleInterval,
+        log,
+      },
+    );
+
+    expect(calls).toEqual([
+      ["gh", "pr", "comment", "40", "--body", expect.stringContaining("30")],
+    ]);
+    expect(events).toEqual([
+      {
+        kind: "queued-behind",
+        level: "info",
+        msg: "marked PR #40 as queued behind PR #30 (ticket #4)",
+        pr: 40,
+        ticket: 4,
+        queuedBehind: 30,
+      },
+    ]);
+  });
+
   it("pushes the branch and converts the PR to draft when the conflict Worker resolves the merge", async () => {
     const { exec, calls } = recordingExec();
     const { log, events } = recordingLog();

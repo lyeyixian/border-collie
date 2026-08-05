@@ -42,6 +42,7 @@ function openPr(ticket: number): OpenAgentPr {
     conflictWorkerAsked: false,
     operatorSteered: false,
     refinement: { rounds: 0, triggerDue: false, givenUp: false },
+    queuedBehindNotified: undefined,
   };
 }
 
