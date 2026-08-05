@@ -8,12 +8,12 @@ import {
   writeScaffoldFile,
 } from "../../src/adapters/scaffold.js";
 import { workerRunName } from "../../src/adapters/tracker.js";
+import { SCAFFOLD_FILES } from "../../src/core/scaffold.js";
 import {
   declaredRunName,
   pinIsAhead,
   pinnedCliVersion,
-  SCAFFOLD_FILES,
-} from "../../src/core/scaffold.js";
+} from "../helpers/workflow-template.js";
 
 describe("fileExists", () => {
   it("is false for a path that isn't there", () => {
