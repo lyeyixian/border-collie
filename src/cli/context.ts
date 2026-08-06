@@ -5,7 +5,7 @@ import { fileTransport } from "tslog/transports/file";
 import { loadConfigFile } from "../adapters/config-file.js";
 import { probeEnvironment, RUN_DIR } from "../adapters/worker.js";
 import type { IntervalScheduler } from "../app/act.js";
-import { initScaffoldOnce } from "../app/init.js";
+import { initLabelsOnce, initScaffoldOnce } from "../app/init.js";
 import { type TickResult, tickOnce } from "../app/tick.js";
 import { workerAttemptOnce } from "../app/worker.js";
 import {
@@ -21,7 +21,7 @@ import {
   type LogEvent,
   scrubCredentials,
 } from "../core/log.js";
-import type { ScaffoldAction } from "../core/scaffold.js";
+import type { LabelAction, ScaffoldAction } from "../core/scaffold.js";
 import type { WorkerOutcome } from "../core/types.js";
 import { reportBlockText } from "./console-report.js";
 
@@ -50,6 +50,13 @@ export interface Context extends CommandContext {
   readonly probe: (model: string) => Promise<boolean>;
   /** `init` (issue #76): scaffold the workflows into the target repo at cwd. */
   readonly initScaffold: (force: boolean) => ScaffoldAction[];
+  /**
+   * `init` (issue #100): create the tracker labels the loop writes. A second
+   * seam rather than a return field on `initScaffold`, so the file scaffold
+   * stays the synchronous, offline step it has always been and the one step
+   * that needs a network stays separately fakeable.
+   */
+  readonly initLabels: () => Promise<LabelAction[]>;
   readonly now: () => number;
   readonly sleep: (ms: number) => Promise<void>;
   /** The fleet heartbeat's scheduler; see src/app/act.ts. */
@@ -225,6 +232,7 @@ export function buildRealContext(
       workerAttemptOnce(config, ticket, attempt, inPlace, { log }),
     probe: (model) => probeEnvironment(model),
     initScaffold: (force) => initScaffoldOnce(cwd, force),
+    initLabels: () => initLabelsOnce(),
     now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     scheduleInterval,

@@ -37,7 +37,9 @@ To run the fleet in GitHub Actions instead of on your own machine, scaffold the 
 npx border-collie init
 ```
 
-This writes `.github/workflows/border-collie-tick.yml` (the Orchestrator, which also runs Conflict and Refinement Workers inline) and `.github/workflows/border-collie-worker.yml` (one job per dispatched Worker, skills setup included) — never overwriting a file already there unless `--force` is passed — then prints a checklist of the secrets and the minimum GitHub App permissions to supply before the first run (see "Continuous operation" below). Credentials come from a GitHub App you create and install yourself; border-collie hosts no shared service or webhook.
+This writes `.github/workflows/border-collie-tick.yml` (the Orchestrator, which also runs Conflict and Refinement Workers inline) and `.github/workflows/border-collie-worker.yml` (one job per dispatched Worker, skills setup included) — never overwriting a file already there unless `--force` is passed — creates the tracker labels the loop reads and writes (`ready-for-agent`, `ready-for-human`, `claimed`, `operator-steered`), leaving any that already exist exactly as they are, then prints a checklist of the secrets and the minimum GitHub App permissions to supply before the first run (see "Continuous operation" below). Credentials come from a GitHub App you create and install yourself; border-collie hosts no shared service or webhook.
+
+The labels are part of the scaffold because the Orchestrator writes them: a repo with every credential in place but no `claimed` label fails at the first Claim of its first Tick. If `init` cannot reach the tracker — no `gh` on the PATH, no remote yet, an unauthenticated shell — the workflow files are still written, and the labels are reported with the `gh label create` commands to run by hand.
 
 ## Release process
 
@@ -77,7 +79,7 @@ The pinned version is deliberate rather than `@latest`: the cron backstop runs u
 
 Nothing in the Worker job installs the *target* repo's own dependencies — preparing a toolchain to build and test in is the Worker session's own job, guided by the target repo's `CLAUDE.md`.
 
-`border-collie init` scaffolds both workflow files above into a fresh repository and prints this same checklist.
+`border-collie init` scaffolds both workflow files above into a fresh repository, creates the tracker labels the loop depends on, and prints this same checklist.
 
 ## Status
 

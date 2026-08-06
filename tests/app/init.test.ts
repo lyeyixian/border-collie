@@ -2,8 +2,18 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { initScaffoldOnce, runInitScaffold } from "../../src/app/init.js";
+import {
+  initScaffoldOnce,
+  runInitLabels,
+  runInitScaffold,
+} from "../../src/app/init.js";
 import { SCAFFOLD_FILES } from "../../src/core/scaffold.js";
+import {
+  CLAIM_LABEL,
+  ORCHESTRATOR_LABELS,
+  type OrchestratorLabel,
+  READY_FOR_AGENT,
+} from "../../src/core/types.js";
 import { pinnedCliVersion } from "../helpers/workflow-template.js";
 
 function fakeDeps(existing: string[] = [], version = "9.9.9") {
@@ -128,5 +138,112 @@ describe("initScaffoldOnce", () => {
         ),
       );
     }
+  });
+});
+
+function fakeLabelDeps(
+  existing: string[] = [],
+  refuse: (label: OrchestratorLabel) => Error | undefined = () => undefined,
+) {
+  const created: OrchestratorLabel[] = [];
+  return {
+    deps: {
+      listLabels: async () => existing,
+      createLabel: async (label: OrchestratorLabel) => {
+        const refusal = refuse(label);
+        if (refusal !== undefined) throw refusal;
+        created.push(label);
+      },
+    },
+    created,
+  };
+}
+
+/**
+ * Issue #100: a scaffolded repo had none of the labels the Orchestrator
+ * writes, so a repo that had followed every printed step still failed at the
+ * first Claim of the first Tick.
+ */
+describe("runInitLabels", () => {
+  it("creates every label the loop depends on, on a repo that has none", async () => {
+    const { deps, created } = fakeLabelDeps();
+
+    const actions = await runInitLabels(deps);
+
+    expect(created).toEqual([...ORCHESTRATOR_LABELS]);
+    expect(actions).toEqual(
+      ORCHESTRATOR_LABELS.map((label) => ({
+        name: label.name,
+        outcome: "created",
+      })),
+    );
+  });
+
+  it("leaves an existing label untouched and says it was already there", async () => {
+    const { deps, created } = fakeLabelDeps([READY_FOR_AGENT]);
+
+    const actions = await runInitLabels(deps);
+
+    expect(created.some((label) => label.name === READY_FOR_AGENT)).toBe(false);
+    expect(actions).toContainEqual({
+      name: READY_FOR_AGENT,
+      outcome: "exists",
+    });
+  });
+
+  /**
+   * The exact state issue #100 found this repository in: the two triage
+   * labels present, `claimed` never created, and nothing that would have
+   * noticed until a Claim tried to write it.
+   */
+  it("adds only what is missing from a partly-labelled repo", async () => {
+    const { deps, created } = fakeLabelDeps([
+      "ready-for-agent",
+      "ready-for-human",
+      "bug",
+    ]);
+
+    await runInitLabels(deps);
+
+    expect(created.map((label) => label.name)).toEqual([
+      CLAIM_LABEL,
+      "operator-steered",
+    ]);
+  });
+
+  it("reports an unreachable tracker instead of failing the whole init", async () => {
+    const deps = {
+      listLabels: async () => {
+        throw new Error("gh: not authenticated");
+      },
+      createLabel: async () => {
+        throw new Error("never reached");
+      },
+    };
+
+    const actions = await runInitLabels(deps);
+
+    expect(actions).toEqual(
+      ORCHESTRATOR_LABELS.map((label) => ({
+        name: label.name,
+        outcome: "failed",
+        error: "gh: not authenticated",
+      })),
+    );
+  });
+
+  it("keeps going past a refused label, so one refusal costs only itself", async () => {
+    const { deps, created } = fakeLabelDeps([], (label) =>
+      label.name === CLAIM_LABEL ? new Error("HTTP 403") : undefined,
+    );
+
+    const actions = await runInitLabels(deps);
+
+    expect(actions).toContainEqual({
+      name: CLAIM_LABEL,
+      outcome: "failed",
+      error: "HTTP 403",
+    });
+    expect(created).toHaveLength(ORCHESTRATOR_LABELS.length - 1);
   });
 });

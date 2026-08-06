@@ -9,7 +9,7 @@ import {
   type WorkerAttemptConfig,
 } from "../../src/core/config.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
-import type { ScaffoldAction } from "../../src/core/scaffold.js";
+import type { LabelAction, ScaffoldAction } from "../../src/core/scaffold.js";
 import type {
   Ticket,
   WorkerOutcome,
@@ -106,6 +106,7 @@ interface FakeContext {
   events: LogEvent[];
   verbosityCalls: boolean[];
   initScaffoldCalls: boolean[];
+  initLabelsCalls: boolean[];
 }
 
 function fakeContext(
@@ -114,6 +115,7 @@ function fakeContext(
     tickResults?: { world: WorldSnapshot; infraFailures?: number }[];
     runWorkerOutcome?: WorkerOutcome;
     initScaffoldResult?: ScaffoldAction[];
+    initLabelsResult?: LabelAction[];
   } = {},
 ): FakeContext {
   const stdoutLines: string[] = [];
@@ -134,9 +136,11 @@ function fakeContext(
   const events: LogEvent[] = [];
   const verbosityCalls: boolean[] = [];
   const initScaffoldCalls: boolean[] = [];
+  const initLabelsCalls: boolean[] = [];
   const tickResults = overrides.tickResults ?? [{ world: CLOSED_WORLD }];
   const runWorkerOutcome = overrides.runWorkerOutcome ?? workerOutcome();
   const initScaffoldResult = overrides.initScaffoldResult ?? [];
+  const initLabelsResult = overrides.initLabelsResult ?? [];
 
   const context: Context = {
     process: {
@@ -190,6 +194,10 @@ function fakeContext(
       initScaffoldCalls.push(force);
       return initScaffoldResult;
     },
+    initLabels: async () => {
+      initLabelsCalls.push(true);
+      return initLabelsResult;
+    },
   };
 
   return {
@@ -203,6 +211,7 @@ function fakeContext(
     events,
     verbosityCalls,
     initScaffoldCalls,
+    initLabelsCalls,
   };
 }
 
@@ -528,6 +537,46 @@ describe("init command", () => {
     expect(fake.stdout()).toContain(".github/workflows/border-collie-tick.yml");
     expect(fake.stdout()).toContain("BORDER_COLLIE_APP_PRIVATE_KEY");
     expect(fake.stdout()).toContain("CLAUDE_CODE_OAUTH_TOKEN");
+  });
+
+  /**
+   * Issue #100: the labels the loop writes are part of what a repo needs
+   * scaffolded, so `init` creates them on the same run as the workflows.
+   */
+  it("creates the tracker labels and reports what it did", async () => {
+    const fake = fakeContext({
+      initLabelsResult: [
+        { name: "claimed", outcome: "created" },
+        { name: "ready-for-agent", outcome: "exists" },
+      ],
+    });
+
+    await runCli(["init"], fake.context);
+
+    expect(fake.initLabelsCalls).toEqual([true]);
+    expect(fake.stdout()).toContain("created    claimed");
+    expect(fake.stdout()).toContain("exists     ready-for-agent");
+  });
+
+  it("still exits 0 with the workflows scaffolded when the tracker is unreachable", async () => {
+    const fake = fakeContext({
+      initScaffoldResult: [
+        {
+          relPath: ".github/workflows/border-collie-tick.yml",
+          outcome: "written",
+        },
+      ],
+      initLabelsResult: [
+        { name: "claimed", outcome: "failed", error: "gh: not authenticated" },
+      ],
+    });
+
+    await runCli(["init"], fake.context);
+
+    expect(fake.context.process.exitCode).toBeFalsy();
+    expect(fake.stdout()).toContain("wrote      .github/workflows");
+    expect(fake.stdout()).toContain("gh: not authenticated");
+    expect(fake.stdout()).toContain("gh label create claimed");
   });
 });
 
