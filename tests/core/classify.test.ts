@@ -4,9 +4,9 @@ import {
   classifyInfrastructure,
   clusterWithinWindow,
   correlatedFailureTimestampsMs,
-  lastResultLine,
   parseResultEvent,
   reclassifyCorrelatedFailures,
+  resultEventEvidence,
 } from "../../src/core/classify.js";
 import type {
   FailureReason,
@@ -81,6 +81,8 @@ describe("parseResultEvent", () => {
       totalCostUsd: 1.25,
       numTurns: 40,
       durationMs: 54000,
+      isError: undefined,
+      apiErrorStatus: undefined,
     });
   });
 
@@ -107,24 +109,80 @@ describe("parseResultEvent", () => {
       totalCostUsd: undefined,
       numTurns: undefined,
       durationMs: undefined,
+      isError: undefined,
+      apiErrorStatus: undefined,
     });
+  });
+
+  it("reads the environment's own verdict fields, never the Worker's message", () => {
+    const tail =
+      '{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429,"result":"quota talk"}';
+
+    expect(parseResultEvent(tail)).toMatchObject({
+      isError: true,
+      apiErrorStatus: 429,
+    });
+    expect(parseResultEvent(tail)).not.toHaveProperty("result");
   });
 });
 
-describe("lastResultLine", () => {
-  it("returns the raw last result-event line", () => {
-    const tail = [
-      '{"type":"assistant","message":{}}',
-      '{"type":"result","subtype":"success"}',
-    ].join("\n");
+describe("resultEventEvidence", () => {
+  /** The regression from issue #79, taken from workflow run 30637310067. */
+  it("never carries the Worker's own words, however infra-looking they are", () => {
+    const tail = JSON.stringify({
+      type: "result",
+      subtype: "success",
+      is_error: false,
+      api_error_status: null,
+      num_turns: 43,
+      result:
+        'Confirmed INFRA_SIGNATURES order (usage-limit, auth, rate-limit, network), CORRELATABLE excludes "budget" and "no-commits". Retries on ECONNRESET and http 429 after authentication_error.',
+    });
 
-    expect(lastResultLine(tail)).toBe('{"type":"result","subtype":"success"}');
+    const evidence = resultEventEvidence(parseResultEvent(tail));
+
+    expect(evidence).toBe("");
+    expect(classifyInfrastructure(evidence)).toBeUndefined();
   });
 
-  it("returns the empty string when no result line exists", () => {
+  it("still classifies a run the API ended, from the status the environment wrote", () => {
+    const tail =
+      '{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429}';
+
     expect(
-      lastResultLine('{"type":"assistant"}\nprose about rate limits'),
+      classifyInfrastructure(resultEventEvidence(parseResultEvent(tail))),
+    ).toBe("rate-limit");
+  });
+
+  it("classifies a status the CLI reported as text just as well", () => {
+    const tail =
+      '{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":"rate_limit_error"}';
+
+    expect(
+      classifyInfrastructure(resultEventEvidence(parseResultEvent(tail))),
+    ).toBe("rate-limit");
+  });
+
+  it("keeps the subtype of an errored run, which no agent authors", () => {
+    const tail = '{"type":"result","subtype":"error_during_execution"}';
+
+    expect(resultEventEvidence(parseResultEvent(tail))).toBe(
+      '{"subtype":"error_during_execution"}',
+    );
+  });
+
+  it("has nothing to say about a run the CLI itself calls clean", () => {
+    expect(
+      resultEventEvidence(
+        parseResultEvent(
+          '{"type":"result","subtype":"success","is_error":false}',
+        ),
+      ),
     ).toBe("");
+  });
+
+  it("has nothing to say when no result event survived", () => {
+    expect(resultEventEvidence(undefined)).toBe("");
   });
 });
 

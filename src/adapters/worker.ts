@@ -3,8 +3,8 @@ import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
 import {
   classifyInfrastructure,
-  lastResultLine,
   parseResultEvent,
+  resultEventEvidence,
 } from "../core/classify.js";
 import type { Log, LogEvent } from "../core/log.js";
 import {
@@ -414,13 +414,16 @@ export async function dispatchWorker(
     // is kept (discarding it refunds nothing and the retry would cost more)
     // and the overrun is flagged instead. Infra is only consulted for
     // Workers that already died — a successful Attempt is never voided —
-    // and only against stderr plus the result line, never the transcript
-    // body, where a ticket legitimately about rate limits would match by
-    // content instead of cause.
+    // and only against stderr plus the result event's environment-authored
+    // fields, never the transcript body nor the Worker's closing message,
+    // where a ticket legitimately about rate limits would match by content
+    // instead of cause.
     const turnCapHit = result?.subtype === "error_max_turns";
     const infra =
       trigger !== undefined && !turnCapHit
-        ? classifyInfrastructure(`${stderrTail}\n${lastResultLine(stdoutTail)}`)
+        ? classifyInfrastructure(
+            `${stderrTail}\n${resultEventEvidence(result)}`,
+          )
         : undefined;
     const failure: FailureReason | undefined = turnCapHit
       ? "budget"
@@ -519,6 +522,10 @@ export async function probeEnvironment(
   return (
     endedBy === "exit" &&
     exitCode === 0 &&
+    // The whole of stdout is fair evidence here, unlike a Worker's: the probe
+    // runs a fixed one-word prompt with no ticket behind it, so nothing it
+    // prints can match by content instead of cause, and its plain-text stdout
+    // carries no result event to project.
     classifyInfrastructure(`${stderrTail}\n${stdoutTail}`) === undefined
   );
 }
