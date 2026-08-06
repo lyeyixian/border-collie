@@ -2,8 +2,9 @@
  * `init` (issue #76): scaffold the workflows a target repository needs into
  * it, and tell the operator what to supply so a missing credential is
  * discovered from a checklist before the first run rather than during it.
- * Pure planning and rendering only — the filesystem and the template
- * content itself are adapters/scaffold.ts's concern.
+ * Pure planning, rendering, and the one rewrite the templates need on their
+ * way out — reading them off disk, and this package's own version, are
+ * adapters/scaffold.ts's concern.
  */
 
 /**
@@ -17,6 +18,50 @@ export const SCAFFOLD_FILES: readonly string[] = [
   ".github/workflows/border-collie-tick.yml",
   ".github/workflows/border-collie-worker.yml",
 ];
+
+/**
+ * How the scaffolded workflows install the CLI (issue #93). Global rather
+ * than single-match: both the pin the templates carry for this repository's
+ * own fleet and any later step naming the same install must move together,
+ * because a workflow that installed two versions of one CLI would run
+ * whichever step happened to be last.
+ */
+const CLI_PIN_PATTERN = /(npm install -g border-collie@)(\S+)/g;
+
+/**
+ * Point a template's CLI install at `version` (issue #99).
+ *
+ * The pin is a property of the CLI doing the scaffolding, not a constant in
+ * the template: the templates are also this repository's own workflows, and
+ * the tarball is built from the `v<N>` tag, which predates the commit that
+ * moves those workflows to N. Baking the pin into the shipped text therefore
+ * made version N scaffold N-1 forever. Resolved here instead, the version
+ * written is the version scaffolding — which was installed from npm, so it is
+ * by definition published, preserving the invariant the pin exists to protect
+ * (a version not yet on npm 404s every unattended Tick).
+ *
+ * Still pinned, never `@latest`: an unattended fleet must not be handed a
+ * breaking release overnight. `border-collie init --force` is how a repo
+ * moves, and now it actually reaches the version that ran it.
+ *
+ * A template naming no install is a broken template rather than a template to
+ * leave alone: it would hand the target repo a fleet that installs nothing.
+ */
+export function pinCliVersion(template: string, version: string): string {
+  let pins = 0;
+  const pinned = template.replace(CLI_PIN_PATTERN, (_match, install) => {
+    pins += 1;
+    return `${install}${version}`;
+  });
+
+  if (pins === 0) {
+    throw new Error(
+      "scaffold template has no `npm install -g border-collie@<version>` step to pin",
+    );
+  }
+
+  return pinned;
+}
 
 export type ScaffoldOutcome = "written" | "overwritten" | "skipped-exists";
 

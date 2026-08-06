@@ -62,6 +62,17 @@ target_dir=$(mktemp -d)
 for f in border-collie-tick.yml border-collie-worker.yml; do
   path="$target_dir/.github/workflows/$f"
   [ -s "$path" ] || die "init did not scaffold a non-empty $f"
+
+  # The pin has to be the version doing the scaffolding, and only a cold
+  # install of the tarball can prove it (issue #99): the templates inside a
+  # release tarball are built from the `v<N>` tag, which predates the commit
+  # that syncs them, so they name N-1 — exactly the state this repo is in
+  # between `npm version` and `pnpm run sync:version`, and exactly what the
+  # release workflow packs.
+  pin=$(sed -n 's/.*npm install -g border-collie@\([^ ]*\).*/\1/p' "$path" | head -1)
+  [ -n "$pin" ] || die "$f scaffolded no border-collie pin at all"
+  [ "$pin" = "$expected_version" ] ||
+    die "$f pins border-collie@$pin, expected @$expected_version (the version that scaffolded it)"
 done
 rm -rf "$target_dir"
 

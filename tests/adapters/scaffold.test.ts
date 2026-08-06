@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  cliVersion,
   fileExists,
   loadTemplate,
   writeScaffoldFile,
@@ -64,6 +65,15 @@ describe("loadTemplate", () => {
   });
 });
 
+describe("cliVersion", () => {
+  it("reads the version of the package this module ships in", () => {
+    const packageVersion = JSON.parse(readFileSync("package.json", "utf8"))
+      .version as string;
+
+    expect(cliVersion()).toBe(packageVersion);
+  });
+});
+
 /**
  * The guard on the one string that ties a running Worker's job back to its
  * Ticket (issue #111). `liveWorkerTickets` matches runs on their display
@@ -93,10 +103,11 @@ describe("the scaffolded Worker workflow's run-name", () => {
 });
 
 /**
- * The guard on the version the templates pin (issue #93). `init` hands a
- * target repo these files verbatim, so the pin is what that repo runs until
- * it is re-scaffolded, and a pin naming a version that isn't on npm fails
- * every Tick with a 404.
+ * The guard on the version the templates pin (issue #93) — which, since #99,
+ * is the version *this repository's own fleet* runs, not the one a target
+ * repo gets: `init` re-pins on the way out to the version of the CLI doing
+ * the scaffolding (see tests/app/init.test.ts). A pin naming a version that
+ * isn't on npm still fails every Tick here with a 404.
  *
  * The invariant is one-sided on purpose: a pin *behind* package.json is the
  * normal state between `npm version` and the publish it precedes, so only a

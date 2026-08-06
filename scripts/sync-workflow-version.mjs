@@ -9,6 +9,12 @@
  * of npm 404s every Tick until the publish lands; a pin behind it merely
  * keeps the fleet on the previous version, which is why the guard in
  * tests/adapters/scaffold.test.ts rejects only the former.
+ *
+ * This moves *this* repository's own fleet, and nothing else. A repo
+ * scaffolded by `init` gets the version of the CLI that scaffolded it
+ * (`pinCliVersion`, src/core/scaffold.ts), so it no longer inherits whatever
+ * this file last wrote into the templates — which, in a published tarball, is
+ * always the release before it (issue #99).
  */
 import { readFileSync, writeFileSync } from "node:fs";
 

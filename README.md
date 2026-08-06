@@ -50,6 +50,8 @@ Releases are tag-driven (see `.github/workflows/release.yml`):
 
 Step 4 is deliberately after the publish rather than folded into step 1. The workflows `npm install -g border-collie@<version>`, so a pin bumped ahead of the publish would 404 every Tick that fired in the window between — including the half-hourly cron. A pin *behind* `package.json` is harmless, and is the normal state between steps 1 and 4: the fleet simply keeps running the last version that exists. A test enforces that one-sidedness, failing the build only if a pin names a version this package hasn't reached.
 
+Step 4 governs *this* repository only. A repo scaffolded by `border-collie init` is pinned to the version of the CLI that scaffolded it, resolved at scaffold time rather than read out of the shipped template text — otherwise every published version N would hand out N-1 forever, since the tarball is built from the `v<N>` tag, which predates step 4's commit. The one case that can still name an unpublished version is scaffolding from a source checkout between steps 1 and 3, which is attended.
+
 To rehearse a release without publishing, run the release workflow manually from the Actions tab (`workflow_dispatch`) — it runs the same gates and a `pnpm publish --dry-run` instead of a real publish.
 
 ### One-time bootstrap

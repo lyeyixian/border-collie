@@ -1,11 +1,56 @@
 import { describe, expect, it } from "vitest";
 import {
+  pinCliVersion,
   planScaffold,
   renderChecklist,
   renderScaffoldReport,
   SCAFFOLD_FILES,
   scaffoldWrites,
 } from "../../src/core/scaffold.js";
+import { pinnedCliVersion } from "../helpers/workflow-template.js";
+
+describe("pinCliVersion", () => {
+  it("rewrites the pin to the given version", () => {
+    const pinned = pinCliVersion(
+      "      - name: Install border-collie\n        run: npm install -g border-collie@0.3.0\n",
+      "0.4.0",
+    );
+
+    expect(pinnedCliVersion(pinned)).toBe("0.4.0");
+  });
+
+  it("leaves everything but the version untouched", () => {
+    const template = "before\nrun: npm install -g border-collie@0.3.0\nafter\n";
+
+    expect(pinCliVersion(template, "0.3.0")).toBe(template);
+  });
+
+  it("moves every pin, so a workflow can't install two versions of one CLI", () => {
+    const pinned = pinCliVersion(
+      "npm install -g border-collie@0.3.0\nnpm install -g border-collie@0.2.0\n",
+      "0.4.0",
+    );
+
+    expect(pinned).not.toContain("border-collie@0.3.0");
+    expect(pinned).not.toContain("border-collie@0.2.0");
+    expect(pinned.match(/border-collie@0\.4\.0/g)).toHaveLength(2);
+  });
+
+  it("leaves the neighbouring Claude Code install alone", () => {
+    const pinned = pinCliVersion(
+      "npm install -g border-collie@0.3.0\nnpm install -g @anthropic-ai/claude-code@latest\n",
+      "0.4.0",
+    );
+
+    expect(pinned).toContain("@anthropic-ai/claude-code@latest");
+  });
+
+  it("refuses a template that installs no border-collie at all", () => {
+    expect(() => pinCliVersion("name: border-collie Tick\n", "0.4.0")).toThrow(
+      /npm install -g border-collie/,
+    );
+  });
+});
 
 describe("planScaffold", () => {
   it("writes every file when nothing exists yet", () => {

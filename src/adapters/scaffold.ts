@@ -30,3 +30,16 @@ export function writeScaffoldFile(
 export function loadTemplate(relPath: string): string {
   return readFileSync(join(PACKAGE_ROOT, relPath), "utf8");
 }
+
+/**
+ * The version of the border-collie doing the scaffolding, read from this
+ * package's own manifest — what `pinCliVersion` writes into the workflows it
+ * hands a target repo (issue #99). Read rather than baked in at build time
+ * for the same reason the templates are shipped rather than duplicated: the
+ * manifest beside `dist` is the one thing that cannot drift from what npm
+ * installed.
+ */
+export function cliVersion(): string {
+  const manifest = readFileSync(join(PACKAGE_ROOT, "package.json"), "utf8");
+  return JSON.parse(manifest).version as string;
+}

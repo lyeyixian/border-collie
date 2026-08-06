@@ -4,13 +4,13 @@
  * assumes of them: the CLI pin (issue #93) and the Worker's `run-name` (issue
  * #111).
  *
- * These live in tests rather than in src because nothing at runtime reads a
- * template's *contents* — `init` copies the files through byte for byte
- * (adapters/scaffold.ts), and the one tool that does rewrite a pin,
- * scripts/sync-workflow-version.mjs, deliberately keeps its own copy of the
- * pattern so it can stay a plain node script with no build step. Parsing a
- * template is therefore something only an assertion ever wants, and core kept
- * only the planning `init` actually calls.
+ * These live in tests, and keep their own copies of the patterns, on purpose.
+ * Runtime does rewrite a pin — `pinCliVersion` (src/core/scaffold.ts) re-pins
+ * each template to the scaffolding CLI's own version — and
+ * scripts/sync-workflow-version.mjs rewrites the same string again, staying a
+ * plain node script with no build step. A guard that imported the pattern it
+ * checks would wave through the very edit that broke it, so the templates are
+ * read here as an outside reader sees them: what a Tick's shell will run.
  */
 
 /**
