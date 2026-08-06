@@ -7,6 +7,13 @@
  * adapters/scaffold.ts's concern.
  */
 
+import {
+  OPERATOR_STEERED_LABEL,
+  ORCHESTRATOR_LABELS,
+  type OrchestratorLabel,
+  READY_FOR_AGENT,
+} from "./types.js";
+
 /**
  * The files `init` scaffolds, relative to the target repo root — the exact
  * workflows this repo runs on itself (see .github/workflows/), so a target
@@ -105,6 +112,87 @@ export function renderScaffoldReport(actions: ScaffoldAction[]): string {
   return ["Scaffolded workflows:", ...actions.map(actionLine)].join("\n");
 }
 
+export type LabelOutcome = "created" | "exists" | "failed";
+
+export interface LabelAction {
+  name: string;
+  outcome: LabelOutcome;
+  /** Why the tracker refused, on `failed` only. */
+  error?: string;
+}
+
+/**
+ * The command an operator runs to add a label `init` could not (issue #100),
+ * so a tracker it cannot reach — no `gh` on the PATH, no remote yet, an
+ * unauthenticated shell — degrades to the checklist treatment the App
+ * permissions already get rather than to a silent gap.
+ */
+export function labelCreateCommand(label: OrchestratorLabel): string {
+  return `gh label create ${label.name} --color ${label.color} --description ${JSON.stringify(label.description)}`;
+}
+
+function labelLine(action: LabelAction): string {
+  switch (action.outcome) {
+    case "created":
+      return `  created    ${action.name}`;
+    case "exists":
+      return `  exists     ${action.name} (left as-is)`;
+    case "failed":
+      return `  failed     ${action.name}`;
+  }
+}
+
+/**
+ * The distinct refusals behind the failed actions, one indented line each and
+ * in first-seen order. A subprocess failure arrives as a message with the
+ * command's own stderr and its blank lines glued on, which would otherwise
+ * open a hole in the middle of the report.
+ */
+function failureLines(actions: LabelAction[]): string[] {
+  const reasons = actions
+    .filter((action) => action.outcome === "failed")
+    .map((action) => action.error?.trim() || "the tracker write failed");
+  return [...new Set(reasons)].flatMap((reason) =>
+    reason
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => line !== "")
+      .map((line) => `  ${line}`),
+  );
+}
+
+/**
+ * The label report (issue #100). Every label the loop depends on is listed,
+ * created or not, because "exists" is the answer an operator re-running `init`
+ * needs as much as "created". A label that could not be written is followed by
+ * the reason and the hand-run command, since the first Claim of the first Tick
+ * is otherwise where the gap surfaces.
+ */
+export function renderLabelReport(actions: LabelAction[]): string {
+  const lines = ["Tracker labels:", ...actions.map(labelLine)];
+  const failed = actions.filter((action) => action.outcome === "failed");
+  if (failed.length > 0) {
+    const byName = new Map(ORCHESTRATOR_LABELS.map((l) => [l.name, l]));
+    lines.push(
+      "",
+      ...failureLines(actions),
+      "",
+      "  The Orchestrator writes these labels — the first Claim fails without",
+      "  them. Create the failed ones by hand before the first Tick:",
+      ...failed
+        .map((action) => byName.get(action.name))
+        .filter((label) => label !== undefined)
+        .map((label) => `    ${labelCreateCommand(label)}`),
+    );
+  }
+  return lines.join("\n");
+}
+
+/** The label set as prose, read off the one table so it cannot drift. */
+function labelNames(): string {
+  return ORCHESTRATOR_LABELS.map((label) => label.name).join(", ");
+}
+
 /**
  * The secrets and GitHub App permissions checklist (issue #76): a missing
  * credential is meant to be discovered here, before the first Tick, not from
@@ -112,6 +200,11 @@ export function renderScaffoldReport(actions: ScaffoldAction[]): string {
  * border-collie-worker.yml actually read (README.md "Continuous operation").
  * `BORDER_COLLIE_APP_ID` is a repository *variable*, not a secret — it isn't
  * sensitive — matching both scaffolded workflows.
+ *
+ * The labels earn their place here for the same reason (issue #100): a
+ * scaffolded repo that has every credential still fails its first Claim
+ * without them, and a checklist that stayed silent about it sent the operator
+ * to a failed run to find out.
  */
 export function renderChecklist(): string {
   return `Next steps:
@@ -134,6 +227,18 @@ export function renderChecklist(): string {
 
 3. Add a border-collie.json at the repo root with at least a "parent" issue
    number (run \`border-collie --help\` for the full config shape).
+
+4. Label a Ticket ${READY_FOR_AGENT} so the fleet has something to take.
+   Applying it vouches for that Ticket's text as trusted input to an agent
+   holding your credentials.
+
+The tracker labels the loop depends on —
+  ${labelNames()}
+— are created by \`init\` itself, and the label report above says which ones
+it had to add. Any it could not reach the tracker to create are named there
+too, with the command to add them by hand; the first Claim of the first Tick
+fails without them. Only ${OPERATOR_STEERED_LABEL} is ever applied by a human:
+it is the flag that takes a pull request out of the automatic Refinement loop.
 
 Worker skills install automatically inside each Worker job — no separate
 setup step is needed for those.

@@ -57,8 +57,16 @@ actual_version=$("$bin" --version) || die "border-collie --version exited non-ze
 # workspace symlinks and no source tree to fall back on.
 log "Running border-collie init against a fresh target repo"
 target_dir=$(mktemp -d)
-(cd "$target_dir" && "$bin" init >/dev/null) ||
+init_output=$(cd "$target_dir" && "$bin" init) ||
   die "border-collie init exited non-zero"
+
+# The temp dir is no git repo, so the label step (issue #100) cannot reach a
+# tracker — the case that must degrade to the checklist rather than take the
+# scaffold down with it. Nothing but a cold run outside a repo proves it.
+case "$init_output" in
+*"gh label create claimed"*) ;;
+*) die "init did not fall back to the hand-run label commands off-tracker" ;;
+esac
 for f in border-collie-tick.yml border-collie-worker.yml; do
   path="$target_dir/.github/workflows/$f"
   [ -s "$path" ] || die "init did not scaffold a non-empty $f"

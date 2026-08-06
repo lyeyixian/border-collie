@@ -19,6 +19,7 @@ import {
   type MergedAgentPr,
   OPERATOR_STEERED_LABEL,
   type OpenAgentPr,
+  type OrchestratorLabel,
   parseAttemptMarker,
   parseQueuedBehindMarker,
   queuedBehindMarker,
@@ -588,6 +589,46 @@ export async function liveWorkerTickets(
     if (ticket !== undefined) live.add(ticket);
   }
   return live;
+}
+
+/**
+ * Every label name the repository has today (issue #100) — what `init` diffs
+ * the Orchestrator's label set against so it creates only what is missing,
+ * the same read-then-write shape the workflow files get. `gh label list`
+ * rather than the labels API: one page of 500 covers any repo an operator
+ * would point a fleet at, and no pagination to get wrong.
+ */
+export async function listLabelNames(exec: Exec = realExec): Promise<string[]> {
+  const stdout = await exec("gh", [
+    "label",
+    "list",
+    "--limit",
+    "500",
+    "--json",
+    "name",
+  ]);
+  const labels = JSON.parse(stdout) as { name?: string }[];
+  return labels.map((label) => label.name ?? "").filter((name) => name !== "");
+}
+
+/**
+ * Create one of the Orchestrator's labels. Never `--force`: an existing label
+ * belongs to the repository, and re-running `init` must not repaint a colour
+ * or reword a description an operator chose.
+ */
+export async function createLabel(
+  label: OrchestratorLabel,
+  exec: Exec = realExec,
+): Promise<void> {
+  await exec("gh", [
+    "label",
+    "create",
+    label.name,
+    "--color",
+    label.color,
+    "--description",
+    label.description,
+  ]);
 }
 
 /**

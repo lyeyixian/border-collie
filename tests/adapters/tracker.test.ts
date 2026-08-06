@@ -5,9 +5,11 @@ import {
   commentConflictUnresolved,
   commentQueuedBehind,
   createDraftPr,
+  createLabel,
   type Exec,
   escalateTicket,
   giveUpOnPr,
+  listLabelNames,
   liveWorkerTickets,
   markPrDraft,
   markPrReady,
@@ -1390,6 +1392,56 @@ function recordingExec(): { exec: Exec; calls: string[][] } {
   };
   return { exec, calls };
 }
+
+/** Issue #100: the read-then-create pair `init` scaffolds the labels with. */
+describe("listLabelNames", () => {
+  it("reads the repository's label names", async () => {
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      return JSON.stringify([{ name: "bug" }, { name: READY_FOR_AGENT }]);
+    };
+
+    expect(await listLabelNames(exec)).toEqual(["bug", READY_FOR_AGENT]);
+    expect(calls).toEqual([
+      ["gh", "label", "list", "--limit", "500", "--json", "name"],
+    ]);
+  });
+
+  it("reads a repository with no labels at all as none", async () => {
+    const exec: Exec = async () => "[]";
+
+    expect(await listLabelNames(exec)).toEqual([]);
+  });
+});
+
+describe("createLabel", () => {
+  it("creates the label with its colour and description, never --force", async () => {
+    const { exec, calls } = recordingExec();
+
+    await createLabel(
+      {
+        name: CLAIM_LABEL,
+        description: "A Worker is in flight",
+        color: "5319e7",
+      },
+      exec,
+    );
+
+    expect(calls).toEqual([
+      [
+        "gh",
+        "label",
+        "create",
+        CLAIM_LABEL,
+        "--color",
+        "5319e7",
+        "--description",
+        "A Worker is in flight",
+      ],
+    ]);
+  });
+});
 
 describe("claimTicket", () => {
   it("adds the claim label first, then posts the claim marker comment", async () => {

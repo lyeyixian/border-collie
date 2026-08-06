@@ -3,15 +3,59 @@
  * Vocabulary follows CONTEXT.md.
  */
 
-export const READY_FOR_AGENT = "ready-for-agent";
-export const READY_FOR_HUMAN = "ready-for-human";
+/** One tracker label the loop depends on, as `init` would create it. */
+export interface OrchestratorLabel {
+  readonly name: string;
+  /** Shown beside the label on the tracker — what its presence means. */
+  readonly description: string;
+  /** Six hex digits, no leading `#`, as `gh label create --color` takes it. */
+  readonly color: string;
+}
+
+/**
+ * Every label the loop reads or writes, defined once (issue #100). The
+ * constants below are *derived* from this table rather than listed beside it,
+ * so a label the Orchestrator starts writing cannot be one `init` forgets to
+ * create — the drift that scripts/sync-workflow-version.mjs's duplicated
+ * TEMPLATES list settles for. A repo missing one of these fails at its first
+ * write of it, which for `claimed` is the first Claim of the first Tick.
+ */
+const LABELS = {
+  readyForAgent: {
+    name: "ready-for-agent",
+    description: "Specified and trusted: a border-collie Worker may take it",
+    color: "0e8a16",
+  },
+  readyForHuman: {
+    name: "ready-for-human",
+    description: "Escalated to a human: the agent attempts are spent",
+    color: "d93f0b",
+  },
+  claimed: {
+    name: "claimed",
+    description: "Claimed by border-collie: a Worker is in flight",
+    color: "5319e7",
+  },
+  operatorSteered: {
+    name: "operator-steered",
+    description: "Operator is steering this PR: automatic Refinement skips it",
+    color: "1d76db",
+  },
+} as const satisfies Record<string, OrchestratorLabel>;
+
+/** The whole label set, in the order `init` reports it. */
+export const ORCHESTRATOR_LABELS: readonly OrchestratorLabel[] =
+  Object.values(LABELS);
+
+export const READY_FOR_AGENT = LABELS.readyForAgent.name;
+export const READY_FOR_HUMAN = LABELS.readyForHuman.name;
 
 /**
  * The label a Claim writes (CONTEXT.md "Claim"): border-collie's own
  * namespace, never applied by a human, so its presence alone is agent-claim
  * evidence independent of assignees.
  */
-export const CLAIM_LABEL = "claimed";
+export const CLAIM_LABEL = LABELS.claimed.name;
 
 /** A Ticket gets at most this many Attempts before Escalation (CONTEXT.md). */
 export const MAX_ATTEMPTS = 2;
@@ -176,7 +220,7 @@ export function parseAttemptMarker(body: string): AttemptFailure | undefined {
  * (CONTEXT.md "Operator-steered"). Distinct from `CLAIM_LABEL`: that one is
  * Ticket-scoped and agent-held, this one is PR-scoped and human-held.
  */
-export const OPERATOR_STEERED_LABEL = "operator-steered";
+export const OPERATOR_STEERED_LABEL = LABELS.operatorSteered.name;
 
 /**
  * A pull request gets at most this many Refinement rounds before Refinement
