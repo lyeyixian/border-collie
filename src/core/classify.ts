@@ -42,31 +42,58 @@ const INFRA_SIGNATURES: [InfraReason, RegExp][] = [
  * when nothing points at the environment. Only ever consulted for Workers
  * that already failed: a successful Attempt is never voided, whatever
  * transient noise its logs carry. Callers must pass only text the
- * environment itself produced (stderr, the result event line) — never the
- * transcript body, where a ticket legitimately about rate limits or network
- * errors would match by content, not cause, and void its attempts forever.
+ * environment itself produced (stderr, `resultEventEvidence` below) — never
+ * the transcript body nor the result event's `result` field, both of which
+ * carry the Worker's own words, where a ticket legitimately about rate limits
+ * or network errors would match by content, not cause, and void its attempts
+ * forever.
  */
 export function classifyInfrastructure(text: string): InfraReason | undefined {
   return INFRA_SIGNATURES.find(([, signature]) => signature.test(text))?.[0];
 }
 
 /**
- * The raw last result-event line of a transcript tail, or "" when none. The
- * one stdout line safe to classify against: on a failed run it carries the
- * CLI's own error text, not the Worker's prose or tool output.
+ * The environment-authored fields of the transcript's final stream-json
+ * result event. Deliberately excludes `result`, the CLI's verbatim copy of
+ * the Worker's closing message: that field is model-authored prose, and
+ * classifying against it made a Worker that merely wrote about rate limits
+ * void its own Attempt (issue #79). Every field here is the CLI's own
+ * account of the run, which no agent can write.
  */
-export function lastResultLine(tail: string): string {
-  return (
-    tail.split("\n").findLast((line) => line.includes('"type":"result"')) ?? ""
-  );
-}
-
-/** The budget-relevant fields of the transcript's final stream-json result event. */
 export interface ResultEvent {
   subtype: string | undefined;
   totalCostUsd: number | undefined;
   numTurns: number | undefined;
   durationMs: number | undefined;
+  /** The CLI's own verdict on the run; absent on CLI versions predating it. */
+  isError: boolean | undefined;
+  /** HTTP status of the API error that ended the run, when one did. */
+  apiErrorStatus: string | number | undefined;
+}
+
+/**
+ * The result event rendered as classification evidence, or "" when there is
+ * nothing to say. The one projection of stdout safe to pass to
+ * `classifyInfrastructure`: it is built from `ResultEvent`, which carries no
+ * model-authored field, so the type system — not a caller's discipline —
+ * keeps the Worker's prose away from the signatures.
+ *
+ * A run the CLI itself calls clean (`is_error: false`) yields no evidence at
+ * all: whatever ended such a Worker, the environment carried it to its end.
+ * The status renders under a bare `status` key so `INFRA_SIGNATURES`, written
+ * against the CLI's error dialect, reads it as the API error it is.
+ */
+export function resultEventEvidence(event: ResultEvent | undefined): string {
+  if (event === undefined || event.isError === false) return "";
+  const fields: string[] = [];
+  if (event.subtype !== undefined) fields.push(`"subtype":"${event.subtype}"`);
+  if (event.apiErrorStatus !== undefined) {
+    // Rendered raw rather than re-encoded: the evidence is a blob for the
+    // signatures to read, never parsed back, and a quoted "429" would not
+    // match the status signature a bare 429 does.
+    fields.push(`"status":${event.apiErrorStatus}`);
+  }
+  return fields.length === 0 ? "" : `{${fields.join(",")}}`;
 }
 
 /**
@@ -98,6 +125,12 @@ export function parseResultEvent(tail: string): ResultEvent | undefined {
     numTurns: typeof last.num_turns === "number" ? last.num_turns : undefined,
     durationMs:
       typeof last.duration_ms === "number" ? last.duration_ms : undefined,
+    isError: typeof last.is_error === "boolean" ? last.is_error : undefined,
+    apiErrorStatus:
+      typeof last.api_error_status === "string" ||
+      typeof last.api_error_status === "number"
+        ? last.api_error_status
+        : undefined,
   };
 }
 

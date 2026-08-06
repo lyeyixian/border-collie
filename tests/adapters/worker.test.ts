@@ -434,6 +434,48 @@ describe("dispatchWorker", () => {
     });
   });
 
+  it("never voids on infra-looking text in the Worker's closing message either (issue #79)", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    // A clean session that did nothing: exit 0, no commits, empty stderr. Its
+    // final message quotes every signature — the shape that voided Attempts
+    // forever, because the result event copies that message verbatim.
+    const { spawn } = fakeSpawn(0, "exit", {
+      stdoutTail: JSON.stringify({
+        type: "result",
+        subtype: "success",
+        is_error: false,
+        api_error_status: null,
+        result:
+          "Read classify.ts: usage limit, rate limit, 401 unauthorized and ECONNRESET are the signatures.",
+      }),
+      stderrTail: "",
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      failure: "no-commits",
+      infra: undefined,
+    });
+  });
+
+  it("classifies from the result event's API status, which the environment wrote", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(1, "exit", {
+      stdoutTail:
+        '{"type":"result","subtype":"error_during_execution","is_error":true,"api_error_status":429}',
+    });
+
+    const outcome = await dispatchWorker(4, CONFIG, exec, spawn);
+
+    expect(outcome).toMatchObject({
+      ok: false,
+      failure: undefined,
+      infra: "rate-limit",
+    });
+  });
+
   it("never voids on infra-looking text in the transcript body: classification is by cause, not content", async () => {
     const { exec } = fakeExec({ newCommits: "0" });
     // A ticket legitimately about rate limiting: the Worker's prose and tool
