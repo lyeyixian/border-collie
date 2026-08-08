@@ -116,6 +116,17 @@ describe("buildRealContext's durable log file", () => {
  * whole chain — package-relative template lookup through to a file the
  * target repo can actually run — rather than trusting the injected-deps
  * unit tests that stand in for it in tests/app/init.test.ts.
+ *
+ * "Matching this package's own" is modulo the CLI pin, which `pinCliVersion`
+ * (src/core/scaffold.ts) rewrites to the scaffolding CLI's own version on the
+ * way out. Comparing that line verbatim would assert the checked-in templates
+ * always pin exactly package.json's version — the one thing a release
+ * deliberately breaks, since `npm version` bumps package.json before the tag
+ * push publishes anything and the pin only catches up afterwards (issue #93).
+ * That made the tagged commit unreleasable by construction. The pin's real
+ * invariant is one-sided and lives in `pinIsAhead` (tests/helpers/
+ * workflow-template.ts); here the pin is normalised so the rest of the
+ * template is what gets compared.
  */
 describe("buildRealContext's initScaffold", () => {
   it("scaffolds both workflow files into a fresh target repo, matching this package's own", async () => {
@@ -134,9 +145,14 @@ describe("buildRealContext's initScaffold", () => {
         outcome: "written",
       },
     ]);
+    const packageVersion = JSON.parse(readFileSync("package.json", "utf8"))
+      .version as string;
     for (const { relPath } of actions) {
       expect(readFileSync(join(dir, relPath), "utf8")).toBe(
-        readFileSync(relPath, "utf8"),
+        readFileSync(relPath, "utf8").replace(
+          /(npm install -g border-collie@)\S+/g,
+          `$1${packageVersion}`,
+        ),
       );
     }
   });
