@@ -20,6 +20,8 @@ pnpm run lint && pnpm run typecheck && pnpm run test && pnpm run build && pnpm r
 
 Release from `main` only. The five gates are the same ones the release workflow runs — failing them here costs a rerun, failing them there leaves a pushed tag with no publish and a recovery (below).
 
+Same gates, not the same verdict: these run against the pre-bump `package.json`, so anything keyed off the version — the scaffolded workflows' CLI pin above all — is still self-consistent here, and only moves apart in step 2. A guard that asserts the pin *equals* `package.json` rather than merely not being ahead of it therefore passes preflight and fails the tagged run, every release. Green here is necessary, not sufficient; the tagged run is the one that counts.
+
 Then pick the bump from the Conventional Commit types since the last tag:
 
 ```
@@ -70,6 +72,14 @@ gh workflow run release.yml
 
 ## Recovery
 
-- **Gates or guard failed, nothing published** — delete the tag locally and on the remote (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z`), fix on `main`, re-cut the same version.
+- **Gates or guard failed, nothing published** — nothing is immutable yet, so the same version gets re-cut. Delete the tag in both places (`git tag -d vX.Y.Z && git push origin :refs/tags/vX.Y.Z` — deleting a remote tag is a protected operation and may need a human to run it), then fix on `main`.
+
+  Re-cutting is **not** a second pass through step 2: `npm version` already moved `package.json`, and running it again bumps past the version being released — silently, since it writes its own commit. Confirm `node -p "require('./package.json').version"` already reads the intended version, then tag by hand:
+
+  ```
+  git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z
+  ```
+
+  The tag does not have to land on the `chore(release):` commit; the guard compares the tag to `package.json`, not to a particular commit, so tagging the fix on top is correct.
 - **Publish succeeded, GitHub Release step failed** — the version is on npm and immutable. Leave the tag alone and create the release by hand: `gh release create vX.Y.Z --generate-notes`.
 - **Publish succeeded and the build is bad** — release a new patch version. A published version is never re-pointed or unpublished.
