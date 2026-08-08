@@ -14,7 +14,10 @@ import {
   type OrchestratorLabel,
   READY_FOR_AGENT,
 } from "../../src/core/types.js";
-import { pinnedCliVersion } from "../helpers/workflow-template.js";
+import {
+  pinnedCliVersion,
+  templateAsScaffolded,
+} from "../helpers/workflow-template.js";
 
 function fakeDeps(existing: string[] = [], version = "9.9.9") {
   const writes: { cwd: string; relPath: string; content: string }[] = [];
@@ -129,14 +132,8 @@ describe("initScaffoldOnce", () => {
 
     for (const relPath of SCAFFOLD_FILES) {
       const scaffolded = readFileSync(join(dir, relPath), "utf8");
-      const template = readFileSync(relPath, "utf8");
 
-      expect(scaffolded).toBe(
-        template.replace(
-          /(npm install -g border-collie@)\S+/g,
-          `$1${packageVersion}`,
-        ),
-      );
+      expect(scaffolded).toBe(templateAsScaffolded(relPath, packageVersion));
     }
   });
 });
