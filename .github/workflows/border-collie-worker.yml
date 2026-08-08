@@ -102,7 +102,7 @@ jobs:
       # need not be a Node project. Preparing a toolchain to build and test in
       # is the Worker session's own job, guided by this repository's CLAUDE.md.
       - name: Install border-collie
-        run: npm install -g border-collie@0.4.0
+        run: npm install -g border-collie@0.5.0
 
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code@latest
