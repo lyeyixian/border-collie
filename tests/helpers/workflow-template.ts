@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 /**
  * Readers for the scaffolded workflow templates (.github/workflows/), used by
  * the guards that hold those files to the contracts the rest of the system
@@ -23,7 +25,12 @@
  * unattended, and a floating `@latest` would hand an unattended fleet a
  * breaking release.
  */
-const CLI_PIN_PATTERN = /npm install -g border-collie@(\S+)/;
+const CLI_PIN_PATTERN = /(npm install -g border-collie@)(\S+)/;
+
+/** The same pattern for rewriting rather than reading. Kept separate because
+ * a `g` regex carries `lastIndex` between calls, and the reader below must
+ * answer the same question every time it is asked. */
+const CLI_PIN_PATTERN_ALL = new RegExp(CLI_PIN_PATTERN.source, "g");
 
 /**
  * The version a scaffolded workflow pins the CLI to, or null if it names
@@ -32,7 +39,34 @@ const CLI_PIN_PATTERN = /npm install -g border-collie@(\S+)/;
  * as some default.
  */
 export function pinnedCliVersion(template: string): string | null {
-  return CLI_PIN_PATTERN.exec(template)?.[1] ?? null;
+  return CLI_PIN_PATTERN.exec(template)?.[2] ?? null;
+}
+
+/**
+ * A checked-in template as a scaffold writes it into a target repo: the same
+ * bytes, with the CLI pin rewritten to `version` the way `pinCliVersion`
+ * (src/core/scaffold.ts) rewrites it on the way out.
+ *
+ * That rewrite is why comparing scaffolded output against the raw checked-in
+ * file compares the wrong thing. Byte-equality quietly asserts the checked-in
+ * pin equals the scaffolding version — the one thing a release deliberately
+ * breaks, since `npm version` moves package.json before the tag push
+ * publishes anything and `sync:version` moves the pin only afterwards. The
+ * tagged run is the whole window between them, so a byte-equal assertion
+ * fails there and nowhere else (issue #123): both call sites normalised the
+ * pin by hand, only one was updated when the rewrite landed (issue #99), and
+ * every release after it was built to fail its first tagged run. They share
+ * this now so the next change to the rewrite cannot update one and miss the
+ * other.
+ *
+ * What the pin actually owes is one-sided and lives in `pinIsAhead`; here it
+ * is normalised away, so what a caller compares is the rest of the template.
+ */
+export function templateAsScaffolded(relPath: string, version: string): string {
+  return readFileSync(relPath, "utf8").replace(
+    CLI_PIN_PATTERN_ALL,
+    `$1${version}`,
+  );
 }
 
 const RUN_NAME_PATTERN = /^run-name:[ \t]*(.*?)[ \t]*$/m;
