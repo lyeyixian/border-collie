@@ -3,7 +3,12 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildRealContext } from "../../src/cli/context.js";
-import { SCAFFOLD_FILES, WORKFLOW_FILES } from "../../src/core/scaffold.js";
+import {
+  GITIGNORE_ENTRY,
+  GITIGNORE_PATH,
+  SCAFFOLD_FILES,
+  WORKFLOW_FILES,
+} from "../../src/core/scaffold.js";
 import { templateAsScaffolded } from "../helpers/workflow-template.js";
 
 /**
@@ -138,12 +143,19 @@ describe("buildRealContext's initScaffold", () => {
 
     const actions = context.initScaffold(false);
 
-    expect(actions).toEqual(
-      SCAFFOLD_FILES.map((relPath) => ({ relPath, outcome: "written" })),
-    );
+    expect(actions).toEqual([
+      ...SCAFFOLD_FILES.map((relPath) => ({ relPath, outcome: "written" })),
+      { relPath: GITIGNORE_PATH, outcome: "appended" },
+    ]);
     const packageVersion = JSON.parse(readFileSync("package.json", "utf8"))
       .version as string;
     for (const { relPath } of actions) {
+      if (relPath === GITIGNORE_PATH) {
+        expect(readFileSync(join(dir, relPath), "utf8")).toBe(
+          `${GITIGNORE_ENTRY}\n`,
+        );
+        continue;
+      }
       expect(readFileSync(join(dir, relPath), "utf8")).toBe(
         WORKFLOW_FILES.includes(relPath)
           ? templateAsScaffolded(relPath, packageVersion)
@@ -158,9 +170,23 @@ describe("buildRealContext's initScaffold", () => {
     context.initScaffold(false);
 
     const skipped = context.initScaffold(false);
-    expect(skipped.every((a) => a.outcome === "skipped-exists")).toBe(true);
+    expect(
+      skipped
+        .filter((a) => a.relPath !== GITIGNORE_PATH)
+        .every((a) => a.outcome === "skipped-exists"),
+    ).toBe(true);
+    expect(skipped.find((a) => a.relPath === GITIGNORE_PATH)?.outcome).toBe(
+      "already-present",
+    );
 
     const forced = context.initScaffold(true);
-    expect(forced.every((a) => a.outcome === "overwritten")).toBe(true);
+    expect(
+      forced
+        .filter((a) => a.relPath !== GITIGNORE_PATH)
+        .every((a) => a.outcome === "overwritten"),
+    ).toBe(true);
+    expect(forced.find((a) => a.relPath === GITIGNORE_PATH)?.outcome).toBe(
+      "already-present",
+    );
   });
 });

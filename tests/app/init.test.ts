@@ -8,6 +8,8 @@ import {
   runInitScaffold,
 } from "../../src/app/init.js";
 import {
+  GITIGNORE_ENTRY,
+  GITIGNORE_PATH,
   SCAFFOLD_FILES,
   SKILL_FILES,
   WORKFLOW_FILES,
@@ -24,7 +26,11 @@ import {
   templateAsScaffolded,
 } from "../helpers/workflow-template.js";
 
-function fakeDeps(existing: string[] = [], version = "9.9.9") {
+function fakeDeps(
+  existing: string[] = [],
+  version = "9.9.9",
+  gitignore: string | undefined = undefined,
+) {
   const writes: { cwd: string; relPath: string; content: string }[] = [];
   return {
     deps: {
@@ -39,6 +45,7 @@ function fakeDeps(existing: string[] = [], version = "9.9.9") {
           ? `template:${relPath}\nrun: npm install -g border-collie@0.0.1\n`
           : `template:${relPath}\n`,
       cliVersion: () => version,
+      readGitignore: () => gitignore,
     },
     writes,
   };
@@ -50,18 +57,24 @@ describe("runInitScaffold", () => {
 
     const actions = runInitScaffold("/repo", false, deps);
 
-    expect(actions).toEqual(
-      SCAFFOLD_FILES.map((relPath) => ({ relPath, outcome: "written" })),
-    );
-    expect(writes).toEqual(
-      SCAFFOLD_FILES.map((relPath) => ({
+    expect(actions).toEqual([
+      ...SCAFFOLD_FILES.map((relPath) => ({ relPath, outcome: "written" })),
+      { relPath: GITIGNORE_PATH, outcome: "appended" },
+    ]);
+    expect(writes).toEqual([
+      ...SCAFFOLD_FILES.map((relPath) => ({
         cwd: "/repo",
         relPath,
         content: WORKFLOW_FILES.includes(relPath)
           ? `template:${relPath}\nrun: npm install -g border-collie@9.9.9\n`
           : `template:${relPath}\n`,
       })),
-    );
+      {
+        cwd: "/repo",
+        relPath: GITIGNORE_PATH,
+        content: `${GITIGNORE_ENTRY}\n`,
+      },
+    ]);
   });
 
   /**
@@ -124,6 +137,57 @@ describe("runInitScaffold", () => {
     });
     expect(writes.some((w) => w.relPath === first)).toBe(true);
   });
+
+  /**
+   * Issue #154: `init` also appends one ignore entry for the fleet's own
+   * local run directory, the only scaffolded path that edits a file the
+   * repository already owns rather than writing a fresh one.
+   */
+  describe("the .gitignore entry", () => {
+    it("creates the file when the repo has none", () => {
+      const { deps, writes } = fakeDeps([], "9.9.9", undefined);
+
+      const actions = runInitScaffold("/repo", false, deps);
+
+      expect(actions.at(-1)).toEqual({
+        relPath: GITIGNORE_PATH,
+        outcome: "appended",
+      });
+      expect(writes.find((w) => w.relPath === GITIGNORE_PATH)?.content).toBe(
+        `${GITIGNORE_ENTRY}\n`,
+      );
+    });
+
+    it("appends to an existing file, preserving its lines in order", () => {
+      const { deps, writes } = fakeDeps([], "9.9.9", "node_modules\ndist\n");
+
+      const actions = runInitScaffold("/repo", false, deps);
+
+      expect(actions.at(-1)).toEqual({
+        relPath: GITIGNORE_PATH,
+        outcome: "appended",
+      });
+      expect(writes.find((w) => w.relPath === GITIGNORE_PATH)?.content).toBe(
+        `node_modules\ndist\n${GITIGNORE_ENTRY}\n`,
+      );
+    });
+
+    it("writes nothing and reports already-present when the entry is there", () => {
+      const { deps, writes } = fakeDeps(
+        [],
+        "9.9.9",
+        `node_modules\n${GITIGNORE_ENTRY}\n`,
+      );
+
+      const actions = runInitScaffold("/repo", false, deps);
+
+      expect(actions.at(-1)).toEqual({
+        relPath: GITIGNORE_PATH,
+        outcome: "already-present",
+      });
+      expect(writes.some((w) => w.relPath === GITIGNORE_PATH)).toBe(false);
+    });
+  });
 });
 
 /**
@@ -144,9 +208,10 @@ describe("initScaffoldOnce", () => {
 
     const actions = initScaffoldOnce(dir, false);
 
-    expect(actions.map((a) => a.outcome)).toEqual(
-      SCAFFOLD_FILES.map(() => "written"),
-    );
+    expect(actions.map((a) => a.outcome)).toEqual([
+      ...SCAFFOLD_FILES.map(() => "written"),
+      "appended",
+    ]);
     for (const relPath of WORKFLOW_FILES) {
       const scaffolded = readFileSync(join(dir, relPath), "utf8");
 
@@ -166,6 +231,29 @@ describe("initScaffoldOnce", () => {
 
       expect(scaffolded).toBe(templateAsScaffolded(relPath, packageVersion));
     }
+  });
+
+  /**
+   * Issue #154's re-run invariant: unlike a scaffolded file, `.gitignore` is
+   * never behind `--force` — the entry either lands once or is already there,
+   * on every rerun.
+   */
+  it("appends its ignore entry once, and leaves the file alone on a rerun", () => {
+    const dir = mkdtempSync(join(tmpdir(), "border-collie-init-test-"));
+
+    const first = initScaffoldOnce(dir, false);
+    const written = readFileSync(join(dir, GITIGNORE_PATH), "utf8");
+    const second = initScaffoldOnce(dir, false);
+    const rewritten = readFileSync(join(dir, GITIGNORE_PATH), "utf8");
+
+    expect(first.find((a) => a.relPath === GITIGNORE_PATH)?.outcome).toBe(
+      "appended",
+    );
+    expect(second.find((a) => a.relPath === GITIGNORE_PATH)?.outcome).toBe(
+      "already-present",
+    );
+    expect(rewritten).toBe(written);
+    expect(written).toBe(`${GITIGNORE_ENTRY}\n`);
   });
 });
 

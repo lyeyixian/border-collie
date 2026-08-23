@@ -2,8 +2,11 @@ import { describe, expect, it } from "vitest";
 import {
   AGENT_DOC_FILES,
   CHECKLIST_WIDTH,
+  GITIGNORE_ENTRY,
+  GITIGNORE_PATH,
   labelCreateCommand,
   pinCliVersion,
+  planGitignore,
   planScaffold,
   renderChecklist,
   renderLabelReport,
@@ -21,6 +24,7 @@ import {
   ORCHESTRATOR_LABELS,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
+  RUN_DIR,
   WORKER_SKILL,
 } from "../../src/core/types.js";
 import { pinnedCliVersion } from "../helpers/workflow-template.js";
@@ -220,6 +224,65 @@ describe("scaffoldWrites", () => {
   });
 });
 
+describe("GITIGNORE_ENTRY", () => {
+  it("names the fleet's own local run directory", () => {
+    expect(GITIGNORE_ENTRY).toBe(`${RUN_DIR}/`);
+  });
+});
+
+/**
+ * Issue #154: the local path writes the fleet's run logs into the operator's
+ * own checkout, so `init` appends one ignore entry for it — the only
+ * scaffolded path that edits a file the repository already owns rather than
+ * writing a fresh one.
+ */
+describe("planGitignore", () => {
+  it("creates the file when there is none yet", () => {
+    expect(planGitignore(undefined)).toEqual({
+      outcome: "appended",
+      content: `${GITIGNORE_ENTRY}\n`,
+    });
+  });
+
+  it("appends after an existing file's content, preserving it in order", () => {
+    expect(planGitignore("node_modules\ndist\n")).toEqual({
+      outcome: "appended",
+      content: `node_modules\ndist\n${GITIGNORE_ENTRY}\n`,
+    });
+  });
+
+  it("inserts a newline before the entry when the file has none at the end", () => {
+    expect(planGitignore("node_modules")).toEqual({
+      outcome: "appended",
+      content: `node_modules\n${GITIGNORE_ENTRY}\n`,
+    });
+  });
+
+  it("reports already-present and returns the file untouched when the entry is there", () => {
+    const existing = `node_modules\n${GITIGNORE_ENTRY}\ndist\n`;
+
+    expect(planGitignore(existing)).toEqual({
+      outcome: "already-present",
+      content: existing,
+    });
+  });
+
+  it("matches the entry even with trailing whitespace on its line", () => {
+    const existing = `${GITIGNORE_ENTRY}  \n`;
+
+    expect(planGitignore(existing).outcome).toBe("already-present");
+  });
+
+  it("is a no-op on any number of reruns", () => {
+    const first = planGitignore(undefined);
+    const second = planGitignore(first.content);
+    const third = planGitignore(second.content);
+
+    expect(second.outcome).toBe("already-present");
+    expect(third).toEqual(second);
+  });
+});
+
 describe("renderScaffoldReport", () => {
   it("reports a written file", () => {
     const report = renderScaffoldReport([
@@ -271,6 +334,28 @@ describe("renderScaffoldReport", () => {
     ]);
 
     expect(report).toContain("overwrote");
+  });
+
+  /**
+   * Issue #154: appending to `.gitignore` reports as its own outcome,
+   * distinct from written, skipped and overwritten — the one scaffolded path
+   * that edits a file the repository already owns.
+   */
+  it("reports the .gitignore entry as appended", () => {
+    const report = renderScaffoldReport([
+      { relPath: GITIGNORE_PATH, outcome: "appended" },
+    ]);
+
+    expect(report).toContain("appended");
+    expect(report).toContain(GITIGNORE_PATH);
+  });
+
+  it("says the .gitignore entry was already present", () => {
+    const report = renderScaffoldReport([
+      { relPath: GITIGNORE_PATH, outcome: "already-present" },
+    ]);
+
+    expect(report).toContain("already present");
   });
 });
 
