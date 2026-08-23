@@ -31,6 +31,7 @@ import {
   CLAIM_LABEL,
   CLAIM_MARKER,
   CONFLICT_UNRESOLVED_MARKER,
+  OPERATOR_STEERED_LABEL,
   queuedBehindMarker,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
@@ -1366,7 +1367,7 @@ describe("readScope: Refinement signal", () => {
       prList: [
         prItem({
           number: 50,
-          labels: [{ name: "operator-steered" }],
+          labels: [{ name: OPERATOR_STEERED_LABEL }],
           statusCheckRollup: [{ status: "COMPLETED", conclusion: "FAILURE" }],
         }),
       ],

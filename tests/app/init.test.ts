@@ -10,6 +10,7 @@ import {
 import { SCAFFOLD_FILES } from "../../src/core/scaffold.js";
 import {
   CLAIM_LABEL,
+  OPERATOR_STEERED_LABEL,
   ORCHESTRATOR_LABELS,
   type OrchestratorLabel,
   READY_FOR_AGENT,
@@ -204,7 +205,7 @@ describe("runInitLabels", () => {
 
     expect(created.map((label) => label.name)).toEqual([
       CLAIM_LABEL,
-      "operator-steered",
+      OPERATOR_STEERED_LABEL,
     ]);
   });
 

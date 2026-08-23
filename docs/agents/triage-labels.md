@@ -14,6 +14,17 @@ When a skill mentions a role (e.g. "apply the AFK-ready triage label"), use the 
 
 Edit the right-hand column to match whatever vocabulary you actually use.
 
+## border-collie's own labels
+
+Two more labels appear on the tracker alongside the triage five, but they are not triage vocabulary — border-collie writes and reads them itself, so their names are fixed and carry a `border-collie:` namespace precisely so they can never collide with a label your repository already uses for something else. Don't edit these, and don't repurpose them for triage.
+
+| Label                             | Meaning                                                                |
+| ---------------------------------- | ----------------------------------------------------------------------- |
+| `border-collie:claimed`            | Agent-held claim: a Worker is dispatched against this ticket (CONTEXT.md "Claim") |
+| `border-collie:operator-steered`   | Operator has taken over this PR; automatic Refinement skips it (CONTEXT.md "Operator-steered") |
+
+`init` creates both alongside the triage five and never deletes a label under any circumstances, force included.
+
 ## `ready-for-agent` is a trust boundary, not just a workflow state
 
 Applying `ready-for-agent` to a Ticket asserts that its text is trusted input for a Worker — an autonomous agent holding a subscription credential and write access to the repository. Whoever applies the label is vouching for its content the same way they would for a shell command they're about to run. border-collie assumes it: it targets the operator's own repositories and own Tickets, and it does nothing to make a repository safe to point at issues or pull requests from strangers. Don't apply the label to a Ticket you would not want a session with your own credentials acting on unattended.
