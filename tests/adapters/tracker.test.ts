@@ -5,11 +5,13 @@ import {
   commentConflictUnresolved,
   commentQueuedBehind,
   createDraftPr,
+  createIssue,
   createLabel,
   type Exec,
   escalateTicket,
   giveUpOnPr,
   listLabelNames,
+  listOpenIssues,
   liveWorkerTickets,
   markPrDraft,
   markPrReady,
@@ -1507,6 +1509,75 @@ describe("createLabel", () => {
         "A Worker is in flight",
       ],
     ]);
+  });
+});
+
+/** Issue #151: the read-then-create pair `declare` de-duplicates red-baseline issues with. */
+describe("listOpenIssues", () => {
+  it("reads every open issue's number and body", async () => {
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      return JSON.stringify([
+        { number: 1, body: "some body" },
+        { number: 2, body: null },
+      ]);
+    };
+
+    expect(await listOpenIssues(exec)).toEqual([
+      { number: 1, body: "some body" },
+      { number: 2, body: "" },
+    ]);
+    expect(calls).toEqual([
+      [
+        "gh",
+        "issue",
+        "list",
+        "--state",
+        "open",
+        "--limit",
+        "500",
+        "--json",
+        "number,body",
+      ],
+    ]);
+  });
+
+  it("reads a repository with no open issues at all as none", async () => {
+    const exec: Exec = async () => "[]";
+
+    expect(await listOpenIssues(exec)).toEqual([]);
+  });
+});
+
+describe("createIssue", () => {
+  it("creates the issue with its title and body, reading the number back off the created URL", async () => {
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      return "https://github.com/owner/repo/issues/42\n";
+    };
+
+    expect(await createIssue("red baseline: build", "the body", exec)).toBe(42);
+    expect(calls).toEqual([
+      [
+        "gh",
+        "issue",
+        "create",
+        "--title",
+        "red baseline: build",
+        "--body",
+        "the body",
+      ],
+    ]);
+  });
+
+  it("throws a named error when the created issue's number cannot be read", async () => {
+    const exec: Exec = async () => "not a url";
+
+    await expect(createIssue("title", "body", exec)).rejects.toThrow(
+      /could not read/i,
+    );
   });
 });
 

@@ -1242,6 +1242,15 @@ describe("onboardingWorkerPrompt", () => {
     expect(prompt).toContain("exits zero");
     expect(prompt).toContain("Never edit, fix, or otherwise change");
   });
+
+  it("instructs the sidecar to carry a structured kind alongside each exclusion's reason", () => {
+    const prompt = onboardingWorkerPrompt();
+
+    expect(prompt).toContain('"missing" | "red" | "no-teardown"');
+    expect(prompt).toContain("does not exist");
+    expect(prompt).toContain("exists and failed");
+    expect(prompt).toContain("could not fully tear down");
+  });
 });
 
 describe("dispatchOnboardingWorker", () => {

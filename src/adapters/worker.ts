@@ -828,7 +828,7 @@ export function onboardingWorkerPrompt(): string {
     "",
     "You may run anything this repository contains to find out whether a candidate exists and passes — the same trust this repository already places in an agent working one of its tickets. Tear down everything you start: stop any process or server you launched and remove any container, file, or other resource a candidate created, before you finish. A candidate you cannot fully tear down is excluded, however it exited.",
     "",
-    `Write ${sidecarPath} as JSON, one entry per candidate you looked at but did not declare: {"excluded": [{"name": "the short name you'd have given it", "reason": "why — does not exist, failed, or could not be torn down"}]}. Omit the file, or give it an empty "excluded" array, if every candidate you found qualified.`,
+    `Write ${sidecarPath} as JSON, one entry per candidate you looked at but did not declare: {"excluded": [{"name": "the short name you'd have given it", "kind": "missing" | "red" | "no-teardown", "reason": "why, in your own words"}]}. "missing" is a candidate that does not exist, "red" is one that exists and failed, "no-teardown" is one you could not fully tear down. Omit the file, or give it an empty "excluded" array, if every candidate you found qualified.`,
     "",
     `Do not commit ${CONTRACT_FILE}, the sidecar, or anything else — leave the working tree exactly as your changes make it, uncommitted, for a human to review as a diff.`,
   ].join("\n");
