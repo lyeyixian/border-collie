@@ -25,10 +25,12 @@ const routeMap = buildRouteMap({
     brief:
       "an orchestration loop that herds a ticket DAG to Done with a fleet of Claude Code agents",
     fullDescription: `Config: border-collie.json at the target repo root,
-e.g. {"parent": 1, "max_workers": 3, "max_open_prs": 5, "poll_seconds": 30,
+e.g. {"max_workers": 3, "max_open_prs": 5, "poll_seconds": 30,
 "worker_model": "sonnet", "retry_model": "opus",
 "worker_timeout_minutes": 45, "worker_stall_minutes": 10,
-"worker_max_turns": 200, "worker_max_cost_usd": 20}`,
+"worker_max_turns": 200, "worker_max_cost_usd": 20}. Scope lives on the
+tracker instead (CONTEXT.md "Scope"): label the parent issue
+border-collie:scope, or pass --parent <n> / --all.`,
   },
 });
 

@@ -13,6 +13,7 @@ import {
   type OrchestratorLabel,
   READY_FOR_AGENT,
   RUN_DIR,
+  SCOPE_LABEL,
   WORKER_SKILL,
 } from "./types.js";
 
@@ -404,8 +405,10 @@ export function renderChecklist(): string {
      - Secret   CLAUDE_CODE_OAUTH_TOKEN         a subscription OAuth token
                                                 (\`claude setup-token\`)
 
-3. Add a border-collie.json at the repo root with at least a "parent" issue
-   number (run \`border-collie --help\` for the full config shape).
+3. Label a parent issue ${SCOPE_LABEL} to set this run's Scope — its
+   sub-issues are the ticket set the fleet works (run
+   \`border-collie --help\` for the full config shape, or pass --parent <n>
+   / --all instead of labelling).
 
 4. Label a Ticket ${READY_FOR_AGENT} so the fleet has something to take.
    Applying it vouches for that Ticket's text as trusted input to an agent
@@ -414,7 +417,7 @@ export function renderChecklist(): string {
 The tracker labels the loop depends on —
 ${wrapText(labelNames(), CHECKLIST_WIDTH, "  ")}
 ${wrapText(
-  `— are created by \`init\` itself, and the label report above says which ones it had to add. Any it could not reach the tracker to create are named there too, with the command to add them by hand; the first Claim of the first Tick fails without them. Only ${OPERATOR_STEERED_LABEL} is ever applied by a human: it is the flag that takes a pull request out of the automatic Refinement loop.`,
+  `— are created by \`init\` itself, and the label report above says which ones it had to add. Any it could not reach the tracker to create are named there too, with the command to add them by hand; the first Claim of the first Tick fails without them. ${OPERATOR_STEERED_LABEL} and ${SCOPE_LABEL} are the only two ever applied by a human: the first takes a pull request out of the automatic Refinement loop, the second sets this run's Scope.`,
   CHECKLIST_WIDTH,
 )}
 

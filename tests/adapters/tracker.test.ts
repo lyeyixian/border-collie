@@ -14,6 +14,7 @@ import {
   markPrDraft,
   markPrReady,
   readScope,
+  readScopeFromLabel,
   readTicketTitle,
   releaseFailedTicket,
   releaseTicket,
@@ -24,6 +25,7 @@ import {
   withDebugLogging,
   workerRunName,
 } from "../../src/adapters/tracker.js";
+import { ConfigError } from "../../src/core/config.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
 import {
   type AttemptFailure,
@@ -38,6 +40,7 @@ import {
   REFINEMENT_GIVE_UP_MARKER,
   REFINEMENT_ROUND_MARKER,
   RELEASE_MARKER,
+  SCOPE_LABEL,
   VOID_MARKER,
 } from "../../src/core/types.js";
 
@@ -114,6 +117,7 @@ function fakeExec(opts: {
 const SUB_ISSUES = "repos/{owner}/{repo}/issues/1/sub_issues?per_page=100";
 const ALL_ISSUES =
   "repos/{owner}/{repo}/issues?labels=ready-for-agent&state=open&per_page=100";
+const SCOPE_ISSUES = `repos/{owner}/{repo}/issues?labels=${SCOPE_LABEL}&state=all&per_page=100`;
 const comments = (n: number) =>
   `repos/{owner}/{repo}/issues/${n}/comments?per_page=100`;
 const blockedBy = (n: number) =>
@@ -134,6 +138,68 @@ const op = (call: string[]) => {
   if (call[1] === "run" && call[2] === "list") return "run-list";
   return call[2];
 };
+
+describe("readScopeFromLabel", () => {
+  it("resolves to the single issue carrying the Scope label", async () => {
+    const { exec, calls } = fakeExec({
+      api: { [SCOPE_ISSUES]: [[issue({ number: 137 })]] },
+    });
+
+    const scope = await readScopeFromLabel(exec);
+
+    expect(scope).toEqual({ kind: "parent", parent: 137 });
+    expect(calls).toEqual([
+      ["gh", "api", SCOPE_ISSUES, "--paginate", "--slurp"],
+    ]);
+  });
+
+  it("reads every state, so a Scope survives its parent issue later closing", async () => {
+    const { exec } = fakeExec({
+      api: { [SCOPE_ISSUES]: [[issue({ number: 137, state: "closed" })]] },
+    });
+
+    const scope = await readScopeFromLabel(exec);
+
+    expect(scope).toEqual({ kind: "parent", parent: 137 });
+  });
+
+  it("excludes pull requests carrying the label", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SCOPE_ISSUES]: [
+          [
+            { ...issue({ number: 9 }), pull_request: {} },
+            issue({ number: 137 }),
+          ],
+        ],
+      },
+    });
+
+    const scope = await readScopeFromLabel(exec);
+
+    expect(scope).toEqual({ kind: "parent", parent: 137 });
+  });
+
+  it("throws a named ConfigError when no issue carries the label", async () => {
+    const { exec } = fakeExec({ api: { [SCOPE_ISSUES]: [[]] } });
+
+    await expect(readScopeFromLabel(exec)).rejects.toThrow(ConfigError);
+    await expect(readScopeFromLabel(exec)).rejects.toThrow(
+      new RegExp(SCOPE_LABEL.replace(":", "\\:")),
+    );
+  });
+
+  it("throws a named ConfigError, not a picked winner, when several issues carry the label", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SCOPE_ISSUES]: [[issue({ number: 137 }), issue({ number: 200 })]],
+      },
+    });
+
+    await expect(readScopeFromLabel(exec)).rejects.toThrow(ConfigError);
+    await expect(readScopeFromLabel(exec)).rejects.toThrow(/#137.*#200/);
+  });
+});
 
 describe("readScope", () => {
   it("reads a parent's sub-issues, then comments, then the open and closed PR listings", async () => {

@@ -35,7 +35,7 @@ A ticket is done when its PR is merged and the ticket is closed — not when the
 One idempotent pass of the loop: recompute the world from GitHub, take every action now due. A run is a sequence of ticks; any single tick is a complete unit.
 
 **Scope**:
-The ticket set a run is responsible for — by default the sub-issues of one parent issue, not every agent-ready issue in the repo.
+The ticket set a run is responsible for — by default the sub-issues of one parent issue, not every agent-ready issue in the repo. The tracker is the only state store for it: a Tick finds its parent issue by looking for the `border-collie:scope` label, applied by hand to exactly one issue — more than one, or none, is a named error rather than a picked winner. `--parent <n>` overrides whatever the tracker says; `--all` is the only way to select repo-wide Scope.
 
 **Attempt**:
 One Worker session against one ticket. A ticket gets at most two before Escalation.

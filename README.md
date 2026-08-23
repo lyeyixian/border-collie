@@ -82,7 +82,7 @@ Trusted publishing has to be bound to an npm package that already exists, so the
 
 ## Continuous operation
 
-This repository dogfoods itself: `.github/workflows/border-collie-tick.yml` runs `tick` against its own Scope (`border-collie.json`) as a GitHub Actions job, so it makes progress with no laptop open. A Tick fires on pull request closure, on the Worker job completing, on manual dispatch, and on a half-hourly cron backstop; a concurrency group serialises Ticks, and every Tick recomputes the world from GitHub, so a dropped duplicate loses nothing.
+This repository dogfoods itself: `.github/workflows/border-collie-tick.yml` runs `tick` against its own Scope — the parent issue labelled `border-collie:scope` (CONTEXT.md "Scope") — as a GitHub Actions job, so it makes progress with no laptop open. A Tick fires on pull request closure, on the Worker job completing, on manual dispatch, and on a half-hourly cron backstop; a concurrency group serialises Ticks, and every Tick recomputes the world from GitHub, so a dropped duplicate loses nothing.
 
 Writes that must retrigger a workflow — dispatching a Worker's job, and a branch this Tick pushes back to an open PR — authenticate with a GitHub App installation token rather than the default `GITHUB_TOKEN`, which GitHub's own recursive-trigger guard silently ignores for exactly those writes. Running the workflow requires:
 

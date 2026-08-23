@@ -43,6 +43,12 @@ const LABELS = {
     description: "Operator is steering this PR: automatic Refinement skips it",
     color: "1d76db",
   },
+  scope: {
+    name: "border-collie:scope",
+    description:
+      "Scope: this issue's sub-issues are the ticket set a run manages",
+    color: "fbca04",
+  },
 } as const satisfies Record<string, OrchestratorLabel>;
 
 /** The whole label set, in the order `init` reports it. */
@@ -72,6 +78,15 @@ export const CLAIM_LABEL = LABELS.claimed.name;
  * or delete once `init` has written it.
  */
 export const WORKER_SKILL = "implement";
+
+/**
+ * The label naming a run's Scope (CONTEXT.md "Scope"): applied by hand to
+ * the parent issue whose sub-issues a run manages. Re-scoping a run means
+ * moving this label to a different issue, not editing and committing config.
+ * Exactly one issue may carry it at a time — see `readScopeFromLabel`
+ * (adapters/tracker.ts).
+ */
+export const SCOPE_LABEL = LABELS.scope.name;
 
 /** A Ticket gets at most this many Attempts before Escalation (CONTEXT.md). */
 export const MAX_ATTEMPTS = 2;

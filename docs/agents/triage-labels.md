@@ -16,14 +16,17 @@ Edit the right-hand column to match whatever vocabulary you actually use.
 
 ## border-collie's own labels
 
-Two more labels appear on the tracker alongside the triage five, but they are not triage vocabulary — border-collie writes and reads them itself, so their names are fixed and carry a `border-collie:` namespace precisely so they can never collide with a label your repository already uses for something else. Don't edit these, and don't repurpose them for triage.
+Three more labels appear on the tracker alongside the triage five, but they are not triage vocabulary — border-collie writes and reads them itself, so their names are fixed and carry a `border-collie:` namespace precisely so they can never collide with a label your repository already uses for something else. Don't edit these, and don't repurpose them for triage.
 
 | Label                             | Meaning                                                                |
 | ---------------------------------- | ----------------------------------------------------------------------- |
 | `border-collie:claimed`            | Agent-held claim: a Worker is dispatched against this ticket (CONTEXT.md "Claim") |
 | `border-collie:operator-steered`   | Operator has taken over this PR; automatic Refinement skips it (CONTEXT.md "Operator-steered") |
+| `border-collie:scope`              | Names this run's Scope: the parent issue whose sub-issues the fleet works (CONTEXT.md "Scope") |
 
-`init` creates these two, and the two triage labels the Orchestrator itself reads and writes — `ready-for-agent` and `ready-for-human`. The other three triage roles (`needs-triage`, `needs-info`, `wontfix`) are yours to create if you use them; border-collie never reads or writes those. `init` never deletes a label under any circumstances, force included.
+`init` creates these three, and the two triage labels the Orchestrator itself reads and writes — `ready-for-agent` and `ready-for-human`. The other three triage roles (`needs-triage`, `needs-info`, `wontfix`) are yours to create if you use them; border-collie never reads or writes those. `init` never deletes a label under any circumstances, force included.
+
+`border-collie:claimed` is agent-held; `border-collie:operator-steered` and `border-collie:scope` are the two a human applies by hand — the latter to whichever issue should be this run's parent. Re-scoping a run means moving the label to a different issue, not editing a config file, and exactly one issue may carry it: none or several is a named error, not a guess.
 
 ## `ready-for-agent` is a trust boundary, not just a workflow state
 

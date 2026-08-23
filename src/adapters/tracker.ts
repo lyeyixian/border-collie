@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import type { Scope } from "../core/config.js";
+import { ConfigError, type Scope } from "../core/config.js";
 import { type Log, scrubCredentials } from "../core/log.js";
 import {
   type AttemptFailure,
@@ -29,6 +29,7 @@ import {
   REFINEMENT_ROUND_MARKER,
   RELEASE_MARKER,
   type RefinementSignal,
+  SCOPE_LABEL,
   type Ticket,
   ticketFromAgentBranch,
   VOID_MARKER,
@@ -115,6 +116,15 @@ interface GithubIssue {
   labels?: { name: string }[];
   issue_dependencies_summary?: { blocked_by: number };
   pull_request?: unknown;
+}
+
+/**
+ * GitHub's issues listing includes pull requests (they share one number
+ * space); every issues read in this file wants issues only, so the exclusion
+ * rule lives once here rather than repeated at each call site.
+ */
+function excludePullRequests(issues: GithubIssue[]): GithubIssue[] {
+  return issues.filter((issue) => issue.pull_request === undefined);
 }
 
 function toTicket(issue: GithubIssue): Ticket {
@@ -632,6 +642,39 @@ export async function createLabel(
 }
 
 /**
+ * Find the issue carrying the Scope label (CONTEXT.md "Scope") — the Scope a
+ * run resolves to when neither `--parent` nor `--all` settled it on their own
+ * (`scopeFromFlags`, core/config.ts). Every state is read, open and closed,
+ * so a Scope survives its parent issue later closing, the same reason
+ * `readScope` reads a parent's sub-issues both ways.
+ *
+ * Exactly one issue may carry the label at a time: none or several is a
+ * named error rather than the loop picking a winner (the acceptance
+ * criterion), each explaining exactly what to do about it.
+ */
+export async function readScopeFromLabel(
+  exec: Exec = realExec,
+): Promise<Scope> {
+  const issues = await readPages<GithubIssue>(
+    `repos/{owner}/{repo}/issues?labels=${SCOPE_LABEL}&state=all&per_page=100`,
+    exec,
+  );
+  const numbers = excludePullRequests(issues).map((issue) => issue.number);
+
+  if (numbers.length === 0) {
+    throw new ConfigError(
+      `no issue carries the ${SCOPE_LABEL} label: apply it to the parent issue for this run's Scope, or pass --parent <n> (or --all for repo-wide Scope)`,
+    );
+  }
+  if (numbers.length > 1) {
+    throw new ConfigError(
+      `${numbers.length} issues carry the ${SCOPE_LABEL} label (#${numbers.join(", #")}): Scope is ambiguous — leave the label on exactly one issue, or pass --parent <n>`,
+    );
+  }
+  return { kind: "parent", parent: numbers[0] as number };
+}
+
+/**
  * Observe phase: read the Scope from GitHub. Parent scope lists the parent's
  * sub-issues (open and closed — the planner needs closed ones to reason about
  * later); repo-wide scope lists open agent-ready issues, excluding PRs
@@ -647,9 +690,7 @@ export async function readScope(
       : `repos/{owner}/{repo}/issues?labels=${READY_FOR_AGENT}&state=open&per_page=100`;
 
   const issues = await readPages<GithubIssue>(endpoint, exec);
-  const tickets = issues
-    .filter((issue) => issue.pull_request === undefined)
-    .map(toTicket);
+  const tickets = excludePullRequests(issues).map(toTicket);
 
   // Claim history is read where it can matter: claim-labelled tickets (claim
   // ownership, even a blocked one) and unassigned dispatch candidates (the

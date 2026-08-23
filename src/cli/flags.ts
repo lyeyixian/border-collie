@@ -37,14 +37,16 @@ function toConfigFlags(flags: CliFlags): Flags {
 /**
  * Resolve config for a command run, translating a `ConfigError` into a
  * returned (not thrown) error so stricli prints a one-line message instead
- * of a stack trace.
+ * of a stack trace. Async because `loadConfig` may need a tracker read to
+ * resolve Scope (CONTEXT.md "Scope"); the try/catch below covers both a
+ * synchronous throw and a rejected promise.
  */
-export function resolveConfigFromFlags(
+export async function resolveConfigFromFlags(
   context: Context,
   flags: CliFlags,
-): ResolvedConfig | ConfigError {
+): Promise<ResolvedConfig | ConfigError> {
   try {
-    return context.loadConfig(toConfigFlags(flags));
+    return await context.loadConfig(toConfigFlags(flags));
   } catch (error) {
     if (error instanceof ConfigError) return error;
     throw error;
@@ -73,7 +75,8 @@ export const sharedFlags = {
   parent: {
     kind: "parsed",
     parse: parseInteger,
-    brief: "scope: sub-issues of parent issue #n (overrides config file)",
+    brief:
+      "scope: sub-issues of parent issue #n (overrides the tracker's Scope label)",
     placeholder: "n",
     optional: true,
   },

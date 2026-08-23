@@ -25,6 +25,7 @@ import {
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
   RUN_DIR,
+  SCOPE_LABEL,
   WORKER_SKILL,
 } from "../../src/core/types.js";
 import { pinnedCliVersion } from "../helpers/workflow-template.js";
@@ -399,9 +400,9 @@ describe("renderChecklist", () => {
     }
   });
 
-  it("singles out the one label a human applies", () => {
-    expect(checklist).toContain(
-      `Only ${OPERATOR_STEERED_LABEL} is ever applied`,
+  it("singles out the two labels a human applies", () => {
+    expect(checklist.replace(/\n/g, " ")).toContain(
+      `${OPERATOR_STEERED_LABEL} and ${SCOPE_LABEL} are the only two ever applied`,
     );
   });
 

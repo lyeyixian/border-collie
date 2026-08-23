@@ -3,6 +3,11 @@ import type { CommandContext, StricliProcess } from "@stricli/core";
 import { Logger } from "tslog";
 import { fileTransport } from "tslog/transports/file";
 import { loadConfigFile } from "../adapters/config-file.js";
+import {
+  readScopeFromLabel,
+  realExec,
+  withDebugLogging,
+} from "../adapters/tracker.js";
 import { probeEnvironment } from "../adapters/worker.js";
 import type { IntervalScheduler } from "../app/act.js";
 import { declareOnce } from "../app/declare.js";
@@ -14,6 +19,7 @@ import {
   type ResolvedConfig,
   resolveConfig,
   resolveWorkerConfig,
+  scopeFromFlags,
   type WorkerAttemptConfig,
 } from "../core/config.js";
 import type { DeclareOutcome } from "../core/declare.js";
@@ -30,7 +36,14 @@ import { reportBlockText } from "./console-report.js";
 /** Every effect a command handler needs, injected so handlers never import them directly. */
 export interface Context extends CommandContext {
   readonly process: StricliProcess;
-  readonly loadConfig: (flags: Flags) => ResolvedConfig;
+  /**
+   * Resolves Scope (CONTEXT.md "Scope") before the rest of config: flags
+   * settle it on their own when they can (`scopeFromFlags`), falling back to
+   * a tracker read for the Scope label when neither `--parent` nor `--all`
+   * did — the one config field that needs a network read, so `loadConfig`
+   * alone among this interface's config resolvers is async.
+   */
+  readonly loadConfig: (flags: Flags) => Promise<ResolvedConfig>;
   /** Config resolution for the worker command: no Scope required (issue #71); see `resolveWorkerConfig`. */
   readonly loadWorkerConfig: (flags: Flags) => WorkerAttemptConfig;
   readonly tick: (
@@ -225,7 +238,12 @@ export function buildRealContext(
   };
   return {
     process: cliProcess,
-    loadConfig: (flags) => resolveConfig(loadConfigFile(cwd), flags),
+    loadConfig: async (flags) => {
+      const scope =
+        scopeFromFlags(flags) ??
+        (await readScopeFromLabel(withDebugLogging(realExec, log)));
+      return resolveConfig(loadConfigFile(cwd), flags, scope);
+    },
     loadWorkerConfig: (flags) =>
       resolveWorkerConfig(loadConfigFile(cwd), flags),
     tick: (config, dryRun, dispatchPaused) =>

@@ -15,7 +15,7 @@ async function runHandler(
       "--dry-run only applies to tick: a dry run never progresses the loop",
     );
   }
-  const config = resolveConfigFromFlags(this, flags);
+  const config = await resolveConfigFromFlags(this, flags);
   if (config instanceof Error) return config;
 
   const outcome = await run(config.pollSeconds, {
