@@ -13,8 +13,8 @@ import {
   declareSidecarPath,
   loadDeclareSidecar,
 } from "../../src/adapters/declare.js";
-import { RUN_DIR } from "../../src/adapters/worker.js";
 import { DeclareSidecarError } from "../../src/core/declare.js";
+import { RUN_DIR } from "../../src/core/types.js";
 
 function tmpRepo(): string {
   return mkdtempSync(join(tmpdir(), "border-collie-declare-test-"));

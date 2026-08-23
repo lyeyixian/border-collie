@@ -17,7 +17,6 @@ import {
   onboardingWorkerPrompt,
   probeEnvironment,
   pushAgentBranch,
-  RUN_DIR,
   realSpawnWorkerProcess,
   refinementWorkerPrompt,
   type SpawnWorkerProcess,
@@ -30,7 +29,7 @@ import type { RunContractVerify } from "../../src/adapters/workflow.js";
 import { DECLARE_SIDECAR_FILE } from "../../src/core/declare.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
 import { SKILL_FILES } from "../../src/core/scaffold.js";
-import { WORKER_SKILL } from "../../src/core/types.js";
+import { RUN_DIR, WORKER_SKILL } from "../../src/core/types.js";
 import type { VerifyOutcome } from "../../src/core/workflow.js";
 
 function recordingLog(): { log: Log; events: LogEvent[] } {
