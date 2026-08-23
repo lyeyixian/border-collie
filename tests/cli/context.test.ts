@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { buildRealContext } from "../../src/cli/context.js";
+import { SCAFFOLD_FILES, WORKFLOW_FILES } from "../../src/core/scaffold.js";
 import { templateAsScaffolded } from "../helpers/workflow-template.js";
 
 /**
@@ -113,38 +114,40 @@ describe("buildRealContext's durable log file", () => {
 
 /**
  * Another real-filesystem integration test: `initScaffold` writes this
- * package's own workflow templates into a target repo, so this proves the
- * whole chain — package-relative template lookup through to a file the
- * target repo can actually run — rather than trusting the injected-deps
- * unit tests that stand in for it in tests/app/init.test.ts.
+ * package's own workflows, vendored skills and agent docs into a target repo,
+ * so this proves the whole chain — package-relative template lookup through
+ * to a file the target repo can actually run — rather than trusting the
+ * injected-deps unit tests that stand in for it in tests/app/init.test.ts.
+ * What it cannot prove is that the tarball carries them: `loadTemplate`
+ * resolves against this repo's own root when running from source, so a path
+ * missing from package.json's "files" reads back fine here. That guard lives
+ * in tests/adapters/scaffold.test.ts, and scripts/smoke.sh proves it cold.
  *
- * "Matching this package's own" is modulo the CLI pin, which a scaffold
- * rewrites on the way out — see `templateAsScaffolded` (tests/helpers/
- * workflow-template.ts) for why comparing that line verbatim made the tagged
- * commit unreleasable by construction (issues #93, #123).
+ * A workflow matches "this package's own" only modulo the CLI pin, which a
+ * scaffold rewrites on the way out — see `templateAsScaffolded` (tests/
+ * helpers/workflow-template.ts) for why comparing that line verbatim made the
+ * tagged commit unreleasable by construction (issues #93, #123). A vendored
+ * file is compared byte for byte instead, since that rewrite is exactly what
+ * must *not* have happened to it (issue #153): normalising the pin away on
+ * both sides would wave through a vendored skill the scaffold had re-pinned.
  */
 describe("buildRealContext's initScaffold", () => {
-  it("scaffolds both workflow files into a fresh target repo, matching this package's own", async () => {
+  it("scaffolds every file into a fresh target repo, matching this package's own", async () => {
     const dir = mkdtempSync(join(tmpdir(), "border-collie-context-test-"));
     const context = buildRealContext(dir);
 
     const actions = context.initScaffold(false);
 
-    expect(actions).toEqual([
-      {
-        relPath: ".github/workflows/border-collie-tick.yml",
-        outcome: "written",
-      },
-      {
-        relPath: ".github/workflows/border-collie-worker.yml",
-        outcome: "written",
-      },
-    ]);
+    expect(actions).toEqual(
+      SCAFFOLD_FILES.map((relPath) => ({ relPath, outcome: "written" })),
+    );
     const packageVersion = JSON.parse(readFileSync("package.json", "utf8"))
       .version as string;
     for (const { relPath } of actions) {
       expect(readFileSync(join(dir, relPath), "utf8")).toBe(
-        templateAsScaffolded(relPath, packageVersion),
+        WORKFLOW_FILES.includes(relPath)
+          ? templateAsScaffolded(relPath, packageVersion)
+          : readFileSync(relPath, "utf8"),
       );
     }
   });

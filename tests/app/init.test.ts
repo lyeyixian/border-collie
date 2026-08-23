@@ -7,7 +7,11 @@ import {
   runInitLabels,
   runInitScaffold,
 } from "../../src/app/init.js";
-import { SCAFFOLD_FILES } from "../../src/core/scaffold.js";
+import {
+  SCAFFOLD_FILES,
+  SKILL_FILES,
+  WORKFLOW_FILES,
+} from "../../src/core/scaffold.js";
 import {
   CLAIM_LABEL,
   OPERATOR_STEERED_LABEL,
@@ -28,8 +32,12 @@ function fakeDeps(existing: string[] = [], version = "9.9.9") {
       write: (cwd: string, relPath: string, content: string) => {
         writes.push({ cwd, relPath, content });
       },
+      // Shaped like the real templates: a workflow names a CLI install, a
+      // vendored skill or doc names nothing of ours at all.
       loadTemplate: (relPath: string) =>
-        `template:${relPath}\nrun: npm install -g border-collie@0.0.1\n`,
+        WORKFLOW_FILES.includes(relPath)
+          ? `template:${relPath}\nrun: npm install -g border-collie@0.0.1\n`
+          : `template:${relPath}\n`,
       cliVersion: () => version,
     },
     writes,
@@ -49,7 +57,9 @@ describe("runInitScaffold", () => {
       SCAFFOLD_FILES.map((relPath) => ({
         cwd: "/repo",
         relPath,
-        content: `template:${relPath}\nrun: npm install -g border-collie@9.9.9\n`,
+        content: WORKFLOW_FILES.includes(relPath)
+          ? `template:${relPath}\nrun: npm install -g border-collie@9.9.9\n`
+          : `template:${relPath}\n`,
       })),
     );
   });
@@ -59,13 +69,33 @@ describe("runInitScaffold", () => {
    * the template text happened to carry — which, in a published tarball,
    * is always the release before it.
    */
-  it("pins every written file to the running CLI's own version", () => {
+  it("pins every written workflow to the running CLI's own version", () => {
     const { deps, writes } = fakeDeps([], "1.2.3");
 
     runInitScaffold("/repo", false, deps);
 
-    for (const write of writes) {
+    for (const write of writes.filter((w) =>
+      WORKFLOW_FILES.includes(w.relPath),
+    )) {
       expect(pinnedCliVersion(write.content)).toBe("1.2.3");
+    }
+  });
+
+  /**
+   * Issue #153: a vendored skill is worth vendoring only if what lands is
+   * what upstream wrote. It also names no CLI install, so routing it through
+   * the pin rewrite would fail the whole scaffold rather than rewrite
+   * anything.
+   */
+  it("writes a vendored skill exactly as the template gave it", () => {
+    const { deps, writes } = fakeDeps([], "1.2.3");
+
+    runInitScaffold("/repo", false, deps);
+
+    for (const relPath of SKILL_FILES) {
+      expect(writes.find((w) => w.relPath === relPath)?.content).toBe(
+        `template:${relPath}\n`,
+      );
     }
   });
 
@@ -117,7 +147,7 @@ describe("initScaffoldOnce", () => {
     expect(actions.map((a) => a.outcome)).toEqual(
       SCAFFOLD_FILES.map(() => "written"),
     );
-    for (const relPath of SCAFFOLD_FILES) {
+    for (const relPath of WORKFLOW_FILES) {
       const scaffolded = readFileSync(join(dir, relPath), "utf8");
 
       expect(pinnedCliVersion(scaffolded)).toBe(packageVersion);

@@ -59,6 +59,20 @@ export const READY_FOR_HUMAN = LABELS.readyForHuman.name;
  */
 export const CLAIM_LABEL = LABELS.claimed.name;
 
+/**
+ * The one skill name the Worker prompt invokes (issue #153). Load-bearing in
+ * a way no other vendored skill's name is: `workerPrompt` (src/adapters/
+ * worker.ts) types `/<this>` with no fallback, so on a checkout that has no
+ * skill under this name the session receives unhandled text and improvises —
+ * which surfaces as an oddly-shaped pull request rather than as a failure.
+ * The vendored closure `init` writes is keyed off it (src/core/scaffold.ts),
+ * which is what ties the two ends together.
+ *
+ * Every *other* skill in that closure is the repository's to rename, replace
+ * or delete once `init` has written it.
+ */
+export const WORKER_SKILL = "implement";
+
 /** A Ticket gets at most this many Attempts before Escalation (CONTEXT.md). */
 export const MAX_ATTEMPTS = 2;
 

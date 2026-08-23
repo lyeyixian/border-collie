@@ -25,7 +25,17 @@
   "files": [
     "dist",
     ".github/workflows/border-collie-tick.yml",
-    ".github/workflows/border-collie-worker.yml"
+    ".github/workflows/border-collie-worker.yml",
+    ".claude/skills/implement/SKILL.md",
+    ".claude/skills/tdd/SKILL.md",
+    ".claude/skills/tdd/tests.md",
+    ".claude/skills/tdd/mocking.md",
+    ".claude/skills/code-review/SKILL.md",
+    ".claude/skills/codebase-design/SKILL.md",
+    ".claude/skills/codebase-design/DEEPENING.md",
+    ".claude/skills/codebase-design/DESIGN-IT-TWICE.md",
+    "docs/agents/issue-tracker.md",
+    "docs/agents/triage-labels.md"
   ],
   "publishConfig": {
     "access": "public",

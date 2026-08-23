@@ -23,7 +23,7 @@ Two more labels appear on the tracker alongside the triage five, but they are no
 | `border-collie:claimed`            | Agent-held claim: a Worker is dispatched against this ticket (CONTEXT.md "Claim") |
 | `border-collie:operator-steered`   | Operator has taken over this PR; automatic Refinement skips it (CONTEXT.md "Operator-steered") |
 
-`init` creates both alongside the triage five and never deletes a label under any circumstances, force included.
+`init` creates these two, and the two triage labels the Orchestrator itself reads and writes — `ready-for-agent` and `ready-for-human`. The other three triage roles (`needs-triage`, `needs-info`, `wontfix`) are yours to create if you use them; border-collie never reads or writes those. `init` never deletes a label under any circumstances, force included.
 
 ## `ready-for-agent` is a trust boundary, not just a workflow state
 

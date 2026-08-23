@@ -32,19 +32,27 @@ export const initCommand = buildCommand<InitFlags, [], Context>({
   },
   docs: {
     brief:
-      "scaffold the Orchestrator and Worker workflows (refinement runs inline) into the target repo",
-    fullDescription: `init scaffolds the workflows a target repository needs to run border-collie
-in GitHub Actions — the Orchestrator's Tick (which also runs Conflict and
-Refinement Workers inline) and the Worker job, skills setup included — into
-.github/workflows in the current working directory, creates the tracker
-labels the loop reads and writes, then prints a checklist of the secrets and
-the minimum GitHub App permissions to supply before the first run.
+      "scaffold the Orchestrator and Worker workflows (refinement runs inline) and the Worker's skills into the target repo",
+    fullDescription: `init scaffolds what a target repository needs to run border-collie in
+GitHub Actions, into the current working directory: the workflows — the
+Orchestrator's Tick (which also runs Conflict and Refinement Workers inline)
+and the Worker job — under .github/workflows, the skills a Worker session
+invokes under .claude/skills, and the agent docs those skills read under
+docs/agents. It then creates the tracker labels the loop reads and writes,
+and prints a checklist of the secrets and the minimum GitHub App permissions
+to supply before the first run.
+
+The skills are written rather than installed inside each Worker job, so an
+unattended fleet is never handed an upstream change overnight, and the whole
+closure the Worker's skill reaches is written, not merely that one skill.
+Once written they belong to the repository: only the invoked skill's name is
+load-bearing, and the rest are yours to edit, extend or delete.
 
 A file already present at a scaffolded path is left alone and reported as
 skipped, never overwritten silently; --force overwrites it instead, reported
 as such. A label already on the tracker is likewise left exactly as it is,
 --force or not: its colour and description belong to the repository. If the
-tracker cannot be reached at all, the workflows are still scaffolded and the
+tracker cannot be reached at all, the files are still scaffolded and the
 labels are reported with the commands to create them by hand.
 
 The listed GitHub App permissions deliberately exclude workflow

@@ -24,6 +24,8 @@ import {
 } from "../../src/adapters/worker.js";
 import type { RunContractVerify } from "../../src/adapters/workflow.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
+import { SKILL_FILES } from "../../src/core/scaffold.js";
+import { WORKER_SKILL } from "../../src/core/types.js";
 import type { VerifyOutcome } from "../../src/core/workflow.js";
 
 function recordingLog(): { log: Log; events: LogEvent[] } {
@@ -94,6 +96,18 @@ function fakeSpawn(
 }
 
 describe("workerPrompt", () => {
+  /**
+   * Issue #153: the prompt names a skill by hand, with no fallback, and that
+   * skill now arrives as a file `init` writes rather than as a plugin the job
+   * installs. Nothing else pairs the two ends — a rename on either side would
+   * leave a Worker improvising over unhandled text, which reads as an
+   * oddly-shaped pull request rather than as a failure.
+   */
+  it("invokes the one skill the scaffold vendors under that name", () => {
+    expect(workerPrompt(4).startsWith(`/${WORKER_SKILL} issue #4`)).toBe(true);
+    expect(SKILL_FILES).toContain(`.claude/skills/${WORKER_SKILL}/SKILL.md`);
+  });
+
   it("contains only the ticket reference, the /implement invocation, the PR-description instruction, and the contract line", () => {
     expect(workerPrompt(4)).toBe(
       '/implement issue #4\n\nWhen the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like "Here\'s the PR description:", no status narration, no text before or after it.\n\nIf this repository has a WORKFLOW.md at its root, it declares a `verify:` map of commands with meaningful exit codes. Run every command it declares before committing — a nonzero exit means the work is not done yet.',

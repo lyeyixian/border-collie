@@ -45,7 +45,7 @@ on:
           Wall-clock ceiling in minutes for the job itself. GitHub Actions
           expressions cannot add a margin onto timeout_minutes at dispatch
           time, so this is its own input — keep it a few minutes above
-          timeout_minutes, covering setup (checkout, installs, skills)
+          timeout_minutes, covering setup (checkout and the installs)
           before the watchdog starts and settlement (the tracker write)
           after it fires, so GitHub Actions never races the watchdog that
           kills the claude subprocess and settles the Attempt
@@ -107,15 +107,15 @@ jobs:
       - name: Install Claude Code
         run: npm install -g @anthropic-ai/claude-code@latest
 
-      - name: Install Worker skills
-        # The Worker prompt invokes a skill (/implement) by name with no
-        # fallback: on a runner without it, the Worker receives unhandled
-        # text and improvises rather than erroring, which surfaces as an
-        # oddly-shaped pull request instead of a clean failure.
-        run: |
-          claude plugin marketplace add mattpocock/skills
-          claude plugin install mattpocock-skills@mattpocock
-
+      # No skills step, deliberately (issue #153). The Worker prompt invokes
+      # /implement by name with no fallback, and that skill — with the closure
+      # it reaches and the agent docs those read — is checked into this
+      # repository under .claude/skills, put there by `border-collie init`.
+      # Installing them from a marketplace here instead would be a floating
+      # install on an unattended fleet, which is the very thing the pinned CLI
+      # install above exists to prevent: an upstream change lands in a
+      # sleeping fleet overnight. A template guard in
+      # tests/adapters/scaffold.test.ts fails if one comes back.
       - name: Run Worker
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

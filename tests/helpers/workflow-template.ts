@@ -3,8 +3,8 @@ import { readFileSync } from "node:fs";
 /**
  * Readers for the scaffolded workflow templates (.github/workflows/), used by
  * the guards that hold those files to the contracts the rest of the system
- * assumes of them: the CLI pin (issue #93) and the Worker's `run-name` (issue
- * #111).
+ * assumes of them: the CLI pin (issue #93), the Worker's `run-name` (issue
+ * #111), and the run-time plugin install that vendoring removed (issue #153).
  *
  * These live in tests, and keep their own copies of the patterns, on purpose.
  * Runtime does rewrite a pin — `pinCliVersion` (src/core/scaffold.ts) re-pins
@@ -92,6 +92,40 @@ export function declaredRunName(template: string): string | null {
   const comment = raw.search(/\s#/);
   const plain = (comment === -1 ? raw : raw.slice(0, comment)).trimEnd();
   return plain === "" ? null : plain;
+}
+
+/**
+ * A whole-line comment, which YAML and shell both start with `#`. Only those
+ * are exempt below, so a template is free to explain in prose why it no
+ * longer installs anything — but a trailing `# claude plugin install x` on a
+ * line that also runs something still counts, deliberately: this guard would
+ * rather refuse a comment than miss a command.
+ */
+function isCommentLine(line: string): boolean {
+  return /^\s*#/.test(line);
+}
+
+const PLUGIN_COMMAND = /\bclaude\s+plugin\b/;
+
+/**
+ * Every command a template runs that reaches Claude Code's plugin system at
+ * all — `marketplace add` and `install` are what this was written for, but
+ * the reader deliberately matches any `claude plugin` subcommand, since a
+ * workflow that has business with the plugin system at run time is the thing
+ * being refused, not one particular verb. Trimmed, in file order (issue #153).
+ *
+ * A run-time install is the failure the pinned CLI install two steps above it
+ * exists to prevent: it resolves against an upstream marketplace on whatever
+ * night the Tick's cron happens to fire, so a change nobody in this repository
+ * made lands in a sleeping fleet. The Worker's skills are vendored into the
+ * target repository by `init` instead, which is the only way "this repository
+ * owns them" can mean anything.
+ */
+export function pluginCommands(template: string): string[] {
+  return template
+    .split("\n")
+    .filter((line) => !isCommentLine(line) && PLUGIN_COMMAND.test(line))
+    .map((line) => line.trim());
 }
 
 function versionParts(version: string): number[] {
