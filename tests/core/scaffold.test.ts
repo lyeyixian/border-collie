@@ -12,6 +12,7 @@ import {
   SKILL_FILES,
   scaffoldContent,
   scaffoldWrites,
+  WORKER_SKILL_FILE,
   WORKFLOW_FILES,
 } from "../../src/core/scaffold.js";
 import {
@@ -84,6 +85,11 @@ describe("SCAFFOLD_FILES", () => {
 
   it("vendors the one skill whose name the Worker prompt invokes", () => {
     expect(SKILL_FILES).toContain(`.claude/skills/${WORKER_SKILL}/SKILL.md`);
+  });
+
+  it("names the load-bearing skill's own file (issue #155's dispatch-refusal check reads this path)", () => {
+    expect(WORKER_SKILL_FILE).toBe(`.claude/skills/${WORKER_SKILL}/SKILL.md`);
+    expect(SKILL_FILES[0]).toBe(WORKER_SKILL_FILE);
   });
 
   it("vendors the skills that one reaches, not merely that one", () => {

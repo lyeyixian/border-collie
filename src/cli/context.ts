@@ -227,6 +227,7 @@ export function buildRealContext(
         scheduleInterval,
         // GitHub sets this on every Actions runner; see TickDeps.remoteDispatch.
         remoteDispatch: cliProcess.env?.GITHUB_ACTIONS === "true",
+        cwd,
       }),
     runWorker: (config, ticket, attempt, inPlace) =>
       workerAttemptOnce(config, ticket, attempt, inPlace, { log }),

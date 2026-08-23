@@ -304,7 +304,11 @@ function prUpkeep(world: WorldSnapshot, withinWorkingHours: boolean): Action[] {
  * withinWorkingHours) is a narrower, independent suppression: only the
  * quota-consuming actions — claims, spawns, the conflict Worker — drop out,
  * so closes, releases, escalations, queued-behind marking, and the rest of PR
- * upkeep keep the world current while the fleet is quiet.
+ * upkeep keep the world current while the fleet is quiet. `requiredSkillMissing`
+ * (issue #155) is narrower still: it drops only the claim/spawn pair, since
+ * dispatching a Worker into a checkout missing `WORKER_SKILL` would hand it
+ * unhandled text rather than a skill, while the conflict Worker and
+ * Refinement rounds invoke no skill and so are unaffected.
  */
 export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   const openTickets = new Set(
@@ -342,19 +346,20 @@ export function plan(world: WorldSnapshot, config: PlanConfig): Action[] {
   // models the human reviewer's bandwidth, and every agent PR occupies it
   // whichever run opened it.
   const headroom = Math.max(0, config.maxOpenPrs - world.openAgentPrs.length);
-  const dispatches: Action[] = withinWorkingHours
-    ? []
-    : dispatchableSet(world)
-        .filter((ticket) => ticket.agentClaimCount < MAX_ATTEMPTS)
-        .slice(0, Math.max(0, Math.min(config.maxWorkers, headroom)))
-        .flatMap((ticket) => [
-          { type: "claim", ticket: ticket.number },
-          {
-            type: "spawn",
-            ticket: ticket.number,
-            attempt: ticket.agentClaimCount + 1,
-          },
-        ]);
+  const dispatches: Action[] =
+    withinWorkingHours || config.requiredSkillMissing
+      ? []
+      : dispatchableSet(world)
+          .filter((ticket) => ticket.agentClaimCount < MAX_ATTEMPTS)
+          .slice(0, Math.max(0, Math.min(config.maxWorkers, headroom)))
+          .flatMap((ticket) => [
+            { type: "claim", ticket: ticket.number },
+            {
+              type: "spawn",
+              ticket: ticket.number,
+              attempt: ticket.agentClaimCount + 1,
+            },
+          ]);
 
   return [
     ...closes,
