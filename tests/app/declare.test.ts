@@ -33,6 +33,8 @@ function fakeDeps(overrides: Partial<DeclareDeps> = {}): DeclareDeps {
   return {
     dispatch: async () => session(),
     loadContractFn: async () => EMPTY_CONTRACT,
+    readExistingContract: async () => undefined,
+    restoreContract: async () => {},
     loadSidecar: async () => [],
     clearSidecar: async () => {},
     log,
@@ -146,5 +148,99 @@ describe("runDeclare", () => {
     await runDeclare(deps);
 
     expect(cleared).toBe(true);
+  });
+
+  describe("regression refusal", () => {
+    const previousRaw =
+      "---\nverify:\n  lint: pnpm lint\n  test: pnpm test\n---\n";
+
+    it("restores the existing contract byte-identical when a declared command now fails", async () => {
+      const restored: Array<{ cwd: string; raw: string }> = [];
+      const deps = fakeDeps({
+        readExistingContract: async () => previousRaw,
+        loadContractFn: async () => ({
+          afterCreate: undefined,
+          verify: { lint: "pnpm lint" },
+        }),
+        loadSidecar: async () => [{ name: "test", reason: "exits 1" }],
+        restoreContract: async (cwd, raw) => {
+          restored.push({ cwd, raw });
+        },
+      });
+
+      const outcome = await runDeclare(deps);
+
+      expect(restored).toEqual([{ cwd: ".", raw: previousRaw }]);
+      expect(outcome.contract).toEqual({
+        afterCreate: undefined,
+        verify: { lint: "pnpm lint", test: "pnpm test" },
+      });
+    });
+
+    it("reports the regression naming the command that broke", async () => {
+      const deps = fakeDeps({
+        readExistingContract: async () => previousRaw,
+        loadContractFn: async () => ({
+          afterCreate: undefined,
+          verify: { lint: "pnpm lint" },
+        }),
+      });
+
+      const outcome = await runDeclare(deps);
+
+      expect(outcome.regressions).toEqual(["test"]);
+    });
+
+    it("discards this run's exclusions when refusing over a regression", async () => {
+      const deps = fakeDeps({
+        readExistingContract: async () => previousRaw,
+        loadContractFn: async () => ({
+          afterCreate: undefined,
+          verify: { lint: "pnpm lint" },
+        }),
+        loadSidecar: async () => [{ name: "test", reason: "exits 1" }],
+      });
+
+      const outcome = await runDeclare(deps);
+
+      expect(outcome.excluded).toEqual([]);
+    });
+
+    it("rewrites the contract normally when every previously declared command still passes", async () => {
+      const restored: unknown[] = [];
+      const nextContract = {
+        afterCreate: undefined,
+        verify: { lint: "pnpm lint", test: "pnpm test", build: "pnpm build" },
+      };
+      const deps = fakeDeps({
+        readExistingContract: async () => previousRaw,
+        loadContractFn: async () => nextContract,
+        restoreContract: async () => {
+          restored.push(undefined);
+        },
+      });
+
+      const outcome = await runDeclare(deps);
+
+      expect(outcome.contract).toEqual(nextContract);
+      expect(outcome.regressions).toEqual([]);
+      expect(restored).toEqual([]);
+    });
+
+    it("is unaffected on a first declare with no existing contract", async () => {
+      const nextContract = {
+        afterCreate: undefined,
+        verify: { lint: "pnpm lint" },
+      };
+      const deps = fakeDeps({
+        readExistingContract: async () => undefined,
+        loadContractFn: async () => nextContract,
+      });
+
+      const outcome = await runDeclare(deps);
+
+      expect(outcome.contract).toEqual(nextContract);
+      expect(outcome.regressions).toEqual([]);
+    });
   });
 });

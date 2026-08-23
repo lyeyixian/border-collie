@@ -87,6 +87,7 @@ function declareOutcome(
     costOverrun: false,
     contract: EMPTY_CONTRACT,
     excluded: [],
+    regressions: [],
     ...overrides,
   };
 }
@@ -644,6 +645,18 @@ describe("declare command", () => {
 
     expect(fake.context.process.exitCode).toBeFalsy();
   });
+
+  it("exits non-zero and reports the regression when the contract's rewrite was refused", async () => {
+    const fake = fakeContext({
+      declareResult: declareOutcome({ regressions: ["test"] }),
+    });
+
+    await runCli(["declare"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.stdout()).toContain("Regression — WORKFLOW.md left unchanged:");
+    expect(fake.stdout()).toContain("test was declared and now fails");
+  });
 });
 
 describe("init command", () => {
@@ -761,6 +774,17 @@ describe("init command", () => {
 
     expect(fake.context.process.exitCode).toBe(1);
     expect(fake.stdout()).toContain("wrote      .github/workflows");
+  });
+
+  it("exits non-zero and reports the regression when the declare step refused to rewrite the contract", async () => {
+    const fake = fakeContext({
+      declareResult: declareOutcome({ regressions: ["test"] }),
+    });
+
+    await runCli(["init"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.stdout()).toContain("test was declared and now fails");
   });
 });
 

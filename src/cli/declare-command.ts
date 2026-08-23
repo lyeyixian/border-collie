@@ -4,7 +4,11 @@ import {
   type Flags,
   type WorkerAttemptConfig,
 } from "../core/config.js";
-import { declareTroubled, renderDeclareReport } from "../core/declare.js";
+import {
+  declareRefused,
+  declareTroubled,
+  renderDeclareReport,
+} from "../core/declare.js";
 import type { Context } from "./context.js";
 import { parseInteger, sharedFlags } from "./flags.js";
 
@@ -55,9 +59,10 @@ async function declareHandler(
   const outcome = await this.declare(config);
   this.process.stdout.write(`${renderDeclareReport(outcome)}\n`);
   // A cost overrun is an alarm, not a failure (the session's work is kept
-  // either way) — only a session that did not itself finish cleanly fails
-  // the command, the same non-zero-on-trouble contract `worker` keeps.
-  if (declareTroubled(outcome)) {
+  // either way) — only a session that did not itself finish cleanly, or a
+  // regression that made declare refuse the rewrite, fails the command, the
+  // same non-zero-on-trouble contract `worker` keeps.
+  if (declareTroubled(outcome) || declareRefused(outcome)) {
     this.process.exitCode = 1;
   }
 }
