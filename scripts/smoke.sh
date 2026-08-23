@@ -64,7 +64,7 @@ init_output=$(cd "$target_dir" && "$bin" init) ||
 # tracker — the case that must degrade to the checklist rather than take the
 # scaffold down with it. Nothing but a cold run outside a repo proves it.
 case "$init_output" in
-*"gh label create claimed"*) ;;
+*"gh label create border-collie:claimed"*) ;;
 *) die "init did not fall back to the hand-run label commands off-tracker" ;;
 esac
 for f in border-collie-tick.yml border-collie-worker.yml; do
