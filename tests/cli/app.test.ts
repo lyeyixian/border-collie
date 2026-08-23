@@ -171,7 +171,7 @@ function fakeContext(
       stderr: { write: (str: string) => stderrLines.push(str) },
       exitCode: null,
     },
-    loadConfig: (flags) => {
+    loadConfig: async (flags) => {
       loadConfigCalls.push(flags);
       return overrides.loadConfig
         ? overrides.loadConfig(flags)

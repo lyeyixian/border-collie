@@ -20,6 +20,7 @@ import {
   ORCHESTRATOR_LABELS,
   type OrchestratorLabel,
   READY_FOR_AGENT,
+  SCOPE_LABEL,
 } from "../../src/core/types.js";
 import {
   pinnedCliVersion,
@@ -324,6 +325,7 @@ describe("runInitLabels", () => {
     expect(created.map((label) => label.name)).toEqual([
       CLAIM_LABEL,
       OPERATOR_STEERED_LABEL,
+      SCOPE_LABEL,
     ]);
   });
 

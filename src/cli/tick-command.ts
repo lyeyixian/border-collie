@@ -8,7 +8,7 @@ async function tickHandler(
   flags: CliFlags,
 ): Promise<undefined | Error> {
   this.setVerbose(flags.verbose);
-  const config = resolveConfigFromFlags(this, flags);
+  const config = await resolveConfigFromFlags(this, flags);
   if (config instanceof Error) return config;
 
   const { infraFailures } = await this.tick(config, flags.dryRun);

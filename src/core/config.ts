@@ -206,42 +206,49 @@ function resolveSharedConfig(
 }
 
 /**
- * Merge the target repo's config file with CLI flags. Flags win. Repo-wide
- * scope is never implicit: only the explicit `all` flag selects it, and it
- * refuses to combine with a `parent` flag.
+ * The Scope flags settle Scope on their own, with no tracker read (CONTEXT.md
+ * "Scope"): `--all` is the only way to select repo-wide Scope, and it refuses
+ * to combine with `--parent`, which overrides whatever the tracker's Scope
+ * label says. Undefined means neither flag settled it — the caller falls
+ * back to the tracker's Scope label (`SCOPE_LABEL`, adapters/tracker.ts's
+ * `readScopeFromLabel`), which needs a network read this pure function
+ * cannot make itself.
  */
-export function resolveConfig(
-  fileConfig: unknown,
-  flags: Flags,
-): ResolvedConfig {
-  const file = parseFileConfig(fileConfig);
-  const shared = resolveSharedConfig(file, flags);
-
+export function scopeFromFlags(flags: Flags): Scope | undefined {
   if (flags.all) {
     if (flags.parent !== undefined) {
       throw new ConfigError("--all and --parent are mutually exclusive");
     }
-    return { scope: { kind: "all" }, ...shared };
+    return { kind: "all" };
   }
+  if (flags.parent !== undefined) {
+    return { kind: "parent", parent: asPositiveInt(flags.parent, "parent") };
+  }
+  return undefined;
+}
 
-  const parent = flags.parent ?? file.parent;
-  if (parent === undefined) {
-    throw new ConfigError(
-      `no scope: set "parent" in ${CONFIG_FILE} or pass --parent <n> (repo-wide scope requires the explicit --all flag)`,
-    );
-  }
-  return {
-    scope: { kind: "parent", parent: asPositiveInt(parent, "parent") },
-    ...shared,
-  };
+/**
+ * Merge the target repo's config file, CLI flags, and an already-decided
+ * Scope. Flags win over the file for every other field. Scope itself is
+ * never read from the file (CONTEXT.md "Scope": the tracker is the only
+ * state store for it) — the caller resolves it first, via `scopeFromFlags`
+ * and, when that is undefined, a tracker read, keeping this function itself
+ * pure and synchronous.
+ */
+export function resolveConfig(
+  fileConfig: unknown,
+  flags: Flags,
+  scope: Scope,
+): ResolvedConfig {
+  const file = parseFileConfig(fileConfig);
+  return { scope, ...resolveSharedConfig(file, flags) };
 }
 
 /**
  * Config resolution for a single Worker attempt (issue #71): the same fields
  * `resolveConfig` produces, minus Scope — a Worker is told exactly which
- * Ticket and Attempt to run, so `resolveConfig`'s scope requirement (a
- * `parent` in the config file or an explicit `--all`/`--parent` flag) does
- * not apply, and does not need to be satisfied for the command to run.
+ * Ticket and Attempt to run, so no Scope is ever resolved for it, and no
+ * tracker read for a Scope label is ever needed to run this command.
  */
 export function resolveWorkerConfig(
   fileConfig: unknown,
