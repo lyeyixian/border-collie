@@ -8,6 +8,7 @@ import {
   type ResolvedConfig,
   type WorkerAttemptConfig,
 } from "../../src/core/config.js";
+import type { DeclareOutcome } from "../../src/core/declare.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
 import type { LabelAction, ScaffoldAction } from "../../src/core/scaffold.js";
 import {
@@ -16,6 +17,7 @@ import {
   type WorkerOutcome,
   type WorldSnapshot,
 } from "../../src/core/types.js";
+import { EMPTY_CONTRACT } from "../../src/core/workflow.js";
 
 /** A `Log` recording every event into `events`; this fake context never derives a sub-logger, but the type requires `child`. */
 function recordingLog(events: LogEvent[]): Log {
@@ -75,6 +77,20 @@ function workerOutcome(overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
   };
 }
 
+function declareOutcome(
+  overrides: Partial<DeclareOutcome> = {},
+): DeclareOutcome {
+  return {
+    endedBy: "exit",
+    exitCode: 0,
+    costUsd: undefined,
+    costOverrun: false,
+    contract: EMPTY_CONTRACT,
+    excluded: [],
+    ...overrides,
+  };
+}
+
 const FAKE_RESOLVED_CONFIG: ResolvedConfig = {
   scope: { kind: "parent", parent: 1 },
   maxWorkers: 3,
@@ -109,6 +125,7 @@ interface FakeContext {
   verbosityCalls: boolean[];
   initScaffoldCalls: boolean[];
   initLabelsCalls: boolean[];
+  declareCalls: WorkerAttemptConfig[];
 }
 
 function fakeContext(
@@ -118,6 +135,7 @@ function fakeContext(
     runWorkerOutcome?: WorkerOutcome;
     initScaffoldResult?: ScaffoldAction[];
     initLabelsResult?: LabelAction[];
+    declareResult?: DeclareOutcome;
   } = {},
 ): FakeContext {
   const stdoutLines: string[] = [];
@@ -139,10 +157,12 @@ function fakeContext(
   const verbosityCalls: boolean[] = [];
   const initScaffoldCalls: boolean[] = [];
   const initLabelsCalls: boolean[] = [];
+  const declareCalls: WorkerAttemptConfig[] = [];
   const tickResults = overrides.tickResults ?? [{ world: CLOSED_WORLD }];
   const runWorkerOutcome = overrides.runWorkerOutcome ?? workerOutcome();
   const initScaffoldResult = overrides.initScaffoldResult ?? [];
   const initLabelsResult = overrides.initLabelsResult ?? [];
+  const declareResult = overrides.declareResult ?? declareOutcome();
 
   const context: Context = {
     process: {
@@ -200,6 +220,10 @@ function fakeContext(
       initLabelsCalls.push(true);
       return initLabelsResult;
     },
+    declare: async (config) => {
+      declareCalls.push(config);
+      return declareResult;
+    },
   };
 
   return {
@@ -214,6 +238,7 @@ function fakeContext(
     verbosityCalls,
     initScaffoldCalls,
     initLabelsCalls,
+    declareCalls,
   };
 }
 
@@ -506,6 +531,121 @@ describe("worker command", () => {
   });
 });
 
+describe("declare command", () => {
+  it("routes `declare` to the declare seam and prints its report", async () => {
+    const fake = fakeContext({
+      declareResult: declareOutcome({
+        contract: {
+          afterCreate: undefined,
+          verify: { test: "pnpm test" },
+        },
+      }),
+    });
+
+    await runCli(["declare"], fake.context);
+
+    expect(fake.declareCalls).toEqual([FAKE_RESOLVED_CONFIG]);
+    expect(fake.stdout()).toContain("test: pnpm test");
+    expect(fake.context.process.exitCode).toBeFalsy();
+  });
+
+  it("forwards --retry-model to config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(["declare", "--retry-model", "opus4"], fake.context);
+
+    expect(fake.loadConfigCalls).toEqual([{ retryModel: "opus4" }]);
+  });
+
+  it("forwards --timeout-minutes to config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(["declare", "--timeout-minutes", "50"], fake.context);
+
+    expect(fake.loadConfigCalls).toEqual([{ timeoutMinutes: 50 }]);
+  });
+
+  it("omits unset flags from config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(["declare"], fake.context);
+
+    expect(fake.loadConfigCalls).toEqual([{}]);
+  });
+
+  it("does not offer --model — an Onboarding Worker always runs on the retry model", async () => {
+    const fake = fakeContext();
+
+    await runCli(["declare", "--help"], fake.context);
+
+    expect(fake.stdout()).not.toContain("--model ");
+    expect(fake.stdout()).toContain("--retry-model");
+  });
+
+  it("lowers the console's minimum level to debug when --verbose is passed", async () => {
+    const fake = fakeContext();
+
+    await runCli(["declare", "--verbose"], fake.context);
+
+    expect(fake.verbosityCalls).toEqual([true]);
+  });
+
+  it("a config error prints a one-line message, exits 1, and never calls declare", async () => {
+    const fake = fakeContext({
+      loadConfig: () => {
+        throw new ConfigError("worker_max_turns must be a positive integer");
+      },
+    });
+
+    await runCli(["declare"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.stderr().trim()).toBe(
+      "worker_max_turns must be a positive integer",
+    );
+    expect(fake.declareCalls).toHaveLength(0);
+  });
+
+  it("exits 0 when the Onboarding Worker session finished cleanly", async () => {
+    const fake = fakeContext({ declareResult: declareOutcome() });
+
+    await runCli(["declare"], fake.context);
+
+    expect(fake.context.process.exitCode).toBeFalsy();
+  });
+
+  it.each(["timeout", "stall"] as const)(
+    "exits non-zero when the session ended by %s",
+    async (endedBy) => {
+      const fake = fakeContext({ declareResult: declareOutcome({ endedBy }) });
+
+      await runCli(["declare"], fake.context);
+
+      expect(fake.context.process.exitCode).toBe(1);
+    },
+  );
+
+  it("exits non-zero when the session exited non-zero", async () => {
+    const fake = fakeContext({
+      declareResult: declareOutcome({ exitCode: 1 }),
+    });
+
+    await runCli(["declare"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+  });
+
+  it("still exits 0 on a cost overrun alone — an alarm, not a failure", async () => {
+    const fake = fakeContext({
+      declareResult: declareOutcome({ costUsd: 25, costOverrun: true }),
+    });
+
+    await runCli(["declare"], fake.context);
+
+    expect(fake.context.process.exitCode).toBeFalsy();
+  });
+});
+
 describe("init command", () => {
   it("routes `init` to a scaffold with force defaulted to false", async () => {
     const fake = fakeContext();
@@ -584,6 +724,44 @@ describe("init command", () => {
     expect(fake.stdout()).toContain("gh: not authenticated");
     expect(fake.stdout()).toContain(`gh label create ${CLAIM_LABEL}`);
   });
+
+  /**
+   * Issue #150: `init` runs `declare` as its own final step, so onboarding a
+   * fresh repository stays one command.
+   */
+  it("runs declare as its final step and prints its report", async () => {
+    const fake = fakeContext({
+      declareResult: declareOutcome({
+        contract: {
+          afterCreate: undefined,
+          verify: { lint: "pnpm lint" },
+        },
+      }),
+    });
+
+    await runCli(["init"], fake.context);
+
+    expect(fake.declareCalls).toHaveLength(1);
+    expect(fake.stdout()).toContain("lint: pnpm lint");
+    expect(fake.context.process.exitCode).toBeFalsy();
+  });
+
+  it("exits non-zero when the declare step's session did not finish cleanly, even though scaffold and labels succeeded", async () => {
+    const fake = fakeContext({
+      initScaffoldResult: [
+        {
+          relPath: ".github/workflows/border-collie-tick.yml",
+          outcome: "written",
+        },
+      ],
+      declareResult: declareOutcome({ endedBy: "stall" }),
+    });
+
+    await runCli(["init"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.stdout()).toContain("wrote      .github/workflows");
+  });
 });
 
 describe("exit-code contract", () => {
@@ -651,6 +829,7 @@ describe("help", () => {
     expect(fake.stdout()).toContain("run");
     expect(fake.stdout()).toContain("worker");
     expect(fake.stdout()).toContain("init");
+    expect(fake.stdout()).toContain("declare");
   });
 
   it("supports the -h alias", async () => {

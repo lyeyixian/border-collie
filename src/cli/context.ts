@@ -5,6 +5,7 @@ import { fileTransport } from "tslog/transports/file";
 import { loadConfigFile } from "../adapters/config-file.js";
 import { probeEnvironment, RUN_DIR } from "../adapters/worker.js";
 import type { IntervalScheduler } from "../app/act.js";
+import { declareOnce } from "../app/declare.js";
 import { initLabelsOnce, initScaffoldOnce } from "../app/init.js";
 import { type TickResult, tickOnce } from "../app/tick.js";
 import { workerAttemptOnce } from "../app/worker.js";
@@ -15,6 +16,7 @@ import {
   resolveWorkerConfig,
   type WorkerAttemptConfig,
 } from "../core/config.js";
+import type { DeclareOutcome } from "../core/declare.js";
 import {
   type Log,
   type LogBindings,
@@ -48,6 +50,12 @@ export interface Context extends CommandContext {
     inPlace: boolean,
   ) => Promise<WorkerOutcome>;
   readonly probe: (model: string) => Promise<boolean>;
+  /**
+   * `declare` (issue #150): run an Onboarding Worker directly against the
+   * current working directory and read back what it produced — no Attempt,
+   * no tracker write. `init` calls this as its own final step.
+   */
+  readonly declare: (config: WorkerAttemptConfig) => Promise<DeclareOutcome>;
   /** `init` (issue #76): scaffold the workflows into the target repo at cwd. */
   readonly initScaffold: (force: boolean) => ScaffoldAction[];
   /**
@@ -231,6 +239,7 @@ export function buildRealContext(
     runWorker: (config, ticket, attempt, inPlace) =>
       workerAttemptOnce(config, ticket, attempt, inPlace, { log }),
     probe: (model) => probeEnvironment(model),
+    declare: (config) => declareOnce(config, { log }),
     initScaffold: (force) => initScaffoldOnce(cwd, force),
     initLabels: () => initLabelsOnce(),
     now,

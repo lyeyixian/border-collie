@@ -43,6 +43,20 @@ The skills are part of the scaffold because a Worker session invokes one by name
 
 The labels are part of the scaffold because the Orchestrator writes them: a repo with every credential in place but no `border-collie:claimed` label fails at the first Claim of its first Tick. If `init` cannot reach the tracker — no `gh` on the PATH, no remote yet, an unauthenticated shell — the workflow files are still written, and the labels are reported with the `gh label create` commands to run by hand.
 
+`init` finishes by running `declare` (below) against the repository, so onboarding a fresh repository stays one command.
+
+## Declaring a verify contract
+
+```
+npx border-collie declare
+```
+
+`declare` produces a repository's verify contract instead of you writing one by hand: it runs an Onboarding Worker — a fresh-context Claude Code session, run directly against the repository in your current working directory, with no worktree, no branch, and no pull request — that works out which commands the repository already has for building, linting, type-checking, and testing, runs each one once, and writes `WORKFLOW.md` declaring only the commands that already exist and already passed. `declare` declares, it never authors: a command that fails, or one that doesn't exist, is left out, and a repository where nothing qualifies gets an empty contract rather than an invented one. The contract lands uncommitted in the working tree for you to review as a diff, the same review surface `git diff` already gives you.
+
+**`declare` executes arbitrary commands from the repository to find out what passes — the same trust boundary `ready-for-agent` already asserts.** Don't run it, any more than you'd run `tick`, against a repository whose contents you don't already trust.
+
+Once written, `WORKFLOW.md`'s `verify:` commands are run by every Worker after its own session ends (CONTEXT.md "Worker"), and their pass/fail is carried in the Worker's outcome as a fact the next Tick reads back — this rung gates nothing on it; the floor belongs to auto-merge. Re-run `declare` by hand whenever the repository's own commands change; `init` runs it once, as its final step, but re-scaffolding (`init --force`) and re-declaring stay separate operations with different cadences.
+
 ## Release process
 
 Releases are tag-driven (see `.github/workflows/release.yml`):

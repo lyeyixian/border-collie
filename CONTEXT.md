@@ -73,6 +73,10 @@ _Avoid_: escalation (Ticket-scoped; this is PR-scoped)
 The `border-collie:operator-steered` label, added by hand to a PR the operator has attached a conversational cloud session to. The automatic Refinement loop skips any PR carrying it, so the two never write over each other; it does not affect Conflict Worker dispatch or the rest of PR upkeep.
 _Avoid_: claimed (that label is Ticket-scoped and agent-held — see "Claim")
 
+**Onboarding Worker**:
+The one Worker variant `declare` dispatches rather than a Tick: a fresh-context session run directly against the current working directory — no worktree, no branch, no push, no pull request — that works out this repository's own candidate verify commands, runs each once, and writes `WORKFLOW.md` declaring only the ones that already exist and already passed. Declares, never authors: an empty contract is a valid outcome. Writes a machine-readable sidecar under the fleet's local directory naming every excluded candidate and why, which `declare` reads, folds into its report, and deletes — an excluded command is absent from the contract by construction, so `declare` cannot re-derive the reason any other way. Bounded by a wall-clock timeout, a stall watchdog, and a cost cap, on the retry model rather than the worker model. Like the Conflict Worker and Refinement round, it is not an Attempt, counts toward no ticket's cap, performs no Claim, and settles no tracker write.
+_Avoid_: declare Worker, onboarding attempt (not an Attempt)
+
 **Complete**:
 Terminal state of a run: every ticket in Scope merged and closed.
 
