@@ -28,11 +28,26 @@ tarball=$(npm pack --silent)
 tarball_path="$root_dir/$tarball"
 
 install_dir=$(mktemp -d)
+fake_claude_dir=$(mktemp -d)
 cleanup() {
-  rm -rf "$install_dir"
+  rm -rf "$install_dir" "$fake_claude_dir"
   rm -f "$tarball_path"
 }
 trap cleanup EXIT
+
+# `init` now runs `declare` as its final step, which spawns a headless
+# `claude` process (src/adapters/worker.ts) — this runner carries no such
+# binary and a real session needs API credentials smoke has no business
+# spending. A stub that exits clean stands in: `declare` reads back whatever
+# WORKFLOW.md the session left (none, here), which resolves to a valid empty
+# contract (src/app/declare.ts), same as a repository with nothing to
+# declare.
+cat >"$fake_claude_dir/claude" <<'EOF'
+#!/usr/bin/env bash
+exit 0
+EOF
+chmod +x "$fake_claude_dir/claude"
+PATH="$fake_claude_dir:$PATH"
 
 log "Installing $tarball cold into $install_dir"
 npm install "$tarball_path" --no-save --prefix "$install_dir" >/dev/null
