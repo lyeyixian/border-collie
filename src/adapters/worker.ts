@@ -10,6 +10,7 @@ import type { Log, LogEvent } from "../core/log.js";
 import {
   AGENT_BRANCH_PREFIX,
   type FailureReason,
+  WORKER_SKILL,
   type WorkerOutcome,
 } from "../core/types.js";
 import { CONTRACT_FILE, type VerifyOutcome } from "../core/workflow.js";
@@ -189,17 +190,21 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
   });
 
 /**
- * The entire Worker prompt: the ticket reference, the /implement invocation,
- * the final-message-is-a-PR-description instruction, and the contract line —
- * nothing else. A Worker is fed nothing beyond its ticket (CONTEXT.md
- * "Worker"); it discovers repo context itself. The contract line belongs
- * here, code-owned, rather than in the vendored `implement` skill the
+ * The entire Worker prompt: the ticket reference, the `WORKER_SKILL`
+ * invocation, the final-message-is-a-PR-description instruction, and the
+ * contract line — nothing else. A Worker is fed nothing beyond its ticket
+ * (CONTEXT.md "Worker"); it discovers repo context itself. The contract line
+ * belongs here, code-owned, rather than in the vendored `implement` skill the
  * repository may edit (issue #149): it is what tells a session what "run the
  * checks" means in a repository that is not this one's own stack.
+ *
+ * The skill name is the constant rather than a literal because it is the one
+ * end of a contract whose other end is the vendored closure `init` writes
+ * (issue #153); a name typed twice is a name that can be changed once.
  */
 export function workerPrompt(ticket: number): string {
   return [
-    `/implement issue #${ticket}`,
+    `/${WORKER_SKILL} issue #${ticket}`,
     "",
     'When the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like "Here\'s the PR description:", no status narration, no text before or after it.',
     "",

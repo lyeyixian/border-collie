@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  AGENT_DOC_FILES,
   CHECKLIST_WIDTH,
   labelCreateCommand,
   pinCliVersion,
@@ -8,7 +9,10 @@ import {
   renderLabelReport,
   renderScaffoldReport,
   SCAFFOLD_FILES,
+  SKILL_FILES,
+  scaffoldContent,
   scaffoldWrites,
+  WORKFLOW_FILES,
 } from "../../src/core/scaffold.js";
 import {
   CLAIM_LABEL,
@@ -16,6 +20,7 @@ import {
   ORCHESTRATOR_LABELS,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
+  WORKER_SKILL,
 } from "../../src/core/types.js";
 import { pinnedCliVersion } from "../helpers/workflow-template.js";
 
@@ -62,6 +67,85 @@ describe("pinCliVersion", () => {
   });
 });
 
+/**
+ * Issue #153: the Worker's skills stopped being installed inside each Worker
+ * job and became files `init` writes into the target repository. What the
+ * Worker can reach is therefore a property of this list, not of whatever an
+ * upstream marketplace happened to serve the night the cron fired.
+ */
+describe("SCAFFOLD_FILES", () => {
+  it("is the workflows, then the vendored skill closure, then the docs those skills read", () => {
+    expect(SCAFFOLD_FILES).toEqual([
+      ...WORKFLOW_FILES,
+      ...SKILL_FILES,
+      ...AGENT_DOC_FILES,
+    ]);
+  });
+
+  it("vendors the one skill whose name the Worker prompt invokes", () => {
+    expect(SKILL_FILES).toContain(`.claude/skills/${WORKER_SKILL}/SKILL.md`);
+  });
+
+  it("vendors the skills that one reaches, not merely that one", () => {
+    for (const skill of ["tdd", "code-review", "codebase-design"]) {
+      expect(SKILL_FILES).toContain(`.claude/skills/${skill}/SKILL.md`);
+    }
+  });
+
+  it("hands over the tracker doc and the triage-label map a fresh repo has neither of", () => {
+    expect(AGENT_DOC_FILES).toContain("docs/agents/issue-tracker.md");
+    expect(AGENT_DOC_FILES).toContain("docs/agents/triage-labels.md");
+  });
+
+  it("keeps border-collie's own skills to itself", () => {
+    expect(
+      SCAFFOLD_FILES.filter((relPath) =>
+        relPath.startsWith(".claude/skills/release/"),
+      ),
+    ).toEqual([]);
+  });
+});
+
+describe("scaffoldContent", () => {
+  it("re-pins a workflow to the version doing the scaffolding", () => {
+    const content = scaffoldContent(
+      ".github/workflows/border-collie-tick.yml",
+      "run: npm install -g border-collie@0.3.0\n",
+      "0.4.0",
+    );
+
+    expect(pinnedCliVersion(content)).toBe("0.4.0");
+  });
+
+  /**
+   * The whole point of vendoring: a patched copy is a fork somebody has to
+   * maintain against a moving upstream, so nothing is rewritten on the way
+   * out — and a skill naming no CLI install must not be mistaken for the
+   * broken workflow `pinCliVersion` refuses.
+   */
+  it("hands a vendored file over byte-identical", () => {
+    const upstream = "---\nname: tdd\n---\n\n# Test-Driven Development\n";
+
+    expect(
+      scaffoldContent(
+        `.claude/skills/${WORKER_SKILL}/SKILL.md`,
+        upstream,
+        "0.4.0",
+      ),
+    ).toBe(upstream);
+  });
+
+  it("still refuses a workflow that pins nothing", () => {
+    expect(() =>
+      scaffoldContent(
+        ".github/workflows/border-collie-tick.yml",
+        "name: border-collie Tick\n",
+        "0.4.0",
+      ),
+    ).toThrow(/npm install -g border-collie/);
+  });
+});
+
 describe("planScaffold", () => {
   it("writes every file when nothing exists yet", () => {
     const actions = planScaffold(new Set(), false);
@@ -92,6 +176,25 @@ describe("planScaffold", () => {
     expect(actions.find((a) => a.relPath === second)).toEqual({
       relPath: second,
       outcome: "written",
+    });
+  });
+
+  /**
+   * Issue #153: a vendored skill is the file an operator is most likely to
+   * have edited, so it earns the same never-silently-overwritten treatment
+   * the workflows have always had, named explicitly rather than inferred
+   * from whichever path happens to sort first.
+   */
+  it("gives a vendored skill the same skip-then-force treatment as a workflow", () => {
+    const skill = `.claude/skills/${WORKER_SKILL}/SKILL.md`;
+
+    expect(planScaffold(new Set([skill]), false)).toContainEqual({
+      relPath: skill,
+      outcome: "skipped-exists",
+    });
+    expect(planScaffold(new Set([skill]), true)).toContainEqual({
+      relPath: skill,
+      outcome: "overwritten",
     });
   });
 });
@@ -134,6 +237,23 @@ describe("renderScaffoldReport", () => {
 
     expect(report).toContain("skipped");
     expect(report).toContain("--force");
+  });
+
+  it("heads the list as files, now that it is more than workflows", () => {
+    expect(renderScaffoldReport([])).toBe("Scaffolded files:");
+  });
+
+  it("names every file it touched, whatever kind", () => {
+    const report = renderScaffoldReport(
+      SCAFFOLD_FILES.map((relPath) => ({
+        relPath,
+        outcome: "written" as const,
+      })),
+    );
+
+    for (const relPath of SCAFFOLD_FILES) {
+      expect(report).toContain(relPath);
+    }
   });
 
   it("reports an overwritten file", () => {
@@ -192,6 +312,21 @@ describe("renderChecklist", () => {
     expect(checklist).toContain(
       `Only ${OPERATOR_STEERED_LABEL} is ever applied`,
     );
+  });
+
+  /**
+   * Issue #153: the checklist used to promise that Worker skills installed
+   * themselves inside each Worker job, which is the run-time install that
+   * vendoring removed.
+   */
+  it("says the skills are written into the repository rather than installed in the job", () => {
+    expect(checklist).toContain("install");
+    expect(checklist).not.toMatch(/skills install automatically/);
+    expect(checklist).toMatch(/\.claude\/skills/);
+  });
+
+  it("names the one skill whose name is load-bearing", () => {
+    expect(checklist).toContain(`\`${WORKER_SKILL}\``);
   });
 
   it("keeps every line inside the block width the rest of it holds to", () => {

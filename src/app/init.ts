@@ -7,10 +7,10 @@ import {
 import { createLabel, listLabelNames } from "../adapters/tracker.js";
 import {
   type LabelAction,
-  pinCliVersion,
   planScaffold,
   SCAFFOLD_FILES,
   type ScaffoldAction,
+  scaffoldContent,
   scaffoldWrites,
 } from "../core/scaffold.js";
 import { ORCHESTRATOR_LABELS, type OrchestratorLabel } from "../core/types.js";
@@ -27,10 +27,11 @@ export interface InitScaffoldDeps {
  * `force` says so (issue #76), reported either way. Fully injected so a
  * fake filesystem exercises this without touching disk.
  *
- * The templates go out pinned to the running CLI's own version rather than to
+ * The workflows go out pinned to the running CLI's own version rather than to
  * whatever version their text happened to name when the tarball was built
  * (issue #99) — the version doing the scaffolding is the one the target repo
- * should be herded by.
+ * should be herded by. Everything else goes out untouched; `scaffoldContent`
+ * (src/core/scaffold.ts) owns that split.
  */
 export function runInitScaffold(
   cwd: string,
@@ -44,7 +45,11 @@ export function runInitScaffold(
   const version = deps.cliVersion();
   for (const action of scaffoldWrites(actions)) {
     const template = deps.loadTemplate(action.relPath);
-    deps.write(cwd, action.relPath, pinCliVersion(template, version));
+    deps.write(
+      cwd,
+      action.relPath,
+      scaffoldContent(action.relPath, template, version),
+    );
   }
   return actions;
 }

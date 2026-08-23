@@ -3,6 +3,7 @@ import {
   declaredRunName,
   pinIsAhead,
   pinnedCliVersion,
+  pluginCommands,
 } from "./workflow-template.js";
 
 describe("pinnedCliVersion", () => {
@@ -83,5 +84,38 @@ describe("declaredRunName", () => {
     const template = ["jobs:", "  worker:", "    run-name: nope"].join("\n");
 
     expect(declaredRunName(template)).toBeNull();
+  });
+});
+
+describe("pluginCommands", () => {
+  it("finds a marketplace add and the install that follows it", () => {
+    const template = [
+      "        run: |",
+      "          claude plugin marketplace add someone/skills",
+      "          claude plugin install pack@someone",
+    ].join("\n");
+
+    expect(pluginCommands(template)).toEqual([
+      "claude plugin marketplace add someone/skills",
+      "claude plugin install pack@someone",
+    ]);
+  });
+
+  it("is empty for a workflow that installs no plugin", () => {
+    const template = [
+      "      - name: Install Claude Code",
+      "        run: npm install -g @anthropic-ai/claude-code@latest",
+    ].join("\n");
+
+    expect(pluginCommands(template)).toEqual([]);
+  });
+
+  it("ignores a comment that only names the command it no longer runs", () => {
+    const template = [
+      "      # Vendored by init — no `claude plugin install` at run time.",
+      "        run: npm install -g @anthropic-ai/claude-code@latest",
+    ].join("\n");
+
+    expect(pluginCommands(template)).toEqual([]);
   });
 });

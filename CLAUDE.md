@@ -25,6 +25,12 @@ Issues live in GitHub Issues (lyeyixian/border-collie) via the `gh` CLI. See `do
 
 Default five-role vocabulary (needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix). See `docs/agents/triage-labels.md`.
 
+### Vendored Worker skills
+
+`.claude/skills/{implement,tdd,code-review,codebase-design}` are vendored copies of upstream `mattpocock/skills`, scaffolded into target repositories by `init`. Keep them byte-identical to upstream — re-vendor rather than edit. See `docs/adr/0008-vendor-worker-skills-not-install-at-run-time.md`. `.claude/skills/release` is this repo's own and is never scaffolded.
+
+`docs/agents/issue-tracker.md` and `docs/agents/triage-labels.md` are scaffolded too, and they are *not* upstream copies — they are this repo's own, edited freely. Editing either changes what every newly onboarded repository receives, so read them as shipped content rather than as notes to ourselves. Anything scaffolded is listed in `SCAFFOLD_FILES` (`src/core/scaffold.ts`) and must appear in `package.json` "files"; a guard in `tests/adapters/scaffold.test.ts` enforces that, and `scripts/smoke.sh` proves it against the real tarball.
+
 ### Domain docs
 
 Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.

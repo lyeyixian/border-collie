@@ -1,9 +1,9 @@
 /**
- * `init` (issue #76): scaffold the workflows a target repository needs into
- * it, and tell the operator what to supply so a missing credential is
- * discovered from a checklist before the first run rather than during it.
- * Pure planning, rendering, and the one rewrite the templates need on their
- * way out — reading them off disk, and this package's own version, are
+ * `init` (issue #76): scaffold the files a target repository needs into it,
+ * and tell the operator what to supply so a missing credential is discovered
+ * from a checklist before the first run rather than during it. Pure planning,
+ * rendering, and the one rewrite the workflows need on their way out —
+ * reading the files off disk, and this package's own version, are
  * adapters/scaffold.ts's concern.
  */
 
@@ -12,18 +12,79 @@ import {
   ORCHESTRATOR_LABELS,
   type OrchestratorLabel,
   READY_FOR_AGENT,
+  WORKER_SKILL,
 } from "./types.js";
 
 /**
- * The files `init` scaffolds, relative to the target repo root — the exact
- * workflows this repo runs on itself (see .github/workflows/), so a target
+ * The workflows `init` scaffolds, relative to the target repo root — the
+ * exact ones this repo runs on itself (see .github/workflows/), so a target
  * repo gets the Orchestrator (Tick, which also runs Conflict and Refinement
  * Workers inline — CONTEXT.md "Conflict Worker", "Refinement round") and the
- * Worker job, skills setup included.
+ * Worker job. The only scaffolded files whose text `init` rewrites on the way
+ * out; see `scaffoldContent`.
  */
-export const SCAFFOLD_FILES: readonly string[] = [
+export const WORKFLOW_FILES: readonly string[] = [
   ".github/workflows/border-collie-tick.yml",
   ".github/workflows/border-collie-worker.yml",
+];
+
+/**
+ * The Worker's skills, vendored into the target repository rather than
+ * installed inside each Worker job (issue #153).
+ *
+ * A run-time `claude plugin install` is a floating install on an unattended
+ * fleet — precisely what the pinned CLI install two steps above it exists to
+ * prevent, since an upstream change lands in a sleeping fleet overnight.
+ * These are files instead, and after `init` writes them the repository owns
+ * them: edits survive a re-run, and the operator may add or remove skills
+ * freely. Only `WORKER_SKILL`'s name is load-bearing (src/core/types.ts).
+ *
+ * The whole *closure* is listed, not just the skill the prompt names: the
+ * `implement` skill reaches `/tdd` and `/code-review`, and `/tdd` reaches
+ * `/codebase-design`. A skill vendored without what it invokes is a skill
+ * that improvises halfway through. Each entry is byte-identical to its
+ * upstream source (ADR 0008) — a patched copy would be a fork somebody has to
+ * maintain against a moving upstream, which is the cost vendoring is supposed
+ * to buy out.
+ *
+ * `/setup-matt-pocock-skills` is deliberately *not* here even though
+ * `code-review` names it: it is an interactive session, useless to an
+ * unattended Worker, and its whole job is to produce the docs below — which
+ * `init` writes directly, so nothing ever reaches for it.
+ */
+export const SKILL_FILES: readonly string[] = [
+  `.claude/skills/${WORKER_SKILL}/SKILL.md`,
+  ".claude/skills/tdd/SKILL.md",
+  ".claude/skills/tdd/tests.md",
+  ".claude/skills/tdd/mocking.md",
+  ".claude/skills/code-review/SKILL.md",
+  ".claude/skills/codebase-design/SKILL.md",
+  ".claude/skills/codebase-design/DEEPENING.md",
+  ".claude/skills/codebase-design/DESIGN-IT-TWICE.md",
+];
+
+/**
+ * The agent docs the vendored skills read (issue #153). `code-review` fetches
+ * the originating ticket through the workflow in `docs/agents/issue-tracker.md`
+ * and tells the agent to run an interactive setup skill when it is missing — a
+ * dead end inside a headless Worker job, and a freshly onboarded repository has
+ * neither the doc nor that skill.
+ *
+ * The triage-label map rides along because every onboarded repository needs
+ * it now that border-collie's own two labels carry a `border-collie:`
+ * namespace (issue #156): it is the one place that says which label strings
+ * are the repository's to rename and which two are not.
+ */
+export const AGENT_DOC_FILES: readonly string[] = [
+  "docs/agents/issue-tracker.md",
+  "docs/agents/triage-labels.md",
+];
+
+/** Everything `init` writes, in the order it reports them. */
+export const SCAFFOLD_FILES: readonly string[] = [
+  ...WORKFLOW_FILES,
+  ...SKILL_FILES,
+  ...AGENT_DOC_FILES,
 ];
 
 /**
@@ -70,6 +131,28 @@ export function pinCliVersion(template: string, version: string): string {
   return pinned;
 }
 
+/**
+ * What `init` writes for one scaffolded file: a workflow with its CLI pin
+ * moved to the scaffolding version, anything else byte for byte.
+ *
+ * The split is not a convenience. `pinCliVersion` refuses a template naming
+ * no install, because a workflow that installs no border-collie hands the
+ * target repo a fleet that does nothing — and every vendored skill and doc is
+ * exactly such a file. Routing them through it would either break `init` or
+ * force the pattern to be loosened until it stopped catching the broken
+ * workflow it was written for. Vendored content is also the one thing that
+ * must arrive unchanged (see `SKILL_FILES`), so the rewrite has no business
+ * near it.
+ */
+export function scaffoldContent(
+  relPath: string,
+  template: string,
+  version: string,
+): string {
+  if (!WORKFLOW_FILES.includes(relPath)) return template;
+  return pinCliVersion(template, version);
+}
+
 export type ScaffoldOutcome = "written" | "overwritten" | "skipped-exists";
 
 export interface ScaffoldAction {
@@ -109,7 +192,7 @@ function actionLine(action: ScaffoldAction): string {
 }
 
 export function renderScaffoldReport(actions: ScaffoldAction[]): string {
-  return ["Scaffolded workflows:", ...actions.map(actionLine)].join("\n");
+  return ["Scaffolded files:", ...actions.map(actionLine)].join("\n");
 }
 
 export type LabelOutcome = "created" | "exists" | "failed";
@@ -265,8 +348,10 @@ ${wrapText(
   CHECKLIST_WIDTH,
 )}
 
-Worker skills install automatically inside each Worker job — no separate
-setup step is needed for those.
+${wrapText(
+  `The Worker's skills are vendored under \`.claude/skills\`, alongside the agent docs they read, rather than installed inside each Worker job — an unattended fleet must not be handed an upstream change overnight. They are this repository's once written: edit them, add your own, delete what you don't want, and a re-run leaves every one of them alone. Only \`${WORKER_SKILL}\` is load-bearing, because the Worker prompt invokes it by that name with no fallback.`,
+  CHECKLIST_WIDTH,
+)}
 
 The scaffolded workflows install border-collie from npm at a pinned version,
 so this repository needs no build of its own to run one and keeps that

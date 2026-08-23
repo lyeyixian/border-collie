@@ -24,6 +24,10 @@ _Avoid_: lock, lease, assignment
 A fresh-context Claude Code agent session dispatched against exactly one Ticket, on its own agent branch — isolated in a git worktree on the local path, or in a Worker job's own dedicated checkout on the cloud path (see ADR 0006), which needs no worktree since nothing else shares it. Fed nothing beyond its ticket plus repo context it discovers itself.
 _Avoid_: agent (unqualified), subagent
 
+**Skill closure**:
+The set of skills reachable from the one skill a Worker prompt invokes, plus the support files and agent docs those skills read — `init` vendors all of it into the target repository under `.claude/skills` and `docs/agents`, byte-identical to upstream, rather than a Worker job installing any of it at run time (ADR 0008). Only the invoked skill's name is load-bearing; everything else in the closure is the repository's to edit, extend or delete, and a re-run of `init` leaves every one of them alone.
+_Avoid_: plugin, marketplace (both name the run-time install this replaced)
+
 **Done**:
 A ticket is done when its PR is merged and the ticket is closed — not when the worker commits.
 

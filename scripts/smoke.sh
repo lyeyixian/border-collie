@@ -51,10 +51,12 @@ actual_version=$("$bin" --version) || die "border-collie --version exited non-ze
 [ "$actual_version" = "$expected_version" ] ||
   die "border-collie --version printed '$actual_version', expected '$expected_version'"
 
-# `init`'s workflow templates ship alongside dist/ (package.json "files"),
-# read at runtime relative to the installed package root — a path that only
-# resolves correctly once the tarball is unpacked cold like this, with no
-# workspace symlinks and no source tree to fall back on.
+# `init`'s templates — the workflows, the vendored Worker skills and the agent
+# docs those read — ship alongside dist/ (package.json "files"), read at
+# runtime relative to the installed package root: a path that only resolves
+# correctly once the tarball is unpacked cold like this, with no workspace
+# symlinks and no source tree to fall back on. A scaffolded path left out of
+# "files" is invisible to every test in the repo and fails only here.
 log "Running border-collie init against a fresh target repo"
 target_dir=$(mktemp -d)
 init_output=$(cd "$target_dir" && "$bin" init) ||
@@ -82,6 +84,39 @@ for f in border-collie-tick.yml border-collie-worker.yml; do
   [ "$pin" = "$expected_version" ] ||
     die "$f pins border-collie@$pin, expected @$expected_version (the version that scaffolded it)"
 done
+
+# The Worker's skills are files `init` writes, not a plugin the Worker job
+# installs (issue #153), so a scaffolded repo that got the workflows but none
+# of the skills would dispatch Workers that improvise over an unhandled
+# `/implement` — an oddly-shaped pull request rather than a failure.
+#
+# The list is read off the *installed* package rather than repeated here: this
+# loop exists to prove the tarball carries every file `init` says it writes,
+# and a copy that drifted would quietly stop proving exactly that. Everything
+# else in this script keeps its own copy (see scripts/sync-workflow-version.mjs
+# on why that is deliberate) — this one cannot, because it is the only place a
+# path missing from package.json "files" ever surfaces.
+installed="$install_dir/node_modules/border-collie"
+scaffolded=$(node --input-type=module -e \
+  "import { SCAFFOLD_FILES } from 'file://$installed/dist/core/scaffold.js';
+   console.log(SCAFFOLD_FILES.join('\n'))") ||
+  die "could not read SCAFFOLD_FILES from the installed package"
+[ -n "$scaffolded" ] || die "the installed package scaffolds no files at all"
+
+while IFS= read -r f; do
+  [ -s "$target_dir/$f" ] || die "init did not scaffold a non-empty $f"
+done <<<"$scaffolded"
+
+# The one skill whose name the Worker prompt hardcodes has to survive the
+# tarball under exactly that name, or a Worker session receives unhandled text.
+worker_skill=$(node --input-type=module -e \
+  "import { WORKER_SKILL } from 'file://$installed/dist/core/types.js';
+   console.log(WORKER_SKILL)") ||
+  die "could not read WORKER_SKILL from the installed package"
+grep -q "^name: $worker_skill\$" \
+  "$target_dir/.claude/skills/$worker_skill/SKILL.md" ||
+  die "the scaffolded $worker_skill skill declares no 'name: $worker_skill' front matter"
+
 rm -rf "$target_dir"
 
 log "Smoke passed"

@@ -22,7 +22,7 @@ const PIN_PATTERN = /(npm install -g border-collie@)(\S+)/g;
 
 const { version } = JSON.parse(readFileSync("package.json", "utf8"));
 
-// Deliberately duplicated from SCAFFOLD_FILES (src/core/scaffold.ts) rather
+// Deliberately duplicated from WORKFLOW_FILES (src/core/scaffold.ts) rather
 // than imported, so this stays a plain node script with no build step —
 // matching scripts/logs-pretty.mjs's own copy of RUN_DIR. A file added there
 // and forgotten here keeps a stale pin, which the guard catches at the next

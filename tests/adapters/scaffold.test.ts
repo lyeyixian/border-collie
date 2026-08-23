@@ -1,6 +1,6 @@
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, posix } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   cliVersion,
@@ -9,11 +9,17 @@ import {
   writeScaffoldFile,
 } from "../../src/adapters/scaffold.js";
 import { workerRunName } from "../../src/adapters/tracker.js";
-import { SCAFFOLD_FILES } from "../../src/core/scaffold.js";
+import {
+  SCAFFOLD_FILES,
+  SKILL_FILES,
+  WORKFLOW_FILES,
+} from "../../src/core/scaffold.js";
+import { ORCHESTRATOR_LABELS } from "../../src/core/types.js";
 import {
   declaredRunName,
   pinIsAhead,
   pinnedCliVersion,
+  pluginCommands,
 } from "../helpers/workflow-template.js";
 
 describe("fileExists", () => {
@@ -118,7 +124,7 @@ describe("the scaffolded templates' pinned version", () => {
   const packageVersion = JSON.parse(readFileSync("package.json", "utf8"))
     .version as string;
 
-  for (const relPath of SCAFFOLD_FILES) {
+  for (const relPath of WORKFLOW_FILES) {
     describe(relPath, () => {
       const pin = pinnedCliVersion(loadTemplate(relPath));
 
@@ -129,6 +135,167 @@ describe("the scaffolded templates' pinned version", () => {
       it("never names a version this package hasn't reached, which could not be on npm yet", () => {
         expect(pinIsAhead(pin as string, packageVersion)).toBe(false);
       });
+    });
+  }
+});
+
+/**
+ * The guard on the run-time plugin install `init` replaced with vendored
+ * files (issue #153). A `claude plugin install` inside a Worker job is a
+ * floating install on an unattended fleet — the very failure the pinned CLI
+ * install two steps above it exists to prevent — and it silently makes the
+ * vendored closure beside it moot, since whatever upstream served that night
+ * wins. Nothing else notices its return: the skills would still resolve, and
+ * the pull request would look ordinary.
+ */
+describe("the scaffolded workflows' run-time installs", () => {
+  for (const relPath of WORKFLOW_FILES) {
+    it(`runs no Claude Code plugin command in ${relPath}`, () => {
+      expect(pluginCommands(loadTemplate(relPath))).toEqual([]);
+    });
+  }
+});
+
+/** Every relative Markdown link a vendored file makes, as a scaffolded path. */
+function linkedFiles(relPath: string): string[] {
+  const links = loadTemplate(relPath).matchAll(/\[[^\]]*\]\(([^)]+)\)/g);
+  return [...links]
+    .map((match) => match[1] as string)
+    .filter((target) => /^[^#:]+\.md$/.test(target))
+    .map((target) => posix.join(posix.dirname(relPath), target));
+}
+
+/** Every `docs/agents/<name>.md` path a vendored file names in its prose. */
+function referencedAgentDocs(relPath: string): string[] {
+  const refs = loadTemplate(relPath).matchAll(/docs\/agents\/[\w.-]+\.md/g);
+  return [...refs].map((match) => match[0]);
+}
+
+/**
+ * The one skill the closure names but deliberately does not vendor (ADR 0008):
+ * `/setup-matt-pocock-skills` is an interactive session, useless to a headless
+ * Worker, and its whole output is the agent docs `init` writes directly.
+ */
+const UNVENDORED_SKILL = "setup-matt-pocock-skills";
+
+/**
+ * Every slash command a vendored file invokes, outside fenced code blocks —
+ * inside one, a `fetch(\`/users/${id}\`)` in an example reads as an invocation.
+ * The leading boundary rejects a path segment (`docs/agents`, `src/orders`)
+ * for the same reason.
+ */
+function invokedSkills(relPath: string): string[] {
+  const prose = loadTemplate(relPath).replace(/```[\s\S]*?```/g, "");
+  const matches = prose.matchAll(/(?:^|[^\w.:/-])\/([a-z][a-z0-9-]{2,})/g);
+  return [...new Set([...matches].map((match) => match[1] as string))];
+}
+
+/**
+ * The guards on the closure itself (issue #153). Vendoring the one skill the
+ * Worker prompt names, and none of what it reaches, leaves a session that
+ * improvises halfway through — a failure that surfaces as an oddly-shaped
+ * pull request rather than as an error, exactly like the missing skill this
+ * replaced. Both readers work off the vendored files' own text, so a skill
+ * re-vendored from a newer upstream that reaches somewhere new fails here
+ * rather than at 3am in a Worker job.
+ */
+describe("the vendored skill closure", () => {
+  for (const relPath of SKILL_FILES) {
+    describe(relPath, () => {
+      it("links only to files that are vendored alongside it", () => {
+        for (const linked of linkedFiles(relPath)) {
+          expect(SKILL_FILES).toContain(linked);
+        }
+      });
+
+      it("names only agent docs the scaffold also writes", () => {
+        for (const doc of referencedAgentDocs(relPath)) {
+          expect(SCAFFOLD_FILES).toContain(doc);
+        }
+      });
+    });
+  }
+
+  it("covers the support files the skills actually link to", () => {
+    const linked = SKILL_FILES.flatMap(linkedFiles);
+
+    expect(linked).toContain(".claude/skills/tdd/tests.md");
+    expect(linked).toContain(".claude/skills/tdd/mocking.md");
+    expect(linked).toContain(".claude/skills/codebase-design/DEEPENING.md");
+  });
+
+  it("covers the tracker doc a vendored skill would otherwise send an unattended session to set up by hand", () => {
+    expect(SKILL_FILES.flatMap(referencedAgentDocs)).toContain(
+      "docs/agents/issue-tracker.md",
+    );
+  });
+
+  /**
+   * The guard that makes re-vendoring safe rather than merely correct today.
+   * Without it a newer upstream in which `implement` grew a `/diagnosing-bugs`
+   * call would pass every other test here and fail only in a Worker job, as
+   * unhandled text a session improvises over.
+   */
+  for (const relPath of SKILL_FILES) {
+    it(`invokes only skills vendored alongside ${relPath}`, () => {
+      for (const skill of invokedSkills(relPath)) {
+        if (skill === UNVENDORED_SKILL) continue;
+
+        expect(SKILL_FILES).toContain(`.claude/skills/${skill}/SKILL.md`);
+      }
+    });
+  }
+
+  /**
+   * ...and the guard above must actually be reading invocations, or it passes
+   * by finding nothing at all.
+   */
+  it("reads the invocations the closure was derived from", () => {
+    const invoked = SKILL_FILES.flatMap(invokedSkills);
+
+    expect(invoked).toContain("tdd");
+    expect(invoked).toContain("code-review");
+    expect(invoked).toContain("codebase-design");
+  });
+});
+
+/**
+ * The guard on what the tarball actually carries. `SCAFFOLD_FILES` is read at
+ * run time from the installed package root, so a scaffolded path missing from
+ * package.json's "files" is invisible to every test in this repo — they all
+ * read the source tree, where the file is present regardless — and surfaces
+ * only as a cold `init` failing in a target repo. scripts/smoke.sh proves the
+ * tarball end to end; this fails the moment the two lists diverge, without
+ * packing anything.
+ *
+ * Exact paths rather than the directories that would also work: a directory
+ * entry ships a file `SKILL_FILES` does not name, so an upstream file added
+ * to a vendored skill would reach the tarball and never be scaffolded.
+ */
+describe('package.json "files"', () => {
+  const published = JSON.parse(readFileSync("package.json", "utf8"))
+    .files as string[];
+
+  for (const relPath of SCAFFOLD_FILES) {
+    it(`publishes ${relPath}`, () => {
+      expect(published).toContain(relPath);
+    });
+  }
+});
+
+/**
+ * The triage-label map is scaffolded into every onboarded repository and makes
+ * a claim about which labels `init` creates, so it drifts silently: issue #156
+ * renamed two of them and this doc kept the old names for a release. Only the
+ * names are checked — the prose around them is the repository's to edit once
+ * scaffolded.
+ */
+describe("the scaffolded triage-label map", () => {
+  const doc = loadTemplate("docs/agents/triage-labels.md");
+
+  for (const label of ORCHESTRATOR_LABELS) {
+    it(`names ${label.name}, which init creates`, () => {
+      expect(doc).toContain(label.name);
     });
   }
 });
