@@ -12,6 +12,7 @@ import {
   ORCHESTRATOR_LABELS,
   type OrchestratorLabel,
   READY_FOR_AGENT,
+  RUN_DIR,
   WORKER_SKILL,
 } from "./types.js";
 
@@ -163,7 +164,12 @@ export function scaffoldContent(
   return pinCliVersion(template, version);
 }
 
-export type ScaffoldOutcome = "written" | "overwritten" | "skipped-exists";
+export type ScaffoldOutcome =
+  | "written"
+  | "overwritten"
+  | "skipped-exists"
+  | "appended"
+  | "already-present";
 
 export interface ScaffoldAction {
   relPath: string;
@@ -198,11 +204,65 @@ function actionLine(action: ScaffoldAction): string {
       return `  overwrote  ${action.relPath}`;
     case "skipped-exists":
       return `  skipped    ${action.relPath} (already exists — rerun with --force to overwrite)`;
+    case "appended":
+      return `  appended   ${action.relPath}`;
+    case "already-present":
+      return `  present    ${action.relPath} (entry already present)`;
   }
 }
 
 export function renderScaffoldReport(actions: ScaffoldAction[]): string {
   return ["Scaffolded files:", ...actions.map(actionLine)].join("\n");
+}
+
+/** Where `init` appends the fleet's ignore entry (issue #154). */
+export const GITIGNORE_PATH = ".gitignore";
+
+/**
+ * The one line `init` appends to it: the fleet's local scratch space
+ * (`RUN_DIR`, src/core/types.ts) written into the operator's own checkout,
+ * which would otherwise show up in every diff.
+ */
+export const GITIGNORE_ENTRY = `${RUN_DIR}/`;
+
+function withTrailingNewline(text: string): string {
+  return text === "" || text.endsWith("\n") ? text : `${text}\n`;
+}
+
+/**
+ * Plan the one edit `init` makes to a file the repository already owns
+ * rather than writes fresh (issue #154). Reported through the same
+ * `ScaffoldAction`/`ScaffoldOutcome` machinery as every scaffolded file, but
+ * with its own two outcomes, `appended`/`already-present`, rather than
+ * `written`/`overwritten`/`skipped-exists` — leaving a shared file alone and
+ * creating a new one are different claims to report.
+ *
+ * `existing` is the current `.gitignore` content, or undefined when the repo
+ * has none yet — appending to nothing creates the file with just the entry.
+ * Existing lines are preserved byte for byte and in order: this only ever
+ * reads the file to decide whether the entry is already one of its lines
+ * (whitespace-trimmed, so a trailing space or `\r` still counts as a match)
+ * and, if not, appends it after ensuring a trailing newline separates it from
+ * whatever came before. A repository already carrying the entry gets back its
+ * exact own content, so re-running `init` any number of times never
+ * duplicates the line.
+ */
+export function planGitignore(existing: string | undefined): {
+  outcome: "appended" | "already-present";
+  content: string;
+} {
+  if (existing === undefined) {
+    return { outcome: "appended", content: `${GITIGNORE_ENTRY}\n` };
+  }
+
+  if (existing.split("\n").some((line) => line.trim() === GITIGNORE_ENTRY)) {
+    return { outcome: "already-present", content: existing };
+  }
+
+  return {
+    outcome: "appended",
+    content: `${withTrailingNewline(existing)}${GITIGNORE_ENTRY}\n`,
+  };
 }
 
 export type LabelOutcome = "created" | "exists" | "failed";

@@ -2,11 +2,14 @@ import {
   cliVersion,
   fileExists,
   loadTemplate,
+  readGitignore,
   writeScaffoldFile,
 } from "../adapters/scaffold.js";
 import { createLabel, listLabelNames } from "../adapters/tracker.js";
 import {
+  GITIGNORE_PATH,
   type LabelAction,
+  planGitignore,
   planScaffold,
   SCAFFOLD_FILES,
   type ScaffoldAction,
@@ -20,6 +23,7 @@ export interface InitScaffoldDeps {
   write: (cwd: string, relPath: string, content: string) => void;
   loadTemplate: (relPath: string) => string;
   cliVersion: () => string;
+  readGitignore: (cwd: string) => string | undefined;
 }
 
 /**
@@ -32,6 +36,12 @@ export interface InitScaffoldDeps {
  * (issue #99) — the version doing the scaffolding is the one the target repo
  * should be herded by. Everything else goes out untouched; `scaffoldContent`
  * (src/core/scaffold.ts) owns that split.
+ *
+ * The `.gitignore` entry (issue #154) rides along in the same report rather
+ * than a separate one, but is planned and written on its own: unlike every
+ * other scaffolded path it is an edit to a file the repository already owns,
+ * never a template copy, so it is never a candidate for `force` and carries
+ * its own outcome pair instead of the written/overwritten/skipped-exists one.
  */
 export function runInitScaffold(
   cwd: string,
@@ -51,6 +61,13 @@ export function runInitScaffold(
       scaffoldContent(action.relPath, template, version),
     );
   }
+
+  const gitignore = planGitignore(deps.readGitignore(cwd));
+  if (gitignore.outcome === "appended") {
+    deps.write(cwd, GITIGNORE_PATH, gitignore.content);
+  }
+  actions.push({ relPath: GITIGNORE_PATH, outcome: gitignore.outcome });
+
   return actions;
 }
 
@@ -64,6 +81,7 @@ export function initScaffoldOnce(
     write: writeScaffoldFile,
     loadTemplate,
     cliVersion,
+    readGitignore,
   });
 }
 

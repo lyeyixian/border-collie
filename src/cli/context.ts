@@ -3,7 +3,7 @@ import type { CommandContext, StricliProcess } from "@stricli/core";
 import { Logger } from "tslog";
 import { fileTransport } from "tslog/transports/file";
 import { loadConfigFile } from "../adapters/config-file.js";
-import { probeEnvironment, RUN_DIR } from "../adapters/worker.js";
+import { probeEnvironment } from "../adapters/worker.js";
 import type { IntervalScheduler } from "../app/act.js";
 import { declareOnce } from "../app/declare.js";
 import { initLabelsOnce, initScaffoldOnce } from "../app/init.js";
@@ -24,7 +24,7 @@ import {
   scrubCredentials,
 } from "../core/log.js";
 import type { LabelAction, ScaffoldAction } from "../core/scaffold.js";
-import type { WorkerOutcome } from "../core/types.js";
+import { RUN_DIR, type WorkerOutcome } from "../core/types.js";
 import { reportBlockText } from "./console-report.js";
 
 /** Every effect a command handler needs, injected so handlers never import them directly. */

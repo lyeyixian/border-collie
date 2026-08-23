@@ -11,6 +11,7 @@ import type { Log, LogEvent } from "../core/log.js";
 import {
   AGENT_BRANCH_PREFIX,
   type FailureReason,
+  RUN_DIR,
   WORKER_SKILL,
   type WorkerOutcome,
 } from "../core/types.js";
@@ -24,9 +25,6 @@ import { type RunContractVerify, runContractVerify } from "./workflow.js";
  * here, with the subprocess layer injectable for tests. All paths are
  * relative to the target repo root (the orchestrator's cwd).
  */
-
-/** Orchestrator-owned scratch space at the target repo root (gitignored). */
-export const RUN_DIR = ".border-collie";
 
 /** The headless-claude run limits shared by dispatch and conflict Workers. */
 export interface ClaudeRunConfig {

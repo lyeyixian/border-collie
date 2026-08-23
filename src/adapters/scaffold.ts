@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { GITIGNORE_PATH } from "../core/scaffold.js";
 
 /**
  * This package's own root: two directories up from this module, whether
@@ -29,6 +30,17 @@ export function writeScaffoldFile(
 /** Read a scaffold template's content from this package's own tree (see `SCAFFOLD_FILES`, core/scaffold.ts). */
 export function loadTemplate(relPath: string): string {
   return readFileSync(join(PACKAGE_ROOT, relPath), "utf8");
+}
+
+/**
+ * The target repo's own `.gitignore`, or undefined when it has none yet
+ * (issue #154) — the one file `planGitignore` (core/scaffold.ts) needs read
+ * off disk rather than templated, since it belongs to the repository, not to
+ * this package's tree.
+ */
+export function readGitignore(cwd: string): string | undefined {
+  const target = join(cwd, GITIGNORE_PATH);
+  return existsSync(target) ? readFileSync(target, "utf8") : undefined;
 }
 
 /**

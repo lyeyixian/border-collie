@@ -1,4 +1,4 @@
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, posix } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -6,10 +6,12 @@ import {
   cliVersion,
   fileExists,
   loadTemplate,
+  readGitignore,
   writeScaffoldFile,
 } from "../../src/adapters/scaffold.js";
 import { workerRunName } from "../../src/adapters/tracker.js";
 import {
+  GITIGNORE_PATH,
   SCAFFOLD_FILES,
   SKILL_FILES,
   WORKFLOW_FILES,
@@ -58,6 +60,21 @@ describe("writeScaffoldFile", () => {
         "utf8",
       ),
     ).toBe("name: border-collie Tick\n");
+  });
+});
+
+describe("readGitignore", () => {
+  it("is undefined when the repo has no .gitignore yet", () => {
+    const dir = mkdtempSync(join(tmpdir(), "border-collie-scaffold-test-"));
+
+    expect(readGitignore(dir)).toBeUndefined();
+  });
+
+  it("reads the repo's own .gitignore content", () => {
+    const dir = mkdtempSync(join(tmpdir(), "border-collie-scaffold-test-"));
+    writeFileSync(join(dir, GITIGNORE_PATH), "node_modules\n");
+
+    expect(readGitignore(dir)).toBe("node_modules\n");
   });
 });
 

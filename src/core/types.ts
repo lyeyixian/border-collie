@@ -77,6 +77,16 @@ export const WORKER_SKILL = "implement";
 export const MAX_ATTEMPTS = 2;
 
 /**
+ * Orchestrator-owned scratch space at the target repo root (worktrees, run
+ * logs, transcripts) — gitignored by `init` (issue #154) so it never shows up
+ * in the operator's own diffs. Named here, in core, rather than beside the
+ * WorkerHost that writes it (src/adapters/worker.ts), because the scaffold's
+ * gitignore entry (src/core/scaffold.ts) needs the same string and core may
+ * not depend on adapters.
+ */
+export const RUN_DIR = ".border-collie";
+
+/**
  * Hidden HTML markers that make a claim structurally border-collie's
  * (CONTEXT.md "Claim"): the latest marker comment on a ticket decides.
  * Claims and releases are append-only — no comment is ever deleted.
