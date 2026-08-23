@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { OnboardingOutcome } from "../../src/adapters/worker.js";
 import type { LoadContract } from "../../src/adapters/workflow.js";
 import { type DeclareDeps, runDeclare } from "../../src/app/declare.js";
-import type { DeclareExclusion } from "../../src/core/declare.js";
+import {
+  type DeclareExclusion,
+  redBaselineMarker,
+  type TrackerIssueRef,
+} from "../../src/core/declare.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
 import { EMPTY_CONTRACT } from "../../src/core/workflow.js";
 
@@ -37,16 +41,24 @@ function fakeDeps(overrides: Partial<DeclareDeps> = {}): DeclareDeps {
     restoreContract: async () => {},
     loadSidecar: async () => [],
     clearSidecar: async () => {},
+    listOpenIssues: async () => [],
+    createIssue: async () => {
+      throw new Error("createIssue not stubbed");
+    },
     log,
     ...overrides,
   };
+}
+
+function redExclusion(name: string, reason = "exits 1"): DeclareExclusion {
+  return { name, kind: "red", reason };
 }
 
 describe("runDeclare", () => {
   it("runs the session, then reads the contract and the sidecar it left behind", async () => {
     const contract = { afterCreate: undefined, verify: { lint: "pnpm lint" } };
     const excluded: DeclareExclusion[] = [
-      { name: "e2e", reason: "does not exist" },
+      { name: "e2e", kind: "missing", reason: "does not exist" },
     ];
     const clearedAfterRead: string[] = [];
     const deps = fakeDeps({
@@ -162,7 +174,7 @@ describe("runDeclare", () => {
           afterCreate: undefined,
           verify: { lint: "pnpm lint" },
         }),
-        loadSidecar: async () => [{ name: "test", reason: "exits 1" }],
+        loadSidecar: async () => [redExclusion("test")],
         restoreContract: async (cwd, raw) => {
           restored.push({ cwd, raw });
         },
@@ -198,7 +210,7 @@ describe("runDeclare", () => {
           afterCreate: undefined,
           verify: { lint: "pnpm lint" },
         }),
-        loadSidecar: async () => [{ name: "test", reason: "exits 1" }],
+        loadSidecar: async () => [redExclusion("test")],
       });
 
       const outcome = await runDeclare(deps);
@@ -261,5 +273,135 @@ describe("runDeclare", () => {
       expect(outcome.contract).toEqual(EMPTY_CONTRACT);
       expect(restored).toEqual([]);
     });
+  });
+
+  it("files a red command excluded from the contract as its own tracker issue", async () => {
+    const created: { title: string; body: string }[] = [];
+    const deps = fakeDeps({
+      loadSidecar: async () => [redExclusion("build")],
+      listOpenIssues: async () => [],
+      createIssue: async (title, body) => {
+        created.push({ title, body });
+        return 42;
+      },
+    });
+
+    const outcome = await runDeclare(deps);
+
+    expect(created).toHaveLength(1);
+    expect(created[0]?.title).toContain("build");
+    expect(created[0]?.body).toContain(redBaselineMarker("build"));
+    expect(outcome.redBaselines).toEqual([
+      { command: "build", outcome: "filed", issue: 42 },
+    ]);
+  });
+
+  it("files three red commands as three issues, not one", async () => {
+    const created: string[] = [];
+    let nextIssue = 100;
+    const deps = fakeDeps({
+      loadSidecar: async () => [
+        redExclusion("lint"),
+        redExclusion("typecheck"),
+        redExclusion("build"),
+      ],
+      listOpenIssues: async () => [],
+      createIssue: async (title) => {
+        created.push(title);
+        return nextIssue++;
+      },
+    });
+
+    const outcome = await runDeclare(deps);
+
+    expect(created).toHaveLength(3);
+    expect(outcome.redBaselines.map((r) => r.outcome)).toEqual([
+      "filed",
+      "filed",
+      "filed",
+    ]);
+  });
+
+  it("never files a candidate excluded for a reason other than red", async () => {
+    let createCalls = 0;
+    const deps = fakeDeps({
+      loadSidecar: async () => [
+        { name: "e2e", kind: "missing", reason: "does not exist" },
+        { name: "flaky", kind: "no-teardown", reason: "left a container up" },
+      ],
+      listOpenIssues: async () => {
+        throw new Error("should not be read — nothing red to file");
+      },
+      createIssue: async () => {
+        createCalls += 1;
+        return 1;
+      },
+    });
+
+    const outcome = await runDeclare(deps);
+
+    expect(createCalls).toBe(0);
+    expect(outcome.redBaselines).toEqual([]);
+  });
+
+  it("re-running with the same command still red files nothing and reports it as already recorded", async () => {
+    const issues: TrackerIssueRef[] = [
+      { number: 7, body: redBaselineMarker("build") },
+    ];
+    let createCalls = 0;
+    const deps = fakeDeps({
+      loadSidecar: async () => [redExclusion("build")],
+      listOpenIssues: async () => issues,
+      createIssue: async () => {
+        createCalls += 1;
+        return 999;
+      },
+    });
+
+    const outcome = await runDeclare(deps);
+
+    expect(createCalls).toBe(0);
+    expect(outcome.redBaselines).toEqual([
+      { command: "build", outcome: "already-recorded", issue: 7 },
+    ]);
+  });
+
+  it("reports an unreachable tracker without throwing, naming each red command to file by hand", async () => {
+    const { log, events } = recordingLog();
+    const deps = fakeDeps({
+      loadSidecar: async () => [redExclusion("build"), redExclusion("lint")],
+      listOpenIssues: async () => {
+        throw new Error("gh: command not found");
+      },
+      log,
+    });
+
+    const outcome = await runDeclare(deps);
+
+    expect(outcome.redBaselines).toEqual([
+      { command: "build", outcome: "failed", error: "gh: command not found" },
+      { command: "lint", outcome: "failed", error: "gh: command not found" },
+    ]);
+    expect(events).toContainEqual(expect.objectContaining({ level: "warn" }));
+    // The contract itself is unaffected by the unreachable tracker.
+    expect(outcome.contract).toEqual(EMPTY_CONTRACT);
+  });
+
+  it("isolates one red command's filing failure from the rest", async () => {
+    const deps = fakeDeps({
+      loadSidecar: async () => [redExclusion("build"), redExclusion("lint")],
+      listOpenIssues: async () => [],
+      createIssue: async (title) => {
+        if (title.includes("build")) throw new Error("422 already exists");
+        return 55;
+      },
+    });
+
+    const outcome = await runDeclare(deps);
+
+    expect(outcome.redBaselines).toEqual([
+      { command: "build", outcome: "failed", error: "422 already exists" },
+      { command: "lint", outcome: "filed", issue: 55 },
+    ]);
   });
 });

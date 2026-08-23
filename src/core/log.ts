@@ -61,6 +61,7 @@ export type LogEvent = LogEventBase &
     | { kind: "contract-verify-failed" }
     | { kind: "declare-contract-invalid" }
     | { kind: "declare-sidecar-invalid" }
+    | { kind: "declare-red-baseline-unreachable" }
     | { kind: "cost-overrun"; costUsd: number }
     | { kind: "attempt-voided"; reason: InfraReason }
     | { kind: "attempt-released"; reason: FailureReason }

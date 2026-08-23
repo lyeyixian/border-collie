@@ -39,12 +39,16 @@ describe("loadDeclareSidecar", () => {
     const dir = tmpRepo();
     writeSidecar(
       dir,
-      JSON.stringify({ excluded: [{ name: "e2e", reason: "does not exist" }] }),
+      JSON.stringify({
+        excluded: [{ name: "e2e", kind: "missing", reason: "does not exist" }],
+      }),
     );
 
     const excluded = await loadDeclareSidecar(dir);
 
-    expect(excluded).toEqual([{ name: "e2e", reason: "does not exist" }]);
+    expect(excluded).toEqual([
+      { name: "e2e", kind: "missing", reason: "does not exist" },
+    ]);
   });
 
   it("is an empty array when the repo has no sidecar", async () => {

@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { ConfigError, type Scope } from "../core/config.js";
+import type { TrackerIssueRef } from "../core/declare.js";
 import { type Log, scrubCredentials } from "../core/log.js";
 import {
   type AttemptFailure,
@@ -672,6 +673,77 @@ export async function readScopeFromLabel(
     );
   }
   return { kind: "parent", parent: numbers[0] as number };
+}
+
+/**
+ * Every open issue's number and body (issue #151) — what `declare` reads to
+ * de-duplicate a red-baseline filing by its hidden marker
+ * (`findRedBaselineIssue`, core/declare.ts), the same read-then-write shape
+ * `listLabelNames`/`createLabel` give `init`'s labels. `gh issue list` rather
+ * than the search API: one page of 500 covers any repo an operator would
+ * point `declare` at, and no query-syntax escaping to get wrong.
+ */
+export type ListOpenIssues = () => Promise<TrackerIssueRef[]>;
+
+export async function listOpenIssues(
+  exec: Exec = realExec,
+): Promise<TrackerIssueRef[]> {
+  const stdout = await exec("gh", [
+    "issue",
+    "list",
+    "--state",
+    "open",
+    "--limit",
+    "500",
+    "--json",
+    "number,body",
+  ]);
+  const issues = JSON.parse(stdout) as {
+    number: number;
+    body: string | null;
+  }[];
+  return issues.map((issue) => ({
+    number: issue.number,
+    body: issue.body ?? "",
+  }));
+}
+
+/**
+ * File one tracker issue (issue #151). `gh issue create` prints the created
+ * issue's URL, not its number — read the trailing digits off it rather than
+ * reaching for `gh api` (a REST POST this codebase does not otherwise use
+ * for a write) just to get JSON back.
+ *
+ * Filed under whatever identity `gh` resolves from the environment it runs
+ * in — never an App token here, because `declare` is an attended local
+ * command with no Actions workflow behind it (unlike `claimTicket` and
+ * every other write in this file, which the Tick and Worker jobs run under
+ * the App installation token minted in `.github/workflows/`). That is what
+ * keeps a red-baseline issue operator-authored rather than App-authored,
+ * with no credential-selection code needed here to enforce it.
+ */
+export type CreateIssue = (title: string, body: string) => Promise<number>;
+
+export async function createIssue(
+  title: string,
+  body: string,
+  exec: Exec = realExec,
+): Promise<number> {
+  const stdout = await exec("gh", [
+    "issue",
+    "create",
+    "--title",
+    title,
+    "--body",
+    body,
+  ]);
+  const match = stdout.trim().match(/(\d+)$/);
+  if (!match) {
+    throw new Error(
+      `could not read the created issue's number from: ${stdout.trim()}`,
+    );
+  }
+  return Number(match[1]);
 }
 
 /**

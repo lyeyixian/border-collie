@@ -5,6 +5,12 @@ import {
   loadDeclareSidecar,
 } from "../adapters/declare.js";
 import {
+  type CreateIssue,
+  createIssue as createIssueReal,
+  type ListOpenIssues,
+  listOpenIssues as listOpenIssuesReal,
+} from "../adapters/tracker.js";
+import {
   dispatchOnboardingWorker,
   type OnboardingOutcome,
   realSpawnWorkerProcess,
@@ -22,6 +28,11 @@ import {
   type DeclareExclusion,
   type DeclareOutcome,
   declareRegressions,
+  findRedBaselineIssue,
+  type RedBaselineAction,
+  redBaselineBody,
+  redBaselineTitle,
+  type TrackerIssueRef,
 } from "../core/declare.js";
 import type { Log } from "../core/log.js";
 import {
@@ -46,6 +57,8 @@ export interface DeclareDeps {
   restoreContract: WriteContractRaw;
   loadSidecar: LoadDeclareSidecar;
   clearSidecar: ClearDeclareSidecar;
+  listOpenIssues: ListOpenIssues;
+  createIssue: CreateIssue;
   log: Log;
 }
 
@@ -72,6 +85,75 @@ function parsePreviousContract(raw: string | undefined, log: Log): Contract {
     });
     return EMPTY_CONTRACT;
   }
+}
+
+/**
+ * File one tracker issue per red exclusion (issue #151): a command that
+ * exists and failed cannot enter the contract, so it is recorded as debt
+ * instead of dropped. Only `kind: "red"` exclusions owe a filing — a
+ * missing candidate or one that could not be torn down is not a red check.
+ *
+ * The open issues are read once and re-used across every red exclusion in
+ * this run, both to dedup by marker (never by title, which is fragile) and
+ * so one command's filing failure never costs the others their turn — the
+ * same per-item isolation `runInitLabels` (src/app/init.ts) gives the label
+ * set. A tracker `declare` cannot reach at all degrades every red exclusion
+ * to `failed` rather than throwing, matching how label creation already
+ * degrades (CONTEXT.md "Red baseline"): the contract `runDeclare` already
+ * read is unaffected either way.
+ */
+async function fileRedBaselines(
+  excluded: DeclareExclusion[],
+  deps: Pick<DeclareDeps, "listOpenIssues" | "createIssue" | "log">,
+): Promise<RedBaselineAction[]> {
+  const redExclusions = excluded.filter(
+    (exclusion) => exclusion.kind === "red",
+  );
+  if (redExclusions.length === 0) return [];
+
+  let issues: TrackerIssueRef[];
+  try {
+    issues = await deps.listOpenIssues();
+  } catch (error) {
+    const message = messageOf(error);
+    deps.log({
+      kind: "declare-red-baseline-unreachable",
+      level: "warn",
+      msg: `the tracker could not be reached to file red-baseline issues: ${message}`,
+    });
+    return redExclusions.map((exclusion) => ({
+      command: exclusion.name,
+      outcome: "failed" as const,
+      error: message,
+    }));
+  }
+
+  const actions: RedBaselineAction[] = [];
+  for (const exclusion of redExclusions) {
+    const existing = findRedBaselineIssue(issues, exclusion.name);
+    if (existing !== undefined) {
+      actions.push({
+        command: exclusion.name,
+        outcome: "already-recorded",
+        issue: existing,
+      });
+      continue;
+    }
+    try {
+      const issue = await deps.createIssue(
+        redBaselineTitle(exclusion.name),
+        redBaselineBody(exclusion),
+      );
+      actions.push({ command: exclusion.name, outcome: "filed", issue });
+    } catch (error) {
+      actions.push({
+        command: exclusion.name,
+        outcome: "failed",
+        error: messageOf(error),
+      });
+    }
+  }
+  return actions;
 }
 
 /**
@@ -128,11 +210,13 @@ export async function runDeclare(deps: DeclareDeps): Promise<DeclareOutcome> {
   );
   await clearSidecar(".");
 
+  const redBaselines = await fileRedBaselines(excluded, deps);
   const runFacts = {
     endedBy: session.endedBy,
     exitCode: session.exitCode,
     costUsd: session.costUsd,
     costOverrun: session.costOverrun,
+    redBaselines,
   };
 
   // Skipped when the session's own contract failed to parse: an unparseable
@@ -183,6 +267,8 @@ export function declareOnce(
     restoreContract: writeContractRaw,
     loadSidecar: loadDeclareSidecar,
     clearSidecar: clearDeclareSidecar,
+    listOpenIssues: listOpenIssuesReal,
+    createIssue: createIssueReal,
     log,
   });
 }

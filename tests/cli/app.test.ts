@@ -88,6 +88,7 @@ function declareOutcome(
     contract: EMPTY_CONTRACT,
     excluded: [],
     regressions: [],
+    redBaselines: [],
     ...overrides,
   };
 }

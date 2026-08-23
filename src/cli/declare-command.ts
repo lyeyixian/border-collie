@@ -103,9 +103,17 @@ a diff. A machine-readable sidecar under .border-collie/ names every
 candidate the session looked at but excluded, and why; declare reads it,
 folds it into this report, and deletes it.
 
+A candidate that exists but failed is a red baseline: declare files one
+tracker issue per red command, under whatever GitHub credential is
+authenticated locally (never an App identity), and skips any command
+already recorded. declare never closes one of these issues — that stays a
+human's job. If the tracker cannot be reached, the contract is still
+written and the red baselines that could not be filed are reported with
+the commands to run by hand.
+
 It runs once, on the retry model rather than the worker model, bounded by a
 wall-clock timeout, a stall watchdog, and a cost cap — no Attempt counting,
-no retry ladder, no tracker writes. init runs declare as its own final
-step, so onboarding a fresh repository stays one command.`,
+no retry ladder. init runs declare as its own final step, so onboarding a
+fresh repository stays one command.`,
   },
 });
