@@ -10,10 +10,11 @@ import {
 } from "../../src/core/config.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
 import type { LabelAction, ScaffoldAction } from "../../src/core/scaffold.js";
-import type {
-  Ticket,
-  WorkerOutcome,
-  WorldSnapshot,
+import {
+  CLAIM_LABEL,
+  type Ticket,
+  type WorkerOutcome,
+  type WorldSnapshot,
 } from "../../src/core/types.js";
 
 /** A `Log` recording every event into `events`; this fake context never derives a sub-logger, but the type requires `child`. */
@@ -546,7 +547,7 @@ describe("init command", () => {
   it("creates the tracker labels and reports what it did", async () => {
     const fake = fakeContext({
       initLabelsResult: [
-        { name: "claimed", outcome: "created" },
+        { name: CLAIM_LABEL, outcome: "created" },
         { name: "ready-for-agent", outcome: "exists" },
       ],
     });
@@ -554,7 +555,7 @@ describe("init command", () => {
     await runCli(["init"], fake.context);
 
     expect(fake.initLabelsCalls).toEqual([true]);
-    expect(fake.stdout()).toContain("created    claimed");
+    expect(fake.stdout()).toContain(`created    ${CLAIM_LABEL}`);
     expect(fake.stdout()).toContain("exists     ready-for-agent");
   });
 
@@ -567,7 +568,11 @@ describe("init command", () => {
         },
       ],
       initLabelsResult: [
-        { name: "claimed", outcome: "failed", error: "gh: not authenticated" },
+        {
+          name: CLAIM_LABEL,
+          outcome: "failed",
+          error: "gh: not authenticated",
+        },
       ],
     });
 
@@ -576,7 +581,7 @@ describe("init command", () => {
     expect(fake.context.process.exitCode).toBeFalsy();
     expect(fake.stdout()).toContain("wrote      .github/workflows");
     expect(fake.stdout()).toContain("gh: not authenticated");
-    expect(fake.stdout()).toContain("gh label create claimed");
+    expect(fake.stdout()).toContain(`gh label create ${CLAIM_LABEL}`);
   });
 });
 

@@ -32,12 +32,12 @@ const LABELS = {
     color: "d93f0b",
   },
   claimed: {
-    name: "claimed",
+    name: "border-collie:claimed",
     description: "Claimed by border-collie: a Worker is in flight",
     color: "5319e7",
   },
   operatorSteered: {
-    name: "operator-steered",
+    name: "border-collie:operator-steered",
     description: "Operator is steering this PR: automatic Refinement skips it",
     color: "1d76db",
   },

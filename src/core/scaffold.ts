@@ -193,6 +193,32 @@ function labelNames(): string {
   return ORCHESTRATOR_LABELS.map((label) => label.name).join(", ");
 }
 
+/** The column width `renderChecklist`'s prose block holds every line to. */
+export const CHECKLIST_WIDTH = 78;
+
+/**
+ * Word-wrap `text` to `width` columns, indenting every line with `indent` —
+ * so a label name's length (issue #156 lengthened two of them with a
+ * namespace prefix) can't silently push the checklist past the block width
+ * the rest of it holds to.
+ */
+function wrapText(text: string, width: number, indent = ""): string {
+  const words = text.split(/\s+/).filter((word) => word !== "");
+  const lines: string[] = [];
+  let current = indent;
+  for (const word of words) {
+    const next = current === indent ? current + word : `${current} ${word}`;
+    if (next.length > width && current !== indent) {
+      lines.push(current);
+      current = indent + word;
+    } else {
+      current = next;
+    }
+  }
+  if (current !== indent) lines.push(current);
+  return lines.join("\n");
+}
+
 /**
  * The secrets and GitHub App permissions checklist (issue #76): a missing
  * credential is meant to be discovered here, before the first Tick, not from
@@ -233,12 +259,11 @@ export function renderChecklist(): string {
    holding your credentials.
 
 The tracker labels the loop depends on —
-  ${labelNames()}
-— are created by \`init\` itself, and the label report above says which ones
-it had to add. Any it could not reach the tracker to create are named there
-too, with the command to add them by hand; the first Claim of the first Tick
-fails without them. Only ${OPERATOR_STEERED_LABEL} is ever applied by a human:
-it is the flag that takes a pull request out of the automatic Refinement loop.
+${wrapText(labelNames(), CHECKLIST_WIDTH, "  ")}
+${wrapText(
+  `— are created by \`init\` itself, and the label report above says which ones it had to add. Any it could not reach the tracker to create are named there too, with the command to add them by hand; the first Claim of the first Tick fails without them. Only ${OPERATOR_STEERED_LABEL} is ever applied by a human: it is the flag that takes a pull request out of the automatic Refinement loop.`,
+  CHECKLIST_WIDTH,
+)}
 
 Worker skills install automatically inside each Worker job — no separate
 setup step is needed for those.

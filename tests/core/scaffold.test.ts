@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  CHECKLIST_WIDTH,
   labelCreateCommand,
   pinCliVersion,
   planScaffold,
@@ -195,7 +196,7 @@ describe("renderChecklist", () => {
 
   it("keeps every line inside the block width the rest of it holds to", () => {
     for (const line of checklist.split("\n")) {
-      expect(line.length).toBeLessThanOrEqual(78);
+      expect(line.length).toBeLessThanOrEqual(CHECKLIST_WIDTH);
     }
   });
 });
