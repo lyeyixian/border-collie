@@ -25,7 +25,7 @@ A fresh-context Claude Code agent session dispatched against exactly one Ticket,
 _Avoid_: agent (unqualified), subagent
 
 **Skill closure**:
-The set of skills reachable from the one skill a Worker prompt invokes, plus the support files and agent docs those skills read — `init` vendors all of it into the target repository under `.claude/skills` and `docs/agents`, byte-identical to upstream, rather than a Worker job installing any of it at run time (ADR 0008). Only the invoked skill's name is load-bearing; everything else in the closure is the repository's to edit, extend or delete, and a re-run of `init` leaves every one of them alone.
+The set of skills reachable from the one skill a Worker prompt invokes, plus the support files and agent docs those skills read — `init` vendors all of it into the target repository under `.claude/skills` and `docs/agents`, byte-identical to upstream, rather than a Worker job installing any of it at run time (ADR 0008). Only the invoked skill's name is load-bearing; everything else in the closure is the repository's to edit, extend or delete, and a re-run of `init` leaves every one of them alone. A Tick that finds the invoked skill's file absent refuses every claim and spawn that Tick, naming the missing skill, rather than dispatching a Worker that would receive unhandled text and improvise: the refusal costs no Attempt and claims no ticket. Every other skill in the closure being absent does not block dispatch.
 _Avoid_: plugin, marketplace (both name the run-time install this replaced)
 
 **Done**:

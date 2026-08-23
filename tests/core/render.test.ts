@@ -169,6 +169,50 @@ describe("buildPlanReport", () => {
     expect(report.paused).toEqual({ kind: "breaker" });
   });
 
+  it("reports a missing-skill refusal when a dispatchable ticket waits on the required skill", () => {
+    const report = buildPlanReport(config(), world, [], {
+      dryRun: false,
+      requiredSkillMissing: true,
+    });
+
+    expect(report.paused).toEqual({ kind: "missing-skill" });
+  });
+
+  it("does not report a missing-skill refusal when nothing is dispatchable", () => {
+    const noDispatch: WorldSnapshot = {
+      tickets: [ticket({ number: 4, title: "Done already", state: "closed" })],
+      openAgentPrs: [],
+      mergedAgentPrs: [],
+    };
+
+    const report = buildPlanReport(config(), noDispatch, [], {
+      dryRun: false,
+      requiredSkillMissing: true,
+    });
+
+    expect(report.paused).toBeNull();
+  });
+
+  it("prefers the breaker pause over a missing skill when both apply", () => {
+    const report = buildPlanReport(config(), world, [], {
+      dryRun: false,
+      dispatchPaused: true,
+      requiredSkillMissing: true,
+    });
+
+    expect(report.paused).toEqual({ kind: "breaker" });
+  });
+
+  it("prefers the missing-skill refusal over working hours when both apply", () => {
+    const report = buildPlanReport(config(), world, [], {
+      dryRun: false,
+      requiredSkillMissing: true,
+      withinWorkingHours: true,
+    });
+
+    expect(report.paused).toEqual({ kind: "missing-skill" });
+  });
+
   it("reports a max_open_prs pause when dispatchable tickets wait on headroom", () => {
     const throttled: WorldSnapshot = {
       ...world,
@@ -303,6 +347,29 @@ describe("renderPlanReport", () => {
         "Scope: sub-issues of #1 — 2 tickets (1 open)",
         "Dispatchable: #2",
         "Dispatch paused: within working hours — claims, spawns, and Conflict Workers wait for the off-hours window",
+        "Plan (max_workers=3, max_open_prs=5): nothing to do",
+      ].join("\n"),
+    );
+  });
+
+  it("renders the missing-skill refusal, naming the skill and its path", () => {
+    const report: PlanReport = {
+      scopeLabel: "sub-issues of #1",
+      totalTickets: 2,
+      openTickets: 1,
+      dispatchable: [2],
+      paused: { kind: "missing-skill" },
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      actions: [],
+      dryRun: false,
+    };
+
+    expect(renderPlanReport(report)).toBe(
+      [
+        "Scope: sub-issues of #1 — 2 tickets (1 open)",
+        "Dispatchable: #2",
+        'Dispatch refused: required skill "implement" not found at .claude/skills/implement/SKILL.md — run `border-collie init` to vendor it. No Attempt consumed.',
         "Plan (max_workers=3, max_open_prs=5): nothing to do",
       ].join("\n"),
     );

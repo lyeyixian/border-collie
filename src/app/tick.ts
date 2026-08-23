@@ -1,4 +1,5 @@
 import { openPrForOutcome } from "../adapters/pr.js";
+import { fileExists } from "../adapters/scaffold.js";
 import { readScope, realExec, withDebugLogging } from "../adapters/tracker.js";
 import {
   dispatchConflictWorker,
@@ -12,6 +13,7 @@ import { modelForAttempt, type ResolvedConfig } from "../core/config.js";
 import type { Log } from "../core/log.js";
 import { plan } from "../core/plan.js";
 import { buildPlanReport } from "../core/render.js";
+import { WORKER_SKILL_FILE } from "../core/scaffold.js";
 import type { Action, WorldSnapshot } from "../core/types.js";
 import { isWithinWorkingHours } from "../core/work-hours.js";
 import { act, type IntervalScheduler } from "./act.js";
@@ -32,6 +34,13 @@ export interface TickDeps {
    * manually-run tick keep today's synchronous local path.
    */
   remoteDispatch?: boolean;
+  /**
+   * The target repo's checkout root, read against for the load-bearing skill
+   * check below (issue #155) — the same directory every other filesystem
+   * path in this Tick (worktrees, transcripts, `WORKFLOW.md`) is already
+   * relative to.
+   */
+  cwd: string;
 }
 
 /**
@@ -56,7 +65,7 @@ export async function tickOnce(
   dispatchPaused = false,
   deps: TickDeps,
 ): Promise<TickResult> {
-  const { log, now, scheduleInterval, remoteDispatch = false } = deps;
+  const { log, now, scheduleInterval, remoteDispatch = false, cwd } = deps;
   // Every command this Tick issues through the adapters — gh and git alike
   // — plus its exit code, is narrated at debug through the same seam:
   // detail that does not exist today, hidden from the console unless
@@ -66,6 +75,12 @@ export async function tickOnce(
   // Resolved fresh against wall-clock time each Tick (CONTEXT.md "Working
   // hours") — not encoded in a cron expression.
   const withinWorkingHours = isWithinWorkingHours(config.workingHours, now());
+  // A repo-wide fact, read fresh each Tick like everything else above rather
+  // than cached: the Worker prompt invokes `WORKER_SKILL` by name with no
+  // fallback, so dispatching into a checkout missing it would hand a Worker
+  // unhandled text instead of a skill (issue #155) — a named refusal belongs
+  // where that would otherwise surface as an oddly-shaped pull request.
+  const requiredSkillMissing = !fileExists(cwd, WORKER_SKILL_FILE);
   // Always derived, regardless of what the caller already knows (see
   // `deriveBreaker`'s own doc for why this reaches the same verdict either way).
   const derivedBreaker = deriveBreaker(world);
@@ -77,11 +92,13 @@ export async function tickOnce(
     maxOpenPrs: config.maxOpenPrs,
     dispatchPaused: effectiveDispatchPaused,
     withinWorkingHours,
+    requiredSkillMissing,
   });
   const planReport = buildPlanReport(config, world, actions, {
     dryRun,
     dispatchPaused: effectiveDispatchPaused,
     withinWorkingHours,
+    requiredSkillMissing,
   });
   log({
     kind: "plan-report",

@@ -29,6 +29,16 @@ export const WORKFLOW_FILES: readonly string[] = [
 ];
 
 /**
+ * The load-bearing skill file itself, relative to the target repo root — the
+ * one path `WORKER_SKILL`'s name resolves to. Named separately from
+ * `SKILL_FILES` (its first entry) because the Tick's dispatch-refusal check
+ * (issue #155) needs exactly this one path and nothing else in the closure;
+ * a single source keeps the two ends — what `init` vendors and what the Tick
+ * checks for — from drifting apart.
+ */
+export const WORKER_SKILL_FILE = `.claude/skills/${WORKER_SKILL}/SKILL.md`;
+
+/**
  * The Worker's skills, vendored into the target repository rather than
  * installed inside each Worker job (issue #153).
  *
@@ -53,7 +63,7 @@ export const WORKFLOW_FILES: readonly string[] = [
  * `init` writes directly, so nothing ever reaches for it.
  */
 export const SKILL_FILES: readonly string[] = [
-  `.claude/skills/${WORKER_SKILL}/SKILL.md`,
+  WORKER_SKILL_FILE,
   ".claude/skills/tdd/SKILL.md",
   ".claude/skills/tdd/tests.md",
   ".claude/skills/tdd/mocking.md",

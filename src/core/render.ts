@@ -1,11 +1,13 @@
 import { modelForAttempt, type ResolvedConfig } from "./config.js";
 import type { WorkerHeartbeat } from "./heartbeat.js";
 import { dispatchableSet } from "./plan.js";
+import { WORKER_SKILL_FILE } from "./scaffold.js";
 import {
   type Action,
   READY_FOR_AGENT,
   READY_FOR_HUMAN,
   type Ticket,
+  WORKER_SKILL,
   type WorkerOutcome,
   type WorldSnapshot,
 } from "./types.js";
@@ -17,6 +19,7 @@ import {
 /** Why dispatch is paused this Tick, or absent when it isn't. */
 export type PlanPausedReason =
   | { kind: "breaker" }
+  | { kind: "missing-skill" }
   | { kind: "working-hours" }
   | { kind: "max-open-prs"; openCount: number };
 
@@ -114,10 +117,12 @@ export function buildPlanReport(
     dryRun,
     dispatchPaused = false,
     withinWorkingHours = false,
+    requiredSkillMissing = false,
   }: {
     dryRun: boolean;
     dispatchPaused?: boolean;
     withinWorkingHours?: boolean;
+    requiredSkillMissing?: boolean;
   },
 ): PlanReport {
   const { scope, maxWorkers, maxOpenPrs } = config;
@@ -130,6 +135,8 @@ export function buildPlanReport(
   let paused: PlanPausedReason | null = null;
   if (dispatchPaused) {
     paused = { kind: "breaker" };
+  } else if (requiredSkillMissing && dispatchable.length > 0) {
+    paused = { kind: "missing-skill" };
   } else if (withinWorkingHours && dispatchable.length > 0) {
     paused = { kind: "working-hours" };
   } else if (
@@ -200,6 +207,10 @@ export function renderPlanReport(report: PlanReport): string {
   if (report.paused?.kind === "breaker") {
     lines.push(
       "Dispatch paused: circuit breaker open (infrastructure failure), claims held",
+    );
+  } else if (report.paused?.kind === "missing-skill") {
+    lines.push(
+      `Dispatch refused: required skill "${WORKER_SKILL}" not found at ${WORKER_SKILL_FILE} — run \`border-collie init\` to vendor it. No Attempt consumed.`,
     );
   } else if (report.paused?.kind === "working-hours") {
     lines.push(

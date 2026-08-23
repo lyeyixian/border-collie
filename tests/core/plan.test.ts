@@ -769,6 +769,103 @@ describe("plan: working hours", () => {
   });
 });
 
+describe("plan: required skill missing", () => {
+  it("plans no claim or spawn for a dispatchable ticket when the required skill is missing", () => {
+    const actions = plan(world([ticket({ number: 7 })]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      requiredSkillMissing: true,
+    });
+
+    expect(actions).toEqual([]);
+  });
+
+  it("still closes, releases, and escalates when the required skill is missing", () => {
+    const actions = plan(
+      world(
+        [
+          ticket({ number: 9 }),
+          ticket({
+            number: 6,
+            labels: ["ready-for-agent", CLAIM_LABEL],
+            hasAgentClaim: true,
+          }),
+          ticket({
+            number: 5,
+            agentClaimCount: 2,
+            attemptFailures: [failure(1), failure(2)],
+          }),
+        ],
+        [],
+        [mergedPr(9)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, requiredSkillMissing: true },
+    );
+
+    expect(actions).toEqual([
+      { type: "close", ticket: 9, prUrl: "https://github.com/o/r/pull/90" },
+      { type: "release", ticket: 6 },
+      { type: "escalate", ticket: 5, failures: [failure(1), failure(2)] },
+    ]);
+  });
+
+  it("still dispatches the Conflict Worker and PR upkeep when the required skill is missing: neither invokes it", () => {
+    const actions = plan(
+      worldWithPrs(
+        [ticket({ number: 3, assignees: ["operator"], hasAgentClaim: true })],
+        [openPr(3, { number: 30, mergeable: "conflicted" })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5, requiredSkillMissing: true },
+    );
+
+    expect(actions).toEqual([
+      {
+        type: "conflict-worker",
+        pr: 30,
+        ticket: 3,
+        headRef: "border-collie/ticket-3-attempt-1",
+      },
+    ]);
+  });
+
+  it("is independent of the circuit breaker: both suppress dispatch, but the breaker also suppresses PR upkeep and releases", () => {
+    const held = ticket({
+      number: 4,
+      labels: ["ready-for-agent", CLAIM_LABEL],
+      hasAgentClaim: true,
+    });
+    const bothGated = plan(world([held]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      requiredSkillMissing: true,
+      dispatchPaused: true,
+    });
+    const missingSkillOnly = plan(world([held]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      requiredSkillMissing: true,
+    });
+
+    // Breaker open wins: only closes, even with the missing-skill gate also active.
+    expect(bothGated).toEqual([]);
+    // Missing skill alone still releases the orphaned claim.
+    expect(missingSkillOnly).toEqual([{ type: "release", ticket: 4 }]);
+  });
+
+  it("dispatches normally once the required skill is present", () => {
+    const actions = plan(world([ticket({ number: 7 })]), {
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      requiredSkillMissing: false,
+    });
+
+    expect(actions).toEqual([
+      { type: "claim", ticket: 7 },
+      { type: "spawn", ticket: 7, attempt: 1 },
+    ]);
+  });
+});
+
 describe("plan: PR upkeep", () => {
   it("plans no upkeep for a clean, current, non-draft PR", () => {
     const actions = plan(

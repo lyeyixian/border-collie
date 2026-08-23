@@ -527,6 +527,18 @@ export interface PlanConfig {
    * window is configured at all.
    */
   withinWorkingHours?: boolean;
+  /**
+   * True when the checkout this Tick runs against has no file at
+   * `WORKER_SKILL_FILE` (src/core/scaffold.ts) — the Worker prompt invokes
+   * `WORKER_SKILL` by name with no fallback (issue #155), so dispatching into
+   * such a checkout would hand a Worker unhandled text instead of a skill.
+   * Narrower than `withinWorkingHours`: only claims and spawns are
+   * suppressed, since neither the Conflict Worker nor a Refinement round
+   * invokes the missing skill. Suppressing the claim rather than releasing
+   * one already taken means a missing skill costs no Attempt and leaves no
+   * ticket claimed. Omitted means the skill is present (dispatch flows).
+   */
+  requiredSkillMissing?: boolean;
 }
 
 /**
