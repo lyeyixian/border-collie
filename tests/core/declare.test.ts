@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   type DeclareOutcome,
   DeclareSidecarError,
+  declareFailed,
   declareRefused,
   declareRegressions,
   declareTroubled,
@@ -256,5 +257,19 @@ describe("declareRefused", () => {
 
   it("is true when the contract's rewrite was refused over a regression", () => {
     expect(declareRefused(outcome({ regressions: ["test"] }))).toBe(true);
+  });
+});
+
+describe("declareFailed", () => {
+  it("is false for a clean run with nothing regressed", () => {
+    expect(declareFailed(outcome())).toBe(false);
+  });
+
+  it("is true when the session itself did not finish cleanly", () => {
+    expect(declareFailed(outcome({ exitCode: 1 }))).toBe(true);
+  });
+
+  it("is true when the contract's rewrite was refused over a regression", () => {
+    expect(declareFailed(outcome({ regressions: ["test"] }))).toBe(true);
   });
 });

@@ -242,5 +242,24 @@ describe("runDeclare", () => {
       expect(outcome.contract).toEqual(nextContract);
       expect(outcome.regressions).toEqual([]);
     });
+
+    it("does not report every previously declared command as regressed when the session's own contract fails to parse", async () => {
+      const restored: unknown[] = [];
+      const deps = fakeDeps({
+        readExistingContract: async () => previousRaw,
+        loadContractFn: (async () => {
+          throw new Error("front matter is not a mapping");
+        }) as LoadContract,
+        restoreContract: async () => {
+          restored.push(undefined);
+        },
+      });
+
+      const outcome = await runDeclare(deps);
+
+      expect(outcome.regressions).toEqual([]);
+      expect(outcome.contract).toEqual(EMPTY_CONTRACT);
+      expect(restored).toEqual([]);
+    });
   });
 });
