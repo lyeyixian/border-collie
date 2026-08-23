@@ -6,6 +6,7 @@ import {
   parseResultEvent,
   resultEventEvidence,
 } from "../core/classify.js";
+import { DECLARE_SIDECAR_FILE } from "../core/declare.js";
 import type { Log, LogEvent } from "../core/log.js";
 import {
   AGENT_BRANCH_PREFIX,
@@ -788,4 +789,93 @@ export async function dispatchRefinementWorker(
   } finally {
     await withGitLock(() => removeWorktree(worktree, exec));
   }
+}
+
+/**
+ * What the Onboarding Worker runs with (issue #150): the same wall-clock
+ * timeout and stall watchdog every headless Worker shares, plus the cost
+ * cap — knowable only post-hoc, same as `WorkerConfig`'s. No attempt: this
+ * is one shot, on whatever model the caller resolves (`declare` binds it to
+ * the retry model, never the worker model).
+ */
+export interface OnboardingWorkerConfig extends ClaudeRunConfig {
+  maxCostUsd: number;
+}
+
+/** One finished Onboarding Worker session, as observed by `declare` (issue #150, CONTEXT.md "Onboarding Worker"). */
+export interface OnboardingOutcome {
+  transcript: string;
+  exitCode: number | null;
+  endedBy: WorkerProcessExit["endedBy"];
+  costUsd: number | undefined;
+  costOverrun: boolean;
+}
+
+/**
+ * The entire Onboarding Worker prompt (issue #150, CONTEXT.md "Onboarding
+ * Worker"): work out which commands this repository already has, run each
+ * once, and write only the ones that already exist and already passed —
+ * declare declares, it never authors. Inline for the same reason every
+ * other Worker prompt here is: versioned and tested with the code rather
+ * than left to a vendored skill.
+ */
+export function onboardingWorkerPrompt(): string {
+  const sidecarPath = join(RUN_DIR, DECLARE_SIDECAR_FILE);
+  return [
+    "Work out which named commands this repository already has for building, linting, type-checking, and testing — read its own scripts, configuration, and CI rather than assuming from its language or framework. A candidate is a command that already exists in the repository; invent none.",
+    "",
+    "Run every candidate exactly once. A candidate enters the contract only if it already exists and that one run exits zero. Never edit, fix, or otherwise change the repository to make a candidate pass — a failing candidate is excluded, not repaired.",
+    "",
+    `Write ${CONTRACT_FILE} at the repository root for every candidate that qualified: YAML front matter with a single top-level "verify:" key, a flat mapping of a short name to that candidate's exact command string, and nothing else in the front matter — the Markdown body below it is prose for a human, yours to fill in or leave blank. If no candidate qualified, write an empty "verify:" map rather than inventing one — an empty contract is a valid outcome.`,
+    "",
+    "You may run anything this repository contains to find out whether a candidate exists and passes — the same trust this repository already places in an agent working one of its tickets. Tear down everything you start: stop any process or server you launched and remove any container, file, or other resource a candidate created, before you finish. A candidate you cannot fully tear down is excluded, however it exited.",
+    "",
+    `Write ${sidecarPath} as JSON, one entry per candidate you looked at but did not declare: {"excluded": [{"name": "the short name you'd have given it", "reason": "why — does not exist, failed, or could not be torn down"}]}. Omit the file, or give it an empty "excluded" array, if every candidate you found qualified.`,
+    "",
+    `Do not commit ${CONTRACT_FILE}, the sidecar, or anything else — leave the working tree exactly as your changes make it, uncommitted, for a human to review as a diff.`,
+  ].join("\n");
+}
+
+/**
+ * Dispatch one Onboarding Worker (issue #150, CONTEXT.md "Onboarding
+ * Worker"): run headless claude directly in the current working directory —
+ * no worktree, no branch, no push, no git operation of any kind — so
+ * whatever it writes lands in the operator's own checkout for `declare` to
+ * read and the operator to review as an uncommitted diff. One shot: not an
+ * Attempt, no tracker write, the same shape as the conflict and Refinement
+ * Workers.
+ */
+export async function dispatchOnboardingWorker(
+  config: OnboardingWorkerConfig,
+  spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
+  log: Log = noopLog,
+): Promise<OnboardingOutcome> {
+  const transcript = join(RUN_DIR, "transcripts", "declare.jsonl");
+  const stderrLog = join(RUN_DIR, "transcripts", "declare.stderr.log");
+  log({
+    kind: "onboarding-worker-paths",
+    level: "debug",
+    msg: `Onboarding Worker: transcript ${transcript}`,
+    transcript,
+  });
+
+  const { exitCode, endedBy, stdoutTail } = await spawnProcess({
+    cmd: "claude",
+    args: claudeArgs(onboardingWorkerPrompt(), config.model, config.maxTurns),
+    cwd: ".",
+    transcriptPath: transcript,
+    stderrPath: stderrLog,
+    timeoutMs: config.timeoutMs,
+    stallMs: config.stallMs,
+  });
+  const result = parseResultEvent(stdoutTail);
+  return {
+    transcript,
+    exitCode,
+    endedBy,
+    costUsd: result?.totalCostUsd,
+    costOverrun:
+      result?.totalCostUsd !== undefined &&
+      result.totalCostUsd > config.maxCostUsd,
+  };
 }

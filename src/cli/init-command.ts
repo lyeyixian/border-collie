@@ -1,4 +1,5 @@
 import { buildCommand } from "@stricli/core";
+import { declareTroubled, renderDeclareReport } from "../core/declare.js";
 import {
   renderChecklist,
   renderLabelReport,
@@ -10,12 +11,27 @@ export interface InitFlags {
   force: boolean;
 }
 
+/**
+ * Scaffold the workflows and tracker labels, then run `declare` as the
+ * final step (issue #150) so onboarding a fresh repository stays one
+ * command — re-scaffolding (`--force`) and re-declaring stay separate
+ * operations with different cadences, but the first run needs both. The
+ * scaffold and labels are reported the same way regardless of what declare
+ * does — a repo that cannot reach the tracker still gets its workflows and
+ * declare a fair try — but a declare session that itself did not finish
+ * cleanly (killed by a watchdog, non-zero exit) fails `init` overall, the
+ * same non-zero-on-trouble contract `declare` keeps standalone.
+ */
 async function initHandler(this: Context, flags: InitFlags): Promise<void> {
   const actions = this.initScaffold(flags.force);
   const labels = await this.initLabels();
+  const declared = await this.declare(this.loadWorkerConfig({}));
   this.process.stdout.write(
-    `${renderScaffoldReport(actions)}\n\n${renderLabelReport(labels)}\n\n${renderChecklist()}\n`,
+    `${renderScaffoldReport(actions)}\n\n${renderLabelReport(labels)}\n\n${renderChecklist()}\n\n${renderDeclareReport(declared)}\n`,
   );
+  if (declareTroubled(declared)) {
+    this.process.exitCode = 1;
+  }
 }
 
 export const initCommand = buildCommand<InitFlags, [], Context>({

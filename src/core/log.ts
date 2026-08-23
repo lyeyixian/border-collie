@@ -59,6 +59,8 @@ export type LogEvent = LogEventBase &
     | { kind: "pr-opened"; prUrl: string }
     | { kind: "pr-open-failed" }
     | { kind: "contract-verify-failed" }
+    | { kind: "declare-contract-invalid" }
+    | { kind: "declare-sidecar-invalid" }
     | { kind: "cost-overrun"; costUsd: number }
     | { kind: "attempt-voided"; reason: InfraReason }
     | { kind: "attempt-released"; reason: FailureReason }
@@ -101,6 +103,10 @@ export type LogEvent = LogEventBase &
         pr: number;
         round: number;
         worktree: string;
+        transcript: string;
+      }
+    | {
+        kind: "onboarding-worker-paths";
         transcript: string;
       }
   );

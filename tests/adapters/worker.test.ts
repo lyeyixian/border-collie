@@ -9,11 +9,15 @@ import {
   type ConflictWorkerConfig,
   conflictWorkerPrompt,
   dispatchConflictWorker,
+  dispatchOnboardingWorker,
   dispatchRefinementWorker,
   dispatchRemoteWorker,
   dispatchWorker,
+  type OnboardingWorkerConfig,
+  onboardingWorkerPrompt,
   probeEnvironment,
   pushAgentBranch,
+  RUN_DIR,
   realSpawnWorkerProcess,
   refinementWorkerPrompt,
   type SpawnWorkerProcess,
@@ -23,6 +27,7 @@ import {
   workerPrompt,
 } from "../../src/adapters/worker.js";
 import type { RunContractVerify } from "../../src/adapters/workflow.js";
+import { DECLARE_SIDECAR_FILE } from "../../src/core/declare.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
 import { SKILL_FILES } from "../../src/core/scaffold.js";
 import { WORKER_SKILL } from "../../src/core/types.js";
@@ -1209,6 +1214,121 @@ describe("dispatchRefinementWorker", () => {
       "--force",
       REFINEMENT_WT,
     ]);
+  });
+});
+
+const ONBOARDING_CONFIG: OnboardingWorkerConfig = {
+  model: "opus",
+  timeoutMs: 60_000,
+  stallMs: 30_000,
+  maxTurns: 200,
+  maxCostUsd: 20,
+};
+
+describe("onboardingWorkerPrompt", () => {
+  it("names the contract file, the sidecar path, running candidates once, and tearing down what it starts", () => {
+    const prompt = onboardingWorkerPrompt();
+
+    expect(prompt).toContain("WORKFLOW.md");
+    expect(prompt).toContain(join(RUN_DIR, DECLARE_SIDECAR_FILE));
+    expect(prompt).toContain("exactly once");
+    expect(prompt).toContain("Tear down everything you start");
+    expect(prompt).toContain("Do not commit");
+  });
+
+  it("instructs that a candidate enters the contract only if it already exists and already passes", () => {
+    const prompt = onboardingWorkerPrompt();
+
+    expect(prompt).toContain("already exists");
+    expect(prompt).toContain("exits zero");
+    expect(prompt).toContain("Never edit, fix, or otherwise change");
+  });
+});
+
+describe("dispatchOnboardingWorker", () => {
+  it("runs claude directly in the current directory — no worktree, no branch, no git call", async () => {
+    const { spawn, requests } = fakeSpawn(0);
+
+    await dispatchOnboardingWorker(ONBOARDING_CONFIG, spawn);
+
+    expect(requests).toEqual([
+      {
+        cmd: "claude",
+        args: [
+          "-p",
+          onboardingWorkerPrompt(),
+          "--model",
+          "opus",
+          "--max-turns",
+          "200",
+          "--output-format",
+          "stream-json",
+          "--verbose",
+          "--dangerously-skip-permissions",
+        ],
+        cwd: ".",
+        transcriptPath: join(RUN_DIR, "transcripts", "declare.jsonl"),
+        stderrPath: join(RUN_DIR, "transcripts", "declare.stderr.log"),
+        timeoutMs: 60_000,
+        stallMs: 30_000,
+      },
+    ]);
+  });
+
+  it("logs the transcript path at debug before spawning", async () => {
+    const { spawn } = fakeSpawn(0);
+    const { log, events } = recordingLog();
+
+    await dispatchOnboardingWorker(ONBOARDING_CONFIG, spawn, log);
+
+    expect(events).toEqual([
+      expect.objectContaining({
+        kind: "onboarding-worker-paths",
+        level: "debug",
+        transcript: join(RUN_DIR, "transcripts", "declare.jsonl"),
+      }),
+    ]);
+  });
+
+  it("reports how the session ended and its exit code", async () => {
+    const { spawn } = fakeSpawn(1, "timeout");
+
+    const outcome = await dispatchOnboardingWorker(ONBOARDING_CONFIG, spawn);
+
+    expect(outcome).toMatchObject({ exitCode: 1, endedBy: "timeout" });
+  });
+
+  it("carries cost from the result event, flagging an overrun against maxCostUsd", async () => {
+    const { spawn } = fakeSpawn(0, "exit", {
+      stdoutTail: `${JSON.stringify({
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 25,
+        num_turns: 3,
+        duration_ms: 1000,
+        is_error: false,
+      })}\n`,
+    });
+
+    const outcome = await dispatchOnboardingWorker(ONBOARDING_CONFIG, spawn);
+
+    expect(outcome.costUsd).toBe(25);
+    expect(outcome.costOverrun).toBe(true);
+  });
+
+  it("is not a cost overrun when spend stays within maxCostUsd", async () => {
+    const { spawn } = fakeSpawn(0, "exit", {
+      stdoutTail: `${JSON.stringify({
+        type: "result",
+        subtype: "success",
+        total_cost_usd: 5,
+        is_error: false,
+      })}\n`,
+    });
+
+    const outcome = await dispatchOnboardingWorker(ONBOARDING_CONFIG, spawn);
+
+    expect(outcome.costOverrun).toBe(false);
   });
 });
 
