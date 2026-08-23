@@ -153,6 +153,16 @@ export function declareRefused(outcome: DeclareOutcome): boolean {
 }
 
 /**
+ * True on either way a `declare` run needs the operator's attention: the
+ * session itself did not finish cleanly, or it did and `declare` still
+ * refused to rewrite the contract over a regression. The one predicate both
+ * `declare` and `init` fail their own exit code on.
+ */
+export function declareFailed(outcome: DeclareOutcome): boolean {
+  return declareTroubled(outcome) || declareRefused(outcome);
+}
+
+/**
  * `declare`'s report: what it produced (the acceptance criterion). Every
  * declared command by name, every excluded candidate and why, and — since
  * this rung gates on nothing — a warning line only when the session itself

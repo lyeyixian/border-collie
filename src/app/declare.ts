@@ -106,7 +106,9 @@ export async function runDeclare(deps: DeclareDeps): Promise<DeclareOutcome> {
   const previousContract = parsePreviousContract(previousRaw, log);
 
   const session = await dispatch();
+  let contractParseFailed = false;
   const contract = await loadContractFn(".").catch((error: unknown) => {
+    contractParseFailed = true;
     log({
       kind: "declare-contract-invalid",
       level: "warn",
@@ -126,29 +128,31 @@ export async function runDeclare(deps: DeclareDeps): Promise<DeclareOutcome> {
   );
   await clearSidecar(".");
 
-  const regressions = declareRegressions(previousContract, contract);
+  const runFacts = {
+    endedBy: session.endedBy,
+    exitCode: session.exitCode,
+    costUsd: session.costUsd,
+    costOverrun: session.costOverrun,
+  };
+
+  // Skipped when the session's own contract failed to parse: an unparseable
+  // WORKFLOW.md is that failure's own story, not evidence every previously
+  // declared command individually broke — `contract` is only EMPTY_CONTRACT
+  // as a fallback here, not because the session wrote one.
+  const regressions = contractParseFailed
+    ? []
+    : declareRegressions(previousContract, contract);
   if (regressions.length > 0 && previousRaw !== undefined) {
     await restoreContract(".", previousRaw);
     return {
-      endedBy: session.endedBy,
-      exitCode: session.exitCode,
-      costUsd: session.costUsd,
-      costOverrun: session.costOverrun,
+      ...runFacts,
       contract: previousContract,
       excluded: [],
       regressions,
     };
   }
 
-  return {
-    endedBy: session.endedBy,
-    exitCode: session.exitCode,
-    costUsd: session.costUsd,
-    costOverrun: session.costOverrun,
-    contract,
-    excluded,
-    regressions: [],
-  };
+  return { ...runFacts, contract, excluded, regressions: [] };
 }
 
 /**

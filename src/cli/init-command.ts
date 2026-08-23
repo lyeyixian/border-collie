@@ -1,9 +1,5 @@
 import { buildCommand } from "@stricli/core";
-import {
-  declareRefused,
-  declareTroubled,
-  renderDeclareReport,
-} from "../core/declare.js";
+import { declareFailed, renderDeclareReport } from "../core/declare.js";
 import {
   renderChecklist,
   renderLabelReport,
@@ -34,7 +30,7 @@ async function initHandler(this: Context, flags: InitFlags): Promise<void> {
   this.process.stdout.write(
     `${renderScaffoldReport(actions)}\n\n${renderLabelReport(labels)}\n\n${renderChecklist()}\n\n${renderDeclareReport(declared)}\n`,
   );
-  if (declareTroubled(declared) || declareRefused(declared)) {
+  if (declareFailed(declared)) {
     this.process.exitCode = 1;
   }
 }
