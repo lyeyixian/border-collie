@@ -68,6 +68,7 @@ function outcome(overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
     subtype: undefined,
     costOverrun: false,
     ok: true,
+    verify: undefined,
     ...overrides,
   };
 }

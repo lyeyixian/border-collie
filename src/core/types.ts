@@ -3,6 +3,8 @@
  * Vocabulary follows CONTEXT.md.
  */
 
+import type { VerifyOutcome } from "./workflow.js";
+
 /** One tracker label the loop depends on, as `init` would create it. */
 export interface OrchestratorLabel {
   readonly name: string;
@@ -154,6 +156,14 @@ export interface WorkerOutcome {
   costOverrun: boolean;
   /** The success predicate: no failure trigger fired, ticket or infrastructure. */
   ok: boolean;
+  /**
+   * Every command the repo's `WORKFLOW.md` `verify:` map declared, run after
+   * the session ended, with pass/fail derived from exit codes alone — never
+   * from the session's own report (issue #149). Undefined when the repo
+   * declares no contract, or an empty one: a fact the next Tick reads back
+   * like any other, gating nothing at this rung.
+   */
+  verify: VerifyOutcome | undefined;
 }
 
 /**

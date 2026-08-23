@@ -58,6 +58,7 @@ export type LogEvent = LogEventBase &
     | { kind: "heartbeat"; workers: WorkerHeartbeat[] }
     | { kind: "pr-opened"; prUrl: string }
     | { kind: "pr-open-failed" }
+    | { kind: "contract-verify-failed" }
     | { kind: "cost-overrun"; costUsd: number }
     | { kind: "attempt-voided"; reason: InfraReason }
     | { kind: "attempt-released"; reason: FailureReason }

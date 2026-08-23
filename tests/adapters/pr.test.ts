@@ -138,6 +138,7 @@ const OUTCOME: WorkerOutcome = {
   subtype: undefined,
   costOverrun: false,
   ok: true,
+  verify: undefined,
 };
 
 /**

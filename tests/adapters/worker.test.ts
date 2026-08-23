@@ -22,7 +22,9 @@ import {
   type WorkerProcessRequest,
   workerPrompt,
 } from "../../src/adapters/worker.js";
+import type { RunContractVerify } from "../../src/adapters/workflow.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
+import type { VerifyOutcome } from "../../src/core/workflow.js";
 
 function recordingLog(): { log: Log; events: LogEvent[] } {
   const events: LogEvent[] = [];
@@ -92,9 +94,9 @@ function fakeSpawn(
 }
 
 describe("workerPrompt", () => {
-  it("contains only the ticket reference, the /implement invocation, and the PR-description instruction", () => {
+  it("contains only the ticket reference, the /implement invocation, the PR-description instruction, and the contract line", () => {
     expect(workerPrompt(4)).toBe(
-      '/implement issue #4\n\nWhen the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like "Here\'s the PR description:", no status narration, no text before or after it.',
+      '/implement issue #4\n\nWhen the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like "Here\'s the PR description:", no status narration, no text before or after it.\n\nIf this repository has a WORKFLOW.md at its root, it declares a `verify:` map of commands with meaningful exit codes. Run every command it declares before committing — a nonzero exit means the work is not done yet.',
     );
   });
 });
@@ -331,6 +333,103 @@ describe("dispatchWorker", () => {
     await dispatchWorker(7, { ...CONFIG, model: "opus" }, exec, spawn);
 
     expect(requests[0]?.args).toContain("opus");
+  });
+
+  it("carries the repo's verify contract in the outcome, running it against the Worker's own checkout after the session ends", async () => {
+    const { exec } = fakeExec({ newCommits: "1" });
+    const { spawn } = fakeSpawn(0);
+    const seen: string[] = [];
+    const verifyOutcome: VerifyOutcome = {
+      commands: [
+        { name: "lint", command: "pnpm lint", exitCode: 0, ok: true },
+        { name: "test", command: "pnpm test", exitCode: 1, ok: false },
+      ],
+      ok: false,
+    };
+    const verify: RunContractVerify = async (cwd) => {
+      seen.push(cwd);
+      return verifyOutcome;
+    };
+
+    const outcome = await dispatchWorker(
+      4,
+      CONFIG,
+      exec,
+      spawn,
+      undefined,
+      undefined,
+      verify,
+    );
+
+    expect(seen).toEqual([WORKTREE]);
+    expect(outcome.verify).toEqual(verifyOutcome);
+  });
+
+  it("carries no verify result, and no error, when the repo declares no contract", async () => {
+    const { exec } = fakeExec({ newCommits: "1" });
+    const { spawn } = fakeSpawn(0);
+    const verify: RunContractVerify = async () => undefined;
+
+    const outcome = await dispatchWorker(
+      4,
+      CONFIG,
+      exec,
+      spawn,
+      undefined,
+      undefined,
+      verify,
+    );
+
+    expect(outcome.verify).toBeUndefined();
+    expect(outcome.ok).toBe(true);
+  });
+
+  it("runs the verify contract even when the Attempt itself failed — the checkout is diagnostic signal either way", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(1);
+    let called = false;
+    const verify: RunContractVerify = async () => {
+      called = true;
+      return { commands: [], ok: true };
+    };
+
+    const outcome = await dispatchWorker(
+      4,
+      CONFIG,
+      exec,
+      spawn,
+      undefined,
+      undefined,
+      verify,
+    );
+
+    expect(called).toBe(true);
+    expect(outcome.ok).toBe(false);
+  });
+
+  it("never lets a broken verify contract discard an otherwise-successful outcome", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0);
+    const { log, events } = recordingLog();
+    const verify: RunContractVerify = async () => {
+      throw new Error('WORKFLOW.md front matter has an unsupported key "oops"');
+    };
+
+    const outcome = await dispatchWorker(
+      4,
+      CONFIG,
+      exec,
+      spawn,
+      log,
+      undefined,
+      verify,
+    );
+
+    expect(outcome.ok).toBe(true);
+    expect(outcome.verify).toBeUndefined();
+    const failed = events.find((e) => e.kind === "contract-verify-failed");
+    expect(failed?.level).toBe("warn");
+    expect(failed?.msg).toContain("oops");
   });
 
   it("fails the attempt as a budget breach when the Worker hit the turn cap", async () => {
