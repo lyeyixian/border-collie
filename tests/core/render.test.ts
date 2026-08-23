@@ -624,6 +624,7 @@ function outcome(overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
     subtype: "error_max_turns",
     costOverrun: false,
     ok: false,
+    verify: undefined,
     ...overrides,
   };
 }

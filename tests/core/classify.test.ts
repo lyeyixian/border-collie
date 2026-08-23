@@ -207,6 +207,7 @@ function outcome(
     subtype: undefined,
     costOverrun: false,
     ok: true,
+    verify: undefined,
     ...overrides,
   };
 }

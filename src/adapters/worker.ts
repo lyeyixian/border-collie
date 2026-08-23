@@ -12,7 +12,9 @@ import {
   type FailureReason,
   type WorkerOutcome,
 } from "../core/types.js";
+import { CONTRACT_FILE, type VerifyOutcome } from "../core/workflow.js";
 import { type Exec, realExec, WORKER_WORKFLOW_FILE } from "./tracker.js";
+import { type RunContractVerify, runContractVerify } from "./workflow.js";
 
 /**
  * The WorkerHost seam: everything a dispatched Worker needs around it —
@@ -188,15 +190,20 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
 
 /**
  * The entire Worker prompt: the ticket reference, the /implement invocation,
- * and the final-message-is-a-PR-description instruction — nothing else. A
- * Worker is fed nothing beyond its ticket (CONTEXT.md "Worker"); it
- * discovers repo context itself.
+ * the final-message-is-a-PR-description instruction, and the contract line —
+ * nothing else. A Worker is fed nothing beyond its ticket (CONTEXT.md
+ * "Worker"); it discovers repo context itself. The contract line belongs
+ * here, code-owned, rather than in the vendored `implement` skill the
+ * repository may edit (issue #149): it is what tells a session what "run the
+ * checks" means in a repository that is not this one's own stack.
  */
 export function workerPrompt(ticket: number): string {
   return [
     `/implement issue #${ticket}`,
     "",
     'When the work is committed, make your final message a pull request description for this branch. It is used verbatim as the PR body, so it must contain nothing but the description itself — no preamble like "Here\'s the PR description:", no status narration, no text before or after it.',
+    "",
+    `If this repository has a ${CONTRACT_FILE} at its root, it declares a \`verify:\` map of commands with meaningful exit codes. Run every command it declares before committing — a nonzero exit means the work is not done yet.`,
   ].join("\n");
 }
 
@@ -306,6 +313,11 @@ export async function branchCommitSubjects(
  * in the current working directory and skips both the worktree and the
  * lock — nothing else is running in that checkout to isolate from or
  * serialize against.
+ *
+ * Once the session ends, every command the repo's `WORKFLOW.md` declares
+ * under `verify:` is run against the checkout, carried in the outcome's
+ * `verify` field (issue #149). This rung gates nothing on it — the result is
+ * a fact for the next Tick to read, same as any other.
  */
 /** No-op default for the optional `log` parameter, so every existing caller need not pass one. */
 const noopLog: Log = ((_event: LogEvent) => {}) as Log;
@@ -319,6 +331,8 @@ export async function dispatchWorker(
   log: Log = noopLog,
   /** Forwarded onto the process request; the fleet heartbeat's activity signal. */
   onActivity: () => void = () => {},
+  /** Runs the repo's declared verify contract against the checkout once the session ends (issue #149). */
+  verify: RunContractVerify = runContractVerify,
 ): Promise<WorkerOutcome> {
   const branch = `${AGENT_BRANCH_PREFIX}${ticket}-attempt-${config.attempt}`;
   const worktree = join(RUN_DIR, "worktrees", `ticket-${ticket}`);
@@ -403,6 +417,25 @@ export async function dispatchWorker(
           : newCommits === 0
             ? "no-commits"
             : undefined;
+    // Run after the session ends, against whatever the checkout now holds,
+    // whether or not the Attempt itself succeeded — the checkout a killed or
+    // failed Worker leaves behind is diagnostic signal too, and this rung
+    // gates nothing on the result (issue #149). Never from the session's own
+    // report — exit codes only. Caught rather than left to propagate: a
+    // malformed WORKFLOW.md or an unreadable one is the contract's fault, not
+    // this Attempt's, and must not discard an otherwise-valid outcome — the
+    // Attempt simply carries no verify signal, same as a repo with none.
+    let verifyResult: VerifyOutcome | undefined;
+    try {
+      verifyResult = await verify(cwd);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log({
+        kind: "contract-verify-failed",
+        level: "warn",
+        msg: `WORKFLOW.md could not be read or run: ${reason}`,
+      });
+    }
     const result = parseResultEvent(stdoutTail);
     // Classification order: turn cap trumps infra trumps the raw trigger. A
     // parsed result event proves the environment carried the Worker to its
@@ -449,6 +482,7 @@ export async function dispatchWorker(
         result?.totalCostUsd !== undefined &&
         result.totalCostUsd > config.maxCostUsd,
       ok: failure === undefined && infra === undefined,
+      verify: verifyResult,
     };
   } finally {
     // Nothing to clean up in-place: the checkout is the job's own, torn down
