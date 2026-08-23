@@ -5,7 +5,7 @@ import {
   type DeclareExclusion,
   parseDeclareSidecar,
 } from "../core/declare.js";
-import { RUN_DIR } from "./worker.js";
+import { RUN_DIR } from "../core/types.js";
 
 /**
  * The declare sidecar's own I/O (issue #150): reading it back from the
