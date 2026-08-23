@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   type DeclareOutcome,
   DeclareSidecarError,
+  declareRefused,
+  declareRegressions,
   declareTroubled,
   parseDeclareSidecar,
   renderDeclareReport,
@@ -64,9 +66,51 @@ function outcome(overrides: Partial<DeclareOutcome> = {}): DeclareOutcome {
     costOverrun: false,
     contract: EMPTY_CONTRACT,
     excluded: [],
+    regressions: [],
     ...overrides,
   };
 }
+
+describe("declareRegressions", () => {
+  it("is empty when every previously declared command is still declared", () => {
+    const previous = { afterCreate: undefined, verify: { lint: "pnpm lint" } };
+    const next = {
+      afterCreate: undefined,
+      verify: { lint: "pnpm lint", test: "pnpm test" },
+    };
+
+    expect(declareRegressions(previous, next)).toEqual([]);
+  });
+
+  it("names a previously declared command missing from the new contract", () => {
+    const previous = {
+      afterCreate: undefined,
+      verify: { lint: "pnpm lint", test: "pnpm test" },
+    };
+    const next = { afterCreate: undefined, verify: { lint: "pnpm lint" } };
+
+    expect(declareRegressions(previous, next)).toEqual(["test"]);
+  });
+
+  it("is empty when there was no previous contract", () => {
+    const next = { afterCreate: undefined, verify: { lint: "pnpm lint" } };
+
+    expect(declareRegressions(EMPTY_CONTRACT, next)).toEqual([]);
+  });
+
+  it("names every previously declared command the new contract drops", () => {
+    const previous = {
+      afterCreate: undefined,
+      verify: { lint: "pnpm lint", test: "pnpm test", build: "pnpm build" },
+    };
+
+    expect(declareRegressions(previous, EMPTY_CONTRACT)).toEqual([
+      "lint",
+      "test",
+      "build",
+    ]);
+  });
+});
 
 describe("renderDeclareReport", () => {
   it("reports an empty contract as none qualified, with no excluded section", () => {
@@ -150,6 +194,36 @@ describe("renderDeclareReport", () => {
 
     expect(report).not.toContain("Warning:");
   });
+
+  it("leads with every regressed command, ahead of the declared contract", () => {
+    const report = renderDeclareReport(
+      outcome({
+        regressions: ["test"],
+        contract: { afterCreate: undefined, verify: { lint: "pnpm lint" } },
+      }),
+    );
+
+    expect(report).toContain("Regression — WORKFLOW.md left unchanged:");
+    expect(report).toContain("test was declared and now fails");
+    expect(report.indexOf("Regression")).toBeLessThan(
+      report.indexOf("Declared verify contract:"),
+    );
+  });
+
+  it("names every regressed command when more than one broke", () => {
+    const report = renderDeclareReport(
+      outcome({ regressions: ["lint", "test"] }),
+    );
+
+    expect(report).toContain("lint was declared and now fails");
+    expect(report).toContain("test was declared and now fails");
+  });
+
+  it("carries no regression section for a normal run", () => {
+    const report = renderDeclareReport(outcome());
+
+    expect(report).not.toContain("Regression");
+  });
 });
 
 describe("declareTroubled", () => {
@@ -172,5 +246,15 @@ describe("declareTroubled", () => {
     expect(declareTroubled(outcome({ costUsd: 25, costOverrun: true }))).toBe(
       false,
     );
+  });
+});
+
+describe("declareRefused", () => {
+  it("is false when nothing regressed", () => {
+    expect(declareRefused(outcome())).toBe(false);
+  });
+
+  it("is true when the contract's rewrite was refused over a regression", () => {
+    expect(declareRefused(outcome({ regressions: ["test"] }))).toBe(true);
   });
 });

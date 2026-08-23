@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   CONTRACT_FILE,
@@ -34,6 +34,31 @@ export const loadContract: LoadContract = async (cwd) => {
   }
   return parseContract(raw);
 };
+
+/**
+ * Raw-read half of the contract seam, injectable for tests: the file's exact
+ * text rather than the parsed shape, `undefined` when it is absent. Exists
+ * for `declare`'s regression refusal (issue #152), which restores
+ * `WORKFLOW.md` byte-identical rather than re-deriving it from the parsed
+ * `Contract` — `parseContract` throws away the Markdown body, so a
+ * restoration built from it would silently drop the operator's own prose.
+ */
+export type ReadContractRaw = (cwd: string) => Promise<string | undefined>;
+
+export const readContractRaw: ReadContractRaw = async (cwd) => {
+  try {
+    return await readFile(join(cwd, CONTRACT_FILE), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+};
+
+/** Raw-write half of the same seam: overwrites `WORKFLOW.md` with exactly this text. */
+export type WriteContractRaw = (cwd: string, raw: string) => Promise<void>;
+
+export const writeContractRaw: WriteContractRaw = (cwd, raw) =>
+  writeFile(join(cwd, CONTRACT_FILE), raw, "utf8");
 
 /** Run one verify command through a shell in `cwd`, resolving with its exit code (never rejecting on a nonzero one). */
 export type RunVerifyCommand = (

@@ -1,11 +1,13 @@
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   loadContract,
+  readContractRaw,
   realRunVerifyCommand,
   runContractVerify,
+  writeContractRaw,
 } from "../../src/adapters/workflow.js";
 import type { Contract } from "../../src/core/workflow.js";
 
@@ -32,6 +34,54 @@ describe("loadContract", () => {
     const contract = await loadContract(dir);
 
     expect(contract).toEqual({ afterCreate: undefined, verify: {} });
+  });
+});
+
+describe("readContractRaw", () => {
+  it("reads WORKFLOW.md's exact text, prose body included", async () => {
+    const dir = tmpRepo();
+    const source = [
+      "---",
+      "verify:",
+      "  test: pnpm test",
+      "---",
+      "",
+      "# Notes",
+      "some prose a parsed Contract never carries",
+      "",
+    ].join("\n");
+    writeFileSync(join(dir, "WORKFLOW.md"), source);
+
+    await expect(readContractRaw(dir)).resolves.toBe(source);
+  });
+
+  it("is undefined when the repo has no WORKFLOW.md", async () => {
+    const dir = tmpRepo();
+
+    await expect(readContractRaw(dir)).resolves.toBeUndefined();
+  });
+});
+
+describe("writeContractRaw", () => {
+  it("writes WORKFLOW.md with exactly the given text", async () => {
+    const dir = tmpRepo();
+
+    await writeContractRaw(dir, "---\nverify:\n  test: pnpm test\n---\n");
+
+    expect(readFileSync(join(dir, "WORKFLOW.md"), "utf8")).toBe(
+      "---\nverify:\n  test: pnpm test\n---\n",
+    );
+  });
+
+  it("overwrites an existing WORKFLOW.md", async () => {
+    const dir = tmpRepo();
+    writeFileSync(join(dir, "WORKFLOW.md"), "---\nverify:\n  old: x\n---\n");
+
+    await writeContractRaw(dir, "---\nverify:\n  new: y\n---\n");
+
+    expect(readFileSync(join(dir, "WORKFLOW.md"), "utf8")).toBe(
+      "---\nverify:\n  new: y\n---\n",
+    );
   });
 });
 

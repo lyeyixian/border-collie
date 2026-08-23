@@ -84,9 +84,35 @@ export interface DeclareOutcome {
   costUsd: number | undefined;
   /** Spend past the cost cap — an alarm, not a failure; this rung gates nothing. */
   costOverrun: boolean;
-  /** `WORKFLOW.md` as the session left it — `EMPTY_CONTRACT` if it wrote none. */
+  /**
+   * `WORKFLOW.md` as it now stands on disk: the session's own write, unless
+   * `regressions` is non-empty, in which case the write was refused and this
+   * is the previously declared contract instead (issue #152).
+   */
   contract: Contract;
   excluded: DeclareExclusion[];
+  /**
+   * Previously declared commands the session found still exists but now
+   * fails, naming why `declare` refused to rewrite the contract (issue
+   * #152). Empty on every other run, including a repository's first.
+   */
+  regressions: string[];
+}
+
+/**
+ * Command names `previous` declared that `next` does not: a command that
+ * was green and is now excluded (or simply not offered again) is a broken
+ * repository, not onboarding debt — `declare` refuses to rewrite the
+ * contract over one rather than letting a regression quietly shrink it
+ * (issue #152, CONTEXT.md "Onboarding Worker"). Order follows `previous`'s
+ * own key order, not `next`'s or the sidecar's, since `next` is exactly what
+ * this function is diffing away from.
+ */
+export function declareRegressions(
+  previous: Contract,
+  next: Contract,
+): string[] {
+  return Object.keys(previous.verify).filter((name) => !(name in next.verify));
 }
 
 /** The one line naming why the session itself did not finish cleanly, or null when it did. */
@@ -117,16 +143,38 @@ export function declareTroubled(outcome: DeclareOutcome): boolean {
 }
 
 /**
+ * True when `declare` refused to rewrite the contract over a regression.
+ * Distinct from `declareTroubled`: the session itself may have run to a
+ * clean completion — refusal is `declare`'s own decision, not a sign the
+ * session failed.
+ */
+export function declareRefused(outcome: DeclareOutcome): boolean {
+  return outcome.regressions.length > 0;
+}
+
+/**
  * `declare`'s report: what it produced (the acceptance criterion). Every
  * declared command by name, every excluded candidate and why, and — since
  * this rung gates on nothing — a warning line only when the session itself
  * did not run to a clean, budget-respecting completion. The warning leads
  * when the session did not finish cleanly, since the contract and
  * exclusions below it may then be stale leftovers rather than this run's
- * own output.
+ * own output. A regression leads ahead of even that: it names `declare`'s
+ * own refusal to rewrite the contract, and the declared commands printed
+ * below it are then the untouched, previously declared contract rather than
+ * anything this run produced.
  */
 export function renderDeclareReport(outcome: DeclareOutcome): string {
   const lines: string[] = [];
+  if (outcome.regressions.length > 0) {
+    lines.push(
+      "Regression — WORKFLOW.md left unchanged:",
+      ...outcome.regressions.map(
+        (name) => `  ${name} was declared and now fails`,
+      ),
+      "",
+    );
+  }
   const trouble = troubleLine(outcome);
   if (trouble !== null) {
     lines.push(

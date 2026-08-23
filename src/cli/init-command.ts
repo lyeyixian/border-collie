@@ -1,5 +1,9 @@
 import { buildCommand } from "@stricli/core";
-import { declareTroubled, renderDeclareReport } from "../core/declare.js";
+import {
+  declareRefused,
+  declareTroubled,
+  renderDeclareReport,
+} from "../core/declare.js";
 import {
   renderChecklist,
   renderLabelReport,
@@ -19,7 +23,8 @@ export interface InitFlags {
  * scaffold and labels are reported the same way regardless of what declare
  * does — a repo that cannot reach the tracker still gets its workflows and
  * declare a fair try — but a declare session that itself did not finish
- * cleanly (killed by a watchdog, non-zero exit) fails `init` overall, the
+ * cleanly (killed by a watchdog, non-zero exit), or that found a regression
+ * and refused to rewrite an existing contract, fails `init` overall, the
  * same non-zero-on-trouble contract `declare` keeps standalone.
  */
 async function initHandler(this: Context, flags: InitFlags): Promise<void> {
@@ -29,7 +34,7 @@ async function initHandler(this: Context, flags: InitFlags): Promise<void> {
   this.process.stdout.write(
     `${renderScaffoldReport(actions)}\n\n${renderLabelReport(labels)}\n\n${renderChecklist()}\n\n${renderDeclareReport(declared)}\n`,
   );
-  if (declareTroubled(declared)) {
+  if (declareTroubled(declared) || declareRefused(declared)) {
     this.process.exitCode = 1;
   }
 }
