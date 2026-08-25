@@ -630,8 +630,18 @@ export async function probeEnvironment(
   );
 }
 
-/** What a conflict-resolution Worker runs with; no attempt ladder — one shot. */
-export type ConflictWorkerConfig = ClaudeRunConfig;
+/**
+ * What a conflict-resolution Worker runs with; no attempt ladder — one shot.
+ * `inPlace` (issue #181) mirrors `WorkerConfig.inPlace` (issue #75): true for
+ * a Conflict Worker's own session container, which checks the head branch
+ * out directly in the current working directory instead of an isolated
+ * worktree and skips the repo-level git lock — the container is the PR's
+ * sole checkout, with nothing else to isolate from or serialize against.
+ * False (the local path's default) keeps today's worktree isolation.
+ */
+export interface ConflictWorkerConfig extends ClaudeRunConfig {
+  inPlace: boolean;
+}
 
 /** One finished conflict-resolution session, as observed by the Orchestrator. */
 export interface ConflictOutcome {
@@ -670,6 +680,15 @@ export interface ConflictOutcome {
  * the rebase is aborted so the retained branch stays at the PR's committed
  * head — a broken rebase is never published — and the caller asks a human to
  * take over.
+ *
+ * `config.inPlace` (issue #181) mirrors `dispatchWorker`'s own split: the
+ * local path (default) cuts an isolated worktree so a Conflict Worker never
+ * touches the operator's own checkout, locking every git phase against
+ * sibling Workers' worktree/ref operations; a session container owns its
+ * sole checkout instead, so it checks the head branch out directly in the
+ * current working directory and skips both the worktree and the lock —
+ * nothing else is running in that checkout to isolate from or serialize
+ * against.
  */
 export async function dispatchConflictWorker(
   pr: number,
@@ -681,6 +700,7 @@ export async function dispatchConflictWorker(
   log: Log = noopLog,
 ): Promise<ConflictOutcome> {
   const worktree = join(RUN_DIR, "conflict-worktrees", `pr-${pr}`);
+  const cwd = config.inPlace ? "." : worktree;
   const transcript = join(RUN_DIR, "transcripts", `pr-${pr}-conflict.jsonl`);
   const stderrLog = join(
     RUN_DIR,
@@ -688,30 +708,43 @@ export async function dispatchConflictWorker(
     `pr-${pr}-conflict.stderr.log`,
   );
 
-  await withGitLock(async () => {
-    await removeWorktree(worktree, exec);
-    await exec("git", ["worktree", "prune"]);
-    await exec("git", ["fetch", "origin"]);
-    await exec("git", [
-      "worktree",
-      "add",
-      worktree,
-      "-B",
-      headRef,
-      `origin/${headRef}`,
-    ]);
+  // A no-op stand-in for withGitLock when there is no sibling Worker to
+  // serialize against — the git lock itself must never run on this path.
+  const gitPhase = config.inPlace
+    ? <T>(operation: () => Promise<T>): Promise<T> => operation()
+    : withGitLock;
+  // `-C worktree` only makes sense pointed at a directory other than the
+  // process's own cwd — in-place, the checkout already IS the cwd.
+  const git = (args: string[]) =>
+    exec("git", config.inPlace ? args : ["-C", worktree, ...args]);
+
+  await gitPhase(async () => {
+    if (config.inPlace) {
+      await exec("git", ["fetch", "origin"]);
+      await exec("git", ["checkout", "-B", headRef, `origin/${headRef}`]);
+    } else {
+      await removeWorktree(worktree, exec);
+      await exec("git", ["worktree", "prune"]);
+      await exec("git", ["fetch", "origin"]);
+      await exec("git", [
+        "worktree",
+        "add",
+        worktree,
+        "-B",
+        headRef,
+        `origin/${headRef}`,
+      ]);
+    }
     // A conflicting rebase exits non-zero and stops in progress for the
     // Worker; swallow that so setting up the conflict never throws.
-    await exec("git", ["-C", worktree, "rebase", "origin/HEAD"]).catch(
-      () => {},
-    );
+    await git(["rebase", "origin/HEAD"]).catch(() => {});
   });
   log({
     kind: "conflict-worker-paths",
     level: "debug",
-    msg: `Conflict Worker for PR #${pr}: worktree ${worktree}, transcript ${transcript}`,
+    msg: `Conflict Worker for PR #${pr}: ${config.inPlace ? "checkout" : "worktree"} ${cwd}, transcript ${transcript}`,
     pr,
-    worktree,
+    worktree: cwd,
     transcript,
   });
 
@@ -723,7 +756,7 @@ export async function dispatchConflictWorker(
         config.model,
         config.maxTurns,
       ),
-      cwd: worktree,
+      cwd,
       transcriptPath: transcript,
       stderrPath: stderrLog,
       timeoutMs: config.timeoutMs,
@@ -731,15 +764,8 @@ export async function dispatchConflictWorker(
     });
     // The branch ref, not HEAD: mid-rebase HEAD is detached on the commit
     // being replayed, while the branch only moves on completion.
-    const rebased = await withGitLock(() =>
-      exec("git", [
-        "-C",
-        worktree,
-        "merge-base",
-        "--is-ancestor",
-        "origin/HEAD",
-        headRef,
-      ]).then(
+    const rebased = await gitPhase(() =>
+      git(["merge-base", "--is-ancestor", "origin/HEAD", headRef]).then(
         () => true,
         () => false,
       ),
@@ -747,11 +773,12 @@ export async function dispatchConflictWorker(
     const resolved = endedBy === "exit" && exitCode === 0 && rebased;
     return { pr, ticket, headRef, transcript, exitCode, resolved };
   } finally {
-    // Abort any half-finished rebase before dropping the worktree; a no-op
-    // when the Worker already completed the rebase.
-    await withGitLock(async () => {
-      await exec("git", ["-C", worktree, "rebase", "--abort"]).catch(() => {});
-      await removeWorktree(worktree, exec);
+    // Abort any half-finished rebase; a no-op when the Worker already
+    // completed it. Nothing else to clean up in-place: the checkout is the
+    // container's own, torn down with it rather than removed here.
+    await gitPhase(async () => {
+      await git(["rebase", "--abort"]).catch(() => {});
+      if (!config.inPlace) await removeWorktree(worktree, exec);
     });
   }
 }
@@ -770,6 +797,16 @@ export interface RefinementOutcome {
 }
 
 /**
+ * What a Refinement round runs with (issue #181): the shared wall-clock and
+ * stall watchdog every headless Worker takes, plus `inPlace`, mirroring
+ * `ConflictWorkerConfig.inPlace` — true for a Refinement round's own session
+ * container, false (the local path's default) for the isolated worktree.
+ */
+export interface RefinementWorkerConfig extends ClaudeRunConfig {
+  inPlace: boolean;
+}
+
+/**
  * Dispatch one Refinement-round Worker against one open agent PR (CONTEXT.md
  * "Refinement round"): cut a worktree on the PR's own head branch (no rebase
  * setup — a round investigates the PR as it stands, unlike the conflict
@@ -781,18 +818,24 @@ export interface RefinementOutcome {
  * pins that contract); the caller judges `newCommits` and pushes only when
  * the round actually changed something, mirroring the conflict Worker's own
  * split between judging and pushing.
+ *
+ * `config.inPlace` mirrors `dispatchConflictWorker`'s own split: a session
+ * container owns its sole checkout, so it checks the head branch out
+ * directly in the current working directory and skips both the worktree and
+ * the repo-level git lock.
  */
 export async function dispatchRefinementWorker(
   pr: number,
   ticket: number,
   headRef: string,
   round: number,
-  config: ClaudeRunConfig,
+  config: RefinementWorkerConfig,
   exec: Exec = realExec,
   spawnProcess: SpawnWorkerProcess = realSpawnWorkerProcess,
   log: Log = noopLog,
 ): Promise<RefinementOutcome> {
   const worktree = join(RUN_DIR, "refinement-worktrees", `pr-${pr}`);
+  const cwd = config.inPlace ? "." : worktree;
   const transcript = join(
     RUN_DIR,
     "transcripts",
@@ -804,27 +847,36 @@ export async function dispatchRefinementWorker(
     `pr-${pr}-refinement-round-${round}.stderr.log`,
   );
 
-  const base = await withGitLock(async () => {
-    await removeWorktree(worktree, exec);
-    await exec("git", ["worktree", "prune"]);
-    await exec("git", ["fetch", "origin"]);
-    await exec("git", [
-      "worktree",
-      "add",
-      worktree,
-      "-B",
-      headRef,
-      `origin/${headRef}`,
-    ]);
+  const gitPhase = config.inPlace
+    ? <T>(operation: () => Promise<T>): Promise<T> => operation()
+    : withGitLock;
+
+  const base = await gitPhase(async () => {
+    if (config.inPlace) {
+      await exec("git", ["fetch", "origin"]);
+      await exec("git", ["checkout", "-B", headRef, `origin/${headRef}`]);
+    } else {
+      await removeWorktree(worktree, exec);
+      await exec("git", ["worktree", "prune"]);
+      await exec("git", ["fetch", "origin"]);
+      await exec("git", [
+        "worktree",
+        "add",
+        worktree,
+        "-B",
+        headRef,
+        `origin/${headRef}`,
+      ]);
+    }
     return (await exec("git", ["rev-parse", headRef])).trim();
   });
   log({
     kind: "refinement-worker-paths",
     level: "debug",
-    msg: `Refinement Worker for PR #${pr} (round ${round}): worktree ${worktree}, transcript ${transcript}`,
+    msg: `Refinement Worker for PR #${pr} (round ${round}): ${config.inPlace ? "checkout" : "worktree"} ${cwd}, transcript ${transcript}`,
     pr,
     round,
-    worktree,
+    worktree: cwd,
     transcript,
   });
 
@@ -832,7 +884,7 @@ export async function dispatchRefinementWorker(
     const { exitCode } = await spawnProcess({
       cmd: "claude",
       args: claudeArgs(refinementWorkerPrompt(), config.model, config.maxTurns),
-      cwd: worktree,
+      cwd,
       transcriptPath: transcript,
       stderrPath: stderrLog,
       timeoutMs: config.timeoutMs,
@@ -840,14 +892,18 @@ export async function dispatchRefinementWorker(
     });
     const newCommits = Number(
       (
-        await withGitLock(() =>
+        await gitPhase(() =>
           exec("git", ["rev-list", "--count", `${base}..${headRef}`]),
         )
       ).trim(),
     );
     return { pr, ticket, headRef, transcript, exitCode, newCommits };
   } finally {
-    await withGitLock(() => removeWorktree(worktree, exec));
+    // Nothing to clean up in-place: the checkout is the container's own,
+    // torn down with it rather than removed here.
+    if (!config.inPlace) {
+      await withGitLock(() => removeWorktree(worktree, exec));
+    }
   }
 }
 

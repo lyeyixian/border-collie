@@ -29,6 +29,10 @@ interface LogEventBase {
  * {@link Log.child}. `worker-dispatched-async` is a fire-and-forget
  * dispatch's only narration this Tick (issue #73): its Worker settles its
  * own Attempt elsewhere, so there is no `worker-outcome` to follow it.
+ * `conflict-dispatched-async`/`refinement-dispatched-async` are the same
+ * shape for a Conflict Worker or Refinement round dispatched into a session
+ * container (issue #181): no `conflict-outcome`/`refinement-outcome` follows
+ * either, since the container settles its own PR write elsewhere.
  */
 export type LogEvent = LogEventBase &
   (
@@ -45,7 +49,9 @@ export type LogEvent = LogEventBase &
         queuedBehind: number;
       }
     | { kind: "conflict-dispatch"; ticket: number }
+    | { kind: "conflict-dispatched-async" }
     | { kind: "refinement-round-started"; ticket: number; round: number }
+    | { kind: "refinement-dispatched-async" }
     | {
         kind: "refinement-give-up";
         pr: number;

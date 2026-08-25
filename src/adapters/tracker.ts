@@ -509,6 +509,9 @@ async function listOpenAgentPrs(exec: Exec): Promise<OpenAgentPr[]> {
           : false,
       ci,
       conflictWorkerAsked: signals.conflictWorkerAsked,
+      // Patched onto the front-runner alone by `readScope` once liveness is
+      // read repo-wide (issue #181) — false here is simply "not checked yet".
+      conflictWorkerLive: false,
       operatorSteered,
       refinement: signals.refinement,
       queuedBehindNotified: signals.queuedBehindNotified,
@@ -749,6 +752,22 @@ export async function createIssue(
 /** Reads which Ticket numbers a live Worker is running against, for one dispatch backend. */
 export type ReadLiveWorkerTickets = (exec: Exec) => Promise<Set<number>>;
 
+/** Reads which pull request numbers a live Conflict Worker session container is running against. */
+export type ReadLiveConflictPrs = (exec: Exec) => Promise<Set<number>>;
+
+/**
+ * The default `readLiveConflictPrs`: no backend dispatches a Conflict Worker
+ * into a session container yet (issue #181 adds the capability; wiring it in
+ * as a Tick's actual dispatch backend is a later cutover, same as issue #177
+ * left `dispatchContainerWorker`/`liveContainerTickets` unwired), so nothing
+ * is ever live by this read — the same "no fire-and-forget backend in
+ * production yet" state `conflictWorkerLive` would otherwise silently assume
+ * without a caller having to inject anything.
+ */
+async function noLiveConflictPrs(): Promise<Set<number>> {
+  return new Set();
+}
+
 /**
  * Observe phase: read the Scope from GitHub. Parent scope lists the parent's
  * sub-issues (open and closed — the planner needs closed ones to reason about
@@ -763,11 +782,18 @@ export type ReadLiveWorkerTickets = (exec: Exec) => Promise<Set<number>>;
  * concern which backend a Tick actually used to dispatch — this seam only
  * reads liveness back, the same way `hasLiveWorker` itself carries no opinion
  * about where a Worker runs (core/types.ts).
+ *
+ * `readLiveConflictPrs` is the same idea for a Conflict Worker
+ * (`OpenAgentPr.conflictWorkerLive`, issue #181): `noLiveConflictPrs` by
+ * default, since dispatching one into a session container is not yet any
+ * caller's default; `liveContainerPrs` (adapters/container.ts) is the real
+ * backend, injected once a caller actually dispatches that way.
  */
 export async function readScope(
   scope: Scope,
   exec: Exec = realExec,
   readLiveWorkerTickets: ReadLiveWorkerTickets = liveWorkerTickets,
+  readLiveConflictPrs: ReadLiveConflictPrs = noLiveConflictPrs,
 ): Promise<WorldSnapshot> {
   const endpoint =
     scope.kind === "parent"
@@ -825,6 +851,20 @@ export async function readScope(
   const mergedAgentPrs = hasOpenTickets
     ? (await listMergedAgentPrs(exec)).filter((pr) => inScope.has(pr.ticket))
     : [];
+
+  // Conflict Worker liveness matters only for a PR the conflict-scheduling
+  // gate could otherwise re-dispatch a second Worker against — a conflicted
+  // one whose first Worker has not yet settled. Read once, repo-wide, and
+  // fanned back onto every such PR, the same shape as ticket liveness above.
+  const conflictedPrs = openAgentPrs.filter(
+    (pr) => pr.mergeable === "conflicted",
+  );
+  if (conflictedPrs.length > 0) {
+    const live = await readLiveConflictPrs(exec);
+    for (const pr of conflictedPrs) {
+      pr.conflictWorkerLive = live.has(pr.number);
+    }
+  }
 
   return { tickets, openAgentPrs, mergedAgentPrs };
 }

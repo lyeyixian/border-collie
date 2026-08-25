@@ -37,10 +37,19 @@ export interface TickDeps {
    * (issue #74): a Ticket dispatch triggers the Worker's job and returns
    * (`dispatchRemoteWorker`) instead of running headless claude to
    * completion in-process (`dispatchWorker`). Conflict and Refinement
-   * Workers are unaffected either way — they stay cheap enough to run inline
-   * in whichever process the Tick itself is. Left undefined (falsy) by every
-   * caller but the real composition root, so the resident run loop and a
-   * manually-run tick keep today's synchronous local path.
+   * Workers are unaffected by this particular flag — this Tick always
+   * dispatches them synchronously in-process, via `dispatchConflictWorker`/
+   * `dispatchRefinementWorker` — but they are no longer categorically
+   * synchronous the way they once were: both now accept a fire-and-forget
+   * outcome too (`DispatchConflictWorker`/`DispatchRefinementWorker`,
+   * src/app/act.ts), and a session-container backend for each exists
+   * (`dispatchContainerConflictWorker`/`dispatchContainerRefinementWorker`,
+   * adapters/container.ts, issue #181) for a future caller to wire in, the
+   * same way `dispatchContainerWorker` (issue #177) exists beside this
+   * Tick's own synchronous/Actions choice above without yet being reachable
+   * from it. Left undefined (falsy) by every caller but the real composition
+   * root, so the resident run loop and a manually-run tick keep today's
+   * synchronous local path.
    */
   remoteDispatch?: boolean;
   /**
@@ -220,6 +229,12 @@ export async function tickOnce(
             timeoutMs: config.timeoutMinutes * 60_000,
             stallMs: config.stallMinutes * 60_000,
             maxTurns: config.maxTurns,
+            // This Tick's own process dispatches at most one Conflict Worker
+            // concurrently with any dispatch Workers it also spawned, so it
+            // still needs an isolated worktree — never in-place (that path is
+            // a Conflict Worker's own session container; see
+            // src/app/conflict-worker.ts, issue #181).
+            inPlace: false,
           },
           exec,
           realSpawnWorkerProcess,
@@ -236,6 +251,11 @@ export async function tickOnce(
             timeoutMs: config.timeoutMinutes * 60_000,
             stallMs: config.stallMinutes * 60_000,
             maxTurns: config.maxTurns,
+            // Never in-place here, for the same reason as the Conflict
+            // Worker above — a Refinement round's own session container is
+            // where in-place applies (src/app/refinement-worker.ts, issue
+            // #181).
+            inPlace: false,
           },
           exec,
           realSpawnWorkerProcess,

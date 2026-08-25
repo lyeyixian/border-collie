@@ -5,10 +5,12 @@ import {
   run as runStricli,
   version,
 } from "@stricli/core";
+import { conflictWorkerCommand } from "./conflict-worker-command.js";
 import type { Context } from "./context.js";
 import { daemonCommand } from "./daemon-command.js";
 import { declareCommand } from "./declare-command.js";
 import { initCommand } from "./init-command.js";
+import { refineCommand } from "./refine-command.js";
 import { runCommand } from "./run-command.js";
 import { tickCommand } from "./tick-command.js";
 import { VERSION } from "./version.js";
@@ -20,6 +22,8 @@ const routeMap = buildRouteMap({
     run: runCommand,
     daemon: daemonCommand,
     worker: workerCommand,
+    "conflict-worker": conflictWorkerCommand,
+    refine: refineCommand,
     init: initCommand,
     declare: declareCommand,
   },

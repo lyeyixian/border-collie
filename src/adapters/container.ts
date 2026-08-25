@@ -9,7 +9,11 @@ import {
 import { dirname, join } from "node:path";
 import {
   DEFAULT_TRANSCRIPT_RETENTION_MS,
+  encodePrSessionLabels,
   encodeSessionLabels,
+  type PrSessionKind,
+  type PrSessionLabels,
+  parsePrSessionLabels,
   parseSessionLabels,
   REPOSITORY_LABEL,
   repositoryImageSlug,
@@ -417,4 +421,147 @@ export async function resolveSessionImage(
     );
   }
   return sessionTag;
+}
+
+/** One PR-scoped session container's `docker run --label key=value` arguments, from its identity. */
+function prLabelArgs(session: PrSessionLabels): string[] {
+  return Object.entries(encodePrSessionLabels(session)).flatMap(
+    ([key, value]) => ["--label", `${key}=${value}`],
+  );
+}
+
+/**
+ * Dispatch one Conflict Worker against one conflicted PR by starting its own
+ * session container, detached, and returning immediately without an outcome
+ * (issue #181) — the PR-scoped sibling of `dispatchContainerWorker` above,
+ * labelled by PR and kind rather than ticket and attempt, since a Conflict
+ * Worker is not an Attempt and has no ticket-scoped identity of its own to
+ * key liveness on. The container clones the repository fresh and runs
+ * `border-collie conflict-worker --in-place`, the settling entrypoint that
+ * dispatches the session and pushes the resolved rebase (or asks a human)
+ * itself, exactly as `border-collie worker --in-place` does for a Worker
+ * Attempt; the next Tick reads the result back from the tracker, and reads
+ * this PR's liveness from the container's own labels (`liveContainerPrs`
+ * below) rather than waiting on it here.
+ *
+ * `--rm`, and the dynamic-value-through-`--env`-never-interpolated rule: the
+ * same reasoning `dispatchContainerWorker`'s own doc comment gives.
+ */
+export async function dispatchContainerConflictWorker(
+  pr: number,
+  ticket: number,
+  headRef: string,
+  repository: string,
+  config: ContainerWorkerConfig,
+  exec: Exec = realExec,
+): Promise<undefined> {
+  await exec("docker", [
+    "run",
+    "--detach",
+    "--rm",
+    ...prLabelArgs({ repository, pr, kind: "conflict" }),
+    "--env",
+    `GH_TOKEN=${config.ghToken}`,
+    "--env",
+    `CLAUDE_CODE_OAUTH_TOKEN=${config.claudeCodeOAuthToken}`,
+    "--env",
+    `REPOSITORY=${repository}`,
+    "--env",
+    `PR=${pr}`,
+    "--env",
+    `TICKET=${ticket}`,
+    "--env",
+    `HEAD_REF=${headRef}`,
+    "--env",
+    `TIMEOUT_MINUTES=${config.timeoutMinutes}`,
+    config.image,
+    "sh",
+    "-c",
+    'gh repo clone "$REPOSITORY" . && border-collie conflict-worker "$PR" "$TICKET" "$HEAD_REF" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+  ]);
+  return undefined;
+}
+
+/**
+ * Dispatch one Refinement round against one open agent PR by starting its own
+ * session container, detached, and returning immediately without an outcome
+ * (issue #181) — the PR-scoped sibling of `dispatchContainerConflictWorker`
+ * above, carrying `round` as an explicit env var since the round marker
+ * (`REFINEMENT_ROUND_MARKER`) is posted by the Tick before this dispatches
+ * (the charge-before-spend shape `core/types.ts` documents), not recomputed
+ * inside the container. Runs `border-collie refine --in-place`, the settling
+ * entrypoint that dispatches the round and pushes its branch when it
+ * committed a fix.
+ */
+export async function dispatchContainerRefinementWorker(
+  pr: number,
+  ticket: number,
+  headRef: string,
+  round: number,
+  repository: string,
+  config: ContainerWorkerConfig,
+  exec: Exec = realExec,
+): Promise<undefined> {
+  await exec("docker", [
+    "run",
+    "--detach",
+    "--rm",
+    ...prLabelArgs({ repository, pr, kind: "refinement" }),
+    "--env",
+    `GH_TOKEN=${config.ghToken}`,
+    "--env",
+    `CLAUDE_CODE_OAUTH_TOKEN=${config.claudeCodeOAuthToken}`,
+    "--env",
+    `REPOSITORY=${repository}`,
+    "--env",
+    `PR=${pr}`,
+    "--env",
+    `TICKET=${ticket}`,
+    "--env",
+    `HEAD_REF=${headRef}`,
+    "--env",
+    `ROUND=${round}`,
+    "--env",
+    `TIMEOUT_MINUTES=${config.timeoutMinutes}`,
+    config.image,
+    "sh",
+    "-c",
+    'gh repo clone "$REPOSITORY" . && border-collie refine "$PR" "$TICKET" "$HEAD_REF" "$ROUND" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+  ]);
+  return undefined;
+}
+
+/**
+ * Pull request numbers with a Conflict Worker or Refinement-round session
+ * container Docker still counts as running, for one repository and kind —
+ * the PR-scoped sibling of `liveContainerTickets` above, filtered by
+ * `kind` so a live Refinement round is never mistaken for a live Conflict
+ * Worker on the same PR or vice versa. Feeds `OpenAgentPr.conflictWorkerLive`
+ * (issue #181) via `readScope`'s injectable `readLiveConflictPrs`.
+ */
+export async function liveContainerPrs(
+  repository: string,
+  kind: PrSessionKind,
+  exec: Exec = realExec,
+): Promise<Set<number>> {
+  const stdout = await exec("docker", [
+    "ps",
+    "--filter",
+    `label=${REPOSITORY_LABEL}=${repository}`,
+    "--format",
+    "{{.Labels}}",
+  ]);
+  const live = new Set<number>();
+  for (const line of stdout.split("\n")) {
+    if (line.trim() === "") continue;
+    const session = parsePrSessionLabels(line);
+    if (
+      session !== undefined &&
+      session.repository === repository &&
+      session.kind === kind
+    ) {
+      live.add(session.pr);
+    }
+  }
+  return live;
 }

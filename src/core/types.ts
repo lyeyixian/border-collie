@@ -506,6 +506,18 @@ export interface OpenAgentPr {
    */
   conflictWorkerAsked: boolean;
   /**
+   * True when a Conflict Worker session container is still running against
+   * this PR (issue #181) — vetoes dispatching a second one while the first
+   * has not yet settled. Unlike `conflictWorkerAsked`, which is written only
+   * after a Worker finishes and fails, this is a liveness read, the PR-scoped
+   * analogue of `Ticket.hasLiveWorker`: a marker written before dispatch
+   * would strand a PR whose Worker never ran, so this is derived from the
+   * environment (a live session container) instead, the same reasoning
+   * `CONFLICT_UNRESOLVED_MARKER`'s own doc comment gives for posting after
+   * rather than before.
+   */
+  conflictWorkerLive: boolean;
+  /**
    * True when the PR carries the operator-steered label (CONTEXT.md
    * "Operator-steered") — the automatic Refinement loop never writes here.
    */

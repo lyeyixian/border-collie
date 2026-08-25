@@ -141,7 +141,12 @@ function conflictQueueOrder(world: WorldSnapshot): OpenAgentPr[] {
   const counts = dependentCounts(world.tickets);
   const dependents = (pr: OpenAgentPr) => counts.get(pr.ticket) ?? 0;
   return world.openAgentPrs
-    .filter((pr) => pr.mergeable === "conflicted" && !pr.conflictWorkerAsked)
+    .filter(
+      (pr) =>
+        pr.mergeable === "conflicted" &&
+        !pr.conflictWorkerAsked &&
+        !pr.conflictWorkerLive,
+    )
     .sort((a, b) => dependents(b) - dependents(a) || a.number - b.number);
 }
 
@@ -154,7 +159,11 @@ function conflictQueueOrder(world: WorldSnapshot): OpenAgentPr[] {
  * Orchestrator reaches the same verdict (ADR 0001). It is deliberately
  * stronger than "one at a time": a conflicted PR also waits behind a sibling
  * that is merely mergeable and unmerged, including one that is mergeable but
- * still a draft.
+ * still a draft. `conflictQueueOrder`'s `!pr.conflictWorkerLive` filter is
+ * what keeps "at most one" true across Ticks now that dispatch is
+ * fire-and-forget (issue #181): without it, a PR whose session container
+ * has not yet settled would still look exactly as conflicted next Tick and
+ * would be re-dispatched a second time.
  *
  * The Worker goes to the front-runner of `conflictQueueOrder`.
  *

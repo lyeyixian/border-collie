@@ -16,11 +16,14 @@ import {
   realExec,
   withDebugLogging,
 } from "../adapters/tracker.js";
+import type { ConflictOutcome, RefinementOutcome } from "../adapters/worker.js";
 import { probeEnvironment } from "../adapters/worker.js";
 import type { IntervalScheduler } from "../app/act.js";
+import { conflictWorkerOnce } from "../app/conflict-worker.js";
 import { type DaemonDeps, daemon as runDaemon } from "../app/daemon.js";
 import { declareOnce } from "../app/declare.js";
 import { initLabelsOnce, initScaffoldOnce } from "../app/init.js";
+import { refinementWorkerOnce } from "../app/refinement-worker.js";
 import { type TickResult, tickOnce } from "../app/tick.js";
 import { workerAttemptOnce } from "../app/worker.js";
 import {
@@ -80,6 +83,31 @@ export interface Context extends CommandContext {
     attempt: number,
     inPlace: boolean,
   ) => Promise<WorkerOutcome>;
+  /**
+   * A Conflict Worker settling its own outcome (issue #181); see
+   * src/app/conflict-worker.ts. `inPlace` skips worktree isolation and the
+   * git lock for a session container that owns its own checkout, the same
+   * meaning it carries for `runWorker`.
+   */
+  readonly runConflictWorker: (
+    config: WorkerAttemptConfig,
+    pr: number,
+    ticket: number,
+    headRef: string,
+    inPlace: boolean,
+  ) => Promise<ConflictOutcome>;
+  /**
+   * A Refinement round settling its own outcome (issue #181); see
+   * src/app/refinement-worker.ts.
+   */
+  readonly runRefinement: (
+    config: WorkerAttemptConfig,
+    pr: number,
+    ticket: number,
+    headRef: string,
+    round: number,
+    inPlace: boolean,
+  ) => Promise<RefinementOutcome>;
   readonly probe: (model: string) => Promise<boolean>;
   /**
    * `declare` (issue #150): run an Onboarding Worker directly against the
@@ -352,6 +380,12 @@ export function buildRealContext(
       }),
     runWorker: (config, ticket, attempt, inPlace) =>
       workerAttemptOnce(config, ticket, attempt, inPlace, { log }),
+    runConflictWorker: (config, pr, ticket, headRef, inPlace) =>
+      conflictWorkerOnce(config, pr, ticket, headRef, inPlace, { log }),
+    runRefinement: (config, pr, ticket, headRef, round, inPlace) =>
+      refinementWorkerOnce(config, pr, ticket, headRef, round, inPlace, {
+        log,
+      }),
     probe: (model) => probeEnvironment(model),
     declare: (config) => declareOnce(config, { log }),
     initScaffold: (force) => initScaffoldOnce(cwd, force),

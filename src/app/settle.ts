@@ -1,9 +1,16 @@
 import { type ReadFile, realReadFile } from "../adapters/pr.js";
 import {
+  commentConflictUnresolved,
   type Exec,
+  markPrDraft,
   releaseFailedTicket,
   voidAttempt,
 } from "../adapters/tracker.js";
+import {
+  type ConflictOutcome,
+  pushAgentBranch,
+  type RefinementOutcome,
+} from "../adapters/worker.js";
 import type { Log } from "../core/log.js";
 import { buildForensicReport, renderForensicReport } from "../core/render.js";
 import type { WorkerOutcome } from "../core/types.js";
@@ -16,6 +23,96 @@ function describeOutcome(outcome: WorkerOutcome): string {
     return `Worker hit an infrastructure failure (${outcome.infra}): attempt ${outcome.attempt} voided, exit ${outcome.exitCode} ${where}`;
   }
   return `Worker failed attempt ${outcome.attempt} (${outcome.failure}): exit ${outcome.exitCode}, ${commits} ${where}`;
+}
+
+function describeConflict(outcome: ConflictOutcome): string {
+  const where = `on ${outcome.headRef} (transcript: ${outcome.transcript})`;
+  return outcome.resolved
+    ? `Conflict Worker resolved the conflicts ${where}`
+    : `Conflict Worker could not resolve the conflicts (exit ${outcome.exitCode}) ${where}`;
+}
+
+function describeRefinement(outcome: RefinementOutcome): string {
+  const commits = `${outcome.newCommits} new commit${outcome.newCommits === 1 ? "" : "s"}`;
+  const where = `on ${outcome.headRef} (transcript: ${outcome.transcript})`;
+  return `Refinement Worker finished: ${commits} ${where}`;
+}
+
+/**
+ * Settle one finished Conflict Worker: narrate the outcome, then perform the
+ * single write its shape implies — the resolved rebase pushed and the PR
+ * converted to draft for a re-read before it can merge (ADR 0007), or the
+ * conflict-unresolved marker asking a human to take over. Shareable by
+ * anything that finishes a Conflict Worker and needs the same write — the act
+ * phase, for the synchronous local dispatch, and a Conflict Worker settling
+ * itself in its own session container (src/app/conflict-worker.ts, issue
+ * #181).
+ */
+export async function settleConflictOutcome(
+  outcome: ConflictOutcome,
+  log: Log,
+  exec: Exec,
+): Promise<void> {
+  log({
+    kind: "conflict-outcome",
+    level: outcome.resolved ? "info" : "warn",
+    msg: describeConflict(outcome),
+    resolved: outcome.resolved,
+  });
+  if (outcome.resolved) {
+    await pushAgentBranch(outcome.headRef, exec);
+    log({
+      kind: "conflict-pushed",
+      level: "info",
+      msg: "pushed the resolved rebase",
+    });
+    // Hold the resolution back from merging until it has been looked at
+    // (ADR 0007): a completed rebase says only that git finished, not that
+    // the resolved code still works, and the PR may already carry an
+    // approval from before the resolution existed.
+    await markPrDraft(outcome.pr, exec);
+    log({
+      kind: "conflict-drafted",
+      level: "info",
+      msg: "converted the PR to draft for a re-read before it can merge",
+    });
+  } else {
+    await commentConflictUnresolved(outcome.pr, exec);
+    log({
+      kind: "conflict-unresolved",
+      level: "warn",
+      msg: "asked for human resolution",
+    });
+  }
+}
+
+/**
+ * Settle one finished Refinement round: narrate the outcome, then push the
+ * branch back only when the round actually committed a fix — a round that
+ * changed nothing leaves the PR as it was, for the next Tick to judge afresh.
+ * Shareable the same way `settleConflictOutcome` is, between the act phase's
+ * synchronous local dispatch and a Refinement round settling itself in its
+ * own session container (src/app/refinement-worker.ts, issue #181).
+ */
+export async function settleRefinementOutcome(
+  outcome: RefinementOutcome,
+  log: Log,
+  exec: Exec,
+): Promise<void> {
+  log({
+    kind: "refinement-outcome",
+    level: "info",
+    msg: describeRefinement(outcome),
+    newCommits: outcome.newCommits,
+  });
+  if (outcome.newCommits > 0) {
+    await pushAgentBranch(outcome.headRef, exec);
+    log({
+      kind: "refinement-pushed",
+      level: "info",
+      msg: "pushed the Refinement fix",
+    });
+  }
 }
 
 /**
