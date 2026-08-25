@@ -6,6 +6,7 @@ import {
   version,
 } from "@stricli/core";
 import type { Context } from "./context.js";
+import { daemonCommand } from "./daemon-command.js";
 import { declareCommand } from "./declare-command.js";
 import { initCommand } from "./init-command.js";
 import { runCommand } from "./run-command.js";
@@ -17,6 +18,7 @@ const routeMap = buildRouteMap({
   routes: {
     tick: tickCommand,
     run: runCommand,
+    daemon: daemonCommand,
     worker: workerCommand,
     init: initCommand,
     declare: declareCommand,

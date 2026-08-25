@@ -4,6 +4,8 @@ import {
   execWithToken,
   listFleetRepositories,
   mintRepositoryToken,
+  parseRepositoryFullName,
+  repositoryFullName,
   signAppJwt,
 } from "../../src/adapters/app-auth.js";
 import { claimTicket, readTicketTitle } from "../../src/adapters/tracker.js";
@@ -180,6 +182,22 @@ describe("listFleetRepositories", () => {
       { owner: "acme", name: "widget" },
       { owner: "acme", name: "gizmo" },
     ]);
+  });
+});
+
+describe("repositoryFullName / parseRepositoryFullName", () => {
+  it("round-trips a repository through its full name", () => {
+    const repository = { owner: "acme", name: "widget" };
+
+    expect(parseRepositoryFullName(repositoryFullName(repository))).toEqual(
+      repository,
+    );
+  });
+
+  it("formats as owner/name", () => {
+    expect(repositoryFullName({ owner: "acme", name: "widget" })).toBe(
+      "acme/widget",
+    );
   });
 });
 

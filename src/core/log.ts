@@ -110,6 +110,8 @@ export type LogEvent = LogEventBase &
         kind: "onboarding-worker-paths";
         transcript: string;
       }
+    | { kind: "daemon-fleet-unreachable"; reason: string }
+    | { kind: "daemon-repository-unreachable"; reason: string }
   );
 
 /**
@@ -142,6 +144,8 @@ export interface LogBindings {
   ticket?: number;
   attempt?: number;
   pr?: number;
+  /** The daemon's per-repository sub-logger binds this (issue #183), so every event one repository's Tick emits stays tellable apart from a sibling's while both run concurrently. */
+  repository?: string;
 }
 
 /**

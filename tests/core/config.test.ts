@@ -1,11 +1,16 @@
 import { describe, expect, it } from "vitest";
+import { APP_ID_ENV, APP_PRIVATE_KEY_ENV } from "../../src/core/app-auth.js";
 import {
+  CLAUDE_CODE_OAUTH_TOKEN_ENV,
   ConfigError,
+  type DaemonFlags,
   modelForAttempt,
   resolveConfig,
+  resolveDaemonConfig,
   resolveWorkerConfig,
   type Scope,
   scopeFromFlags,
+  WORKER_IMAGE_ENV,
 } from "../../src/core/config.js";
 
 const PARENT_SCOPE: Scope = { kind: "parent", parent: 1 };
@@ -407,5 +412,74 @@ describe("resolveWorkerConfig", () => {
       startHour: 9,
       endHour: 18,
     });
+  });
+});
+
+describe("resolveDaemonConfig", () => {
+  const ENV = {
+    [APP_ID_ENV]: "123456",
+    [APP_PRIVATE_KEY_ENV]: "-----BEGIN PRIVATE KEY-----",
+    [CLAUDE_CODE_OAUTH_TOKEN_ENV]: "claude-token",
+    [WORKER_IMAGE_ENV]: "ghcr.io/acme/border-collie-base:latest",
+  };
+
+  it("resolves every field from flags and environment, defaulting the state dir under the home directory", () => {
+    const resolved = resolveDaemonConfig({}, ENV, "/home/operator");
+
+    expect(resolved).toEqual({
+      pollSeconds: 30,
+      image: "ghcr.io/acme/border-collie-base:latest",
+      stateDir: "/home/operator/.border-collie",
+      appId: "123456",
+      appPrivateKey: "-----BEGIN PRIVATE KEY-----",
+      claudeCodeOAuthToken: "claude-token",
+      probeModel: "sonnet",
+    });
+  });
+
+  it("lets flags override the poll interval, image and state dir", () => {
+    const flags: DaemonFlags = {
+      pollSeconds: 60,
+      image: "ghcr.io/acme/other:latest",
+      stateDir: "/srv/border-collie",
+    };
+
+    const resolved = resolveDaemonConfig(flags, ENV, "/home/operator");
+
+    expect(resolved.pollSeconds).toBe(60);
+    expect(resolved.image).toBe("ghcr.io/acme/other:latest");
+    expect(resolved.stateDir).toBe("/srv/border-collie");
+  });
+
+  it("names a missing worker image rather than crashing", () => {
+    const { [WORKER_IMAGE_ENV]: _omit, ...envWithoutImage } = ENV;
+
+    expect(() =>
+      resolveDaemonConfig({}, envWithoutImage, "/home/operator"),
+    ).toThrow(ConfigError);
+  });
+
+  it("names a missing GitHub App id rather than crashing", () => {
+    const { [APP_ID_ENV]: _omit, ...envWithoutAppId } = ENV;
+
+    expect(() =>
+      resolveDaemonConfig({}, envWithoutAppId, "/home/operator"),
+    ).toThrow(ConfigError);
+  });
+
+  it("names a missing GitHub App private key rather than crashing", () => {
+    const { [APP_PRIVATE_KEY_ENV]: _omit, ...envWithoutKey } = ENV;
+
+    expect(() =>
+      resolveDaemonConfig({}, envWithoutKey, "/home/operator"),
+    ).toThrow(ConfigError);
+  });
+
+  it("names a missing Claude Code OAuth token rather than crashing", () => {
+    const { [CLAUDE_CODE_OAUTH_TOKEN_ENV]: _omit, ...envWithoutToken } = ENV;
+
+    expect(() =>
+      resolveDaemonConfig({}, envWithoutToken, "/home/operator"),
+    ).toThrow(ConfigError);
   });
 });

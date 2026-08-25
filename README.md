@@ -97,6 +97,50 @@ Nothing in the Worker job installs the *target* repo's own dependencies — prep
 
 `border-collie init` scaffolds both workflow files above into a fresh repository, creates the tracker labels the loop depends on, and prints this same checklist.
 
+## Running the daemon as a service
+
+`border-collie daemon` is a second way to run the fleet continuously, alongside GitHub Actions (above): one long-running process on a host you control, herding every repository your GitHub App is installed on instead of one repository per scaffolded workflow (ADR 0009). It walks the fleet on an interval — read fresh from the App's own installation list every poll, never a list border-collie stores — and runs one Tick per repository due, each with its own token minted for that repository alone and its own Worker Attempts dispatched into detached, self-removing containers. Two Ticks for one repository never overlap, and one repository's slow Tick never delays another's.
+
+```
+npm install -g border-collie
+border-collie daemon
+```
+
+It never returns on its own; stop it the way you would any other long-running process. A restart loses no work in flight — every session container runs detached and settles its own Attempt against the tracker itself, so the daemon that comes back simply lists what is still running (by container label) and picks up where it left off. **Upgrading is an install and a restart** — `npm install -g border-collie@latest`, then restart the service — there is no per-repository workflow file to re-scaffold or version-pin.
+
+Requires:
+
+- **Docker** (or another `docker`-CLI-compatible runtime) on the host, to run session containers.
+- `BORDER_COLLIE_APP_ID` and `BORDER_COLLIE_APP_PRIVATE_KEY` in the environment: the same GitHub App `init` prints the checklist for, installed on every repository you want herded. Unlike the Actions path, the daemon holds the private key itself and mints a short-lived, repository-scoped installation token per Attempt rather than delegating that to a workflow step.
+- `CLAUDE_CODE_OAUTH_TOKEN` in the environment: a subscription OAuth token (`claude setup-token`), handed to every session container.
+- A session image named by `--image` or `BORDER_COLLIE_WORKER_IMAGE`: the border-collie base image (Node, git, the GitHub CLI, Claude Code and border-collie itself) a Worker Attempt's container runs from.
+
+Other flags: `--poll-seconds` (default 30 — how often the fleet is polled, and how long a repository must idle before it is due again), `--state-dir` (default `~/.border-collie` — where the daemon keeps its own local checkout of each repository, needed for Conflict Worker and Refinement round dispatch until issue #181 moves those into containers too), `--probe-model` (default `sonnet` — the model the circuit breaker's recovery probe runs on).
+
+A minimal systemd unit:
+
+```ini
+[Unit]
+Description=border-collie daemon
+After=network-online.target docker.service
+Wants=network-online.target
+Requires=docker.service
+
+[Service]
+Environment=BORDER_COLLIE_APP_ID=123456
+EnvironmentFile=/etc/border-collie/env
+ExecStart=/usr/bin/border-collie daemon --image ghcr.io/you/border-collie-base:latest
+Restart=on-failure
+User=border-collie
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Put the two secrets (`BORDER_COLLIE_APP_PRIVATE_KEY`, `CLAUDE_CODE_OAUTH_TOKEN`) in `/etc/border-collie/env`, readable only by the `border-collie` user, rather than the unit file itself. Enable and start it with `systemctl enable --now border-collie`; upgrade with `npm install -g border-collie@latest && systemctl restart border-collie`.
+
+A repository the daemon cannot reach this poll — a revoked installation, a network blip — is reported and skipped; the rest of the fleet still ticks.
+
 ## Status
 
 Design phase. See [docs/handoff-ticket-fleet-orchestrator.md](docs/handoff-ticket-fleet-orchestrator.md) for the design context this project started from, including the decisions already taken and the open questions still to settle.
