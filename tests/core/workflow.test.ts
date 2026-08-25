@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { RUN_DIR } from "../../src/core/types.js";
 import {
   ContractError,
   parseContract,
+  resolveDockerfilePath,
   verifyCommandOutcome,
   verifyOutcome,
 } from "../../src/core/workflow.js";
@@ -42,13 +44,37 @@ describe("parseContract", () => {
   it("parses as an empty contract when there is no front matter", () => {
     const contract = parseContract("# just a README, no front matter\n");
 
-    expect(contract).toEqual({ afterCreate: undefined, verify: {} });
+    expect(contract).toEqual({
+      afterCreate: undefined,
+      verify: {},
+      dockerfile: undefined,
+    });
   });
 
   it("parses as an empty contract when the front matter itself is blank", () => {
     const contract = parseContract(["---", "", "---", "body"].join("\n"));
 
-    expect(contract).toEqual({ afterCreate: undefined, verify: {} });
+    expect(contract).toEqual({
+      afterCreate: undefined,
+      verify: {},
+      dockerfile: undefined,
+    });
+  });
+
+  it("parses a declared dockerfile path", () => {
+    const contract = parseContract(
+      ["---", "dockerfile: docker/agent.Dockerfile", "---"].join("\n"),
+    );
+
+    expect(contract.dockerfile).toBe("docker/agent.Dockerfile");
+  });
+
+  it("leaves dockerfile undefined when the key is absent", () => {
+    const contract = parseContract(
+      ["---", "verify:", "  test: pnpm test", "---"].join("\n"),
+    );
+
+    expect(contract.dockerfile).toBeUndefined();
   });
 
   it("accepts an empty verify: map", () => {
@@ -113,8 +139,29 @@ describe("parseContract", () => {
     expect(withWeirdBody).toEqual({
       afterCreate: undefined,
       verify: { test: "pnpm test" },
+      dockerfile: undefined,
     });
     expect(withWeirdBody).not.toHaveProperty("body");
+  });
+});
+
+describe("resolveDockerfilePath", () => {
+  it("uses the declared path verbatim, marked as declared", () => {
+    expect(resolveDockerfilePath("docker/agent.Dockerfile")).toEqual({
+      path: "docker/agent.Dockerfile",
+      declared: true,
+    });
+  });
+
+  it("falls back to a default path under the fleet's own directory when nothing is declared", () => {
+    expect(resolveDockerfilePath(undefined)).toEqual({
+      path: `${RUN_DIR}/Dockerfile`,
+      declared: false,
+    });
+  });
+
+  it("never falls back to the repository's own root Dockerfile", () => {
+    expect(resolveDockerfilePath(undefined).path).not.toBe("Dockerfile");
   });
 });
 

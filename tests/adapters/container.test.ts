@@ -3,22 +3,28 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+  ContainerImageError,
   type ContainerWorkerConfig,
   dispatchContainerWorker,
   type EnsureDir,
   type ListTranscripts,
   liveContainerTickets,
+  type PathExists,
   pruneTranscripts,
   type RemoveTranscript,
   realEnsureDir,
   realListTranscripts,
   realRemoveTranscript,
+  resolveSessionImage,
+  type SessionImageInput,
+  type WriteLayerDockerfile,
 } from "../../src/adapters/container.js";
 import type { Exec } from "../../src/adapters/tracker.js";
 import {
   encodeSessionLabels,
   type TranscriptFile,
 } from "../../src/core/container.js";
+import { RUN_DIR } from "../../src/core/types.js";
 
 const REPOSITORY = "acme/widgets";
 const TRANSCRIPTS_ROOT = "/var/lib/border-collie/transcripts";
@@ -216,6 +222,210 @@ describe("liveContainerTickets", () => {
     const { exec } = fakeExec(labelsField("other/repo", 5, 1));
 
     expect(await liveContainerTickets(REPOSITORY, exec)).toEqual(new Set());
+  });
+});
+
+describe("resolveSessionImage", () => {
+  const BASE_IMAGE = "ghcr.io/acme/border-collie-base:latest";
+  const INPUT: SessionImageInput = {
+    repository: REPOSITORY,
+    cwd: "/checkout",
+    baseImage: BASE_IMAGE,
+    dockerfile: undefined,
+  };
+
+  function fakePathExists(exists: boolean): {
+    pathExists: PathExists;
+    seen: string[];
+  } {
+    const seen: string[] = [];
+    const pathExists: PathExists = async (path) => {
+      seen.push(path);
+      return exists;
+    };
+    return { pathExists, seen };
+  }
+
+  function fakeWriteLayerDockerfile(): {
+    write: WriteLayerDockerfile;
+    calls: Array<{ path: string; content: string }>;
+  } {
+    const calls: Array<{ path: string; content: string }> = [];
+    const write: WriteLayerDockerfile = async (path, content) => {
+      calls.push({ path, content });
+    };
+    return { write, calls };
+  }
+
+  it("resolves to the base image, with no docker calls, when the repository declares no Dockerfile and the default path does not exist", async () => {
+    const { exec, calls } = fakeExec();
+    const { pathExists, seen } = fakePathExists(false);
+    const { write } = fakeWriteLayerDockerfile();
+
+    const image = await resolveSessionImage(
+      INPUT,
+      exec,
+      pathExists,
+      write,
+      "0.6.0",
+    );
+
+    expect(image).toBe(BASE_IMAGE);
+    expect(calls).toEqual([]);
+    expect(seen).toEqual([`/checkout/${RUN_DIR}/Dockerfile`]);
+  });
+
+  it("throws a named ContainerImageError, naming the repository and the path, when a declared Dockerfile does not exist — never a silent fall back to the base image", async () => {
+    const { exec, calls } = fakeExec();
+    const { pathExists } = fakePathExists(false);
+    const { write } = fakeWriteLayerDockerfile();
+
+    await expect(
+      resolveSessionImage(
+        { ...INPUT, dockerfile: "docker/agent.Dockerfile" },
+        exec,
+        pathExists,
+        write,
+        "0.6.0",
+      ),
+    ).rejects.toThrow(ContainerImageError);
+    await expect(
+      resolveSessionImage(
+        { ...INPUT, dockerfile: "docker/agent.Dockerfile" },
+        exec,
+        pathExists,
+        write,
+        "0.6.0",
+      ),
+    ).rejects.toThrow(/acme\/widgets.*docker\/agent\.Dockerfile/);
+    expect(calls).toEqual([]);
+  });
+
+  it("builds the repository's Dockerfile, then layers border-collie's own tools on top, resolving to the final tag", async () => {
+    const { exec, calls } = fakeExec();
+    const { pathExists } = fakePathExists(true);
+    const { write, calls: writeCalls } = fakeWriteLayerDockerfile();
+
+    const image = await resolveSessionImage(
+      { ...INPUT, dockerfile: "docker/agent.Dockerfile" },
+      exec,
+      pathExists,
+      write,
+      "0.6.0",
+    );
+
+    expect(calls).toEqual([
+      [
+        "docker",
+        "build",
+        "-f",
+        "/checkout/docker/agent.Dockerfile",
+        "-t",
+        "border-collie-repo-image:acme-widgets",
+        "/checkout",
+      ],
+      [
+        "docker",
+        "build",
+        "-f",
+        `/checkout/${RUN_DIR}/session-layer.Dockerfile`,
+        "--build-arg",
+        "REPO_IMAGE=border-collie-repo-image:acme-widgets",
+        "-t",
+        "border-collie-session-image:acme-widgets",
+        "/checkout",
+      ],
+    ]);
+    expect(writeCalls).toHaveLength(1);
+    expect(writeCalls[0]?.path).toBe(
+      `/checkout/${RUN_DIR}/session-layer.Dockerfile`,
+    );
+    expect(writeCalls[0]?.content).toContain("border-collie@0.6.0");
+    expect(image).toBe("border-collie-session-image:acme-widgets");
+  });
+
+  it("also builds from the default path when it happens to exist, even though nothing was declared", async () => {
+    const { exec, calls } = fakeExec();
+    const { pathExists } = fakePathExists(true);
+    const { write } = fakeWriteLayerDockerfile();
+
+    const image = await resolveSessionImage(
+      INPUT,
+      exec,
+      pathExists,
+      write,
+      "0.6.0",
+    );
+
+    expect(calls[0]).toEqual([
+      "docker",
+      "build",
+      "-f",
+      `/checkout/${RUN_DIR}/Dockerfile`,
+      "-t",
+      "border-collie-repo-image:acme-widgets",
+      "/checkout",
+    ]);
+    expect(image).toBe("border-collie-session-image:acme-widgets");
+  });
+
+  it("throws a named ContainerImageError, naming the repository, when the repository's own Dockerfile fails to build", async () => {
+    const { pathExists } = fakePathExists(true);
+    const { write } = fakeWriteLayerDockerfile();
+    const exec: Exec = async (_cmd, args) => {
+      if (args[2]?.includes("agent.Dockerfile")) {
+        throw new Error("Dockerfile parse error on line 3");
+      }
+      return "";
+    };
+
+    await expect(
+      resolveSessionImage(
+        { ...INPUT, dockerfile: "docker/agent.Dockerfile" },
+        exec,
+        pathExists,
+        write,
+        "0.6.0",
+      ),
+    ).rejects.toThrow(/acme\/widgets.*Dockerfile parse error on line 3/s);
+  });
+
+  it("throws a named ContainerImageError, naming the repository, when layering border-collie's own tools fails", async () => {
+    const { pathExists } = fakePathExists(true);
+    const { write } = fakeWriteLayerDockerfile();
+    const exec: Exec = async (_cmd, args) => {
+      if (args.includes("--build-arg")) {
+        throw new Error("apt-get install failed");
+      }
+      return "";
+    };
+
+    await expect(
+      resolveSessionImage(
+        { ...INPUT, dockerfile: "docker/agent.Dockerfile" },
+        exec,
+        pathExists,
+        write,
+        "0.6.0",
+      ),
+    ).rejects.toThrow(/acme\/widgets.*apt-get install failed/s);
+  });
+
+  it("builds the repository's own Dockerfile with no build-arg naming a border-collie image — its file needs nothing added to it", async () => {
+    const { exec, calls } = fakeExec();
+    const { pathExists } = fakePathExists(true);
+    const { write } = fakeWriteLayerDockerfile();
+
+    await resolveSessionImage(
+      { ...INPUT, dockerfile: "docker/agent.Dockerfile" },
+      exec,
+      pathExists,
+      write,
+      "0.6.0",
+    );
+
+    expect(calls[0]).not.toContain("--build-arg");
+    expect(calls[0]).not.toContain("FROM");
   });
 });
 

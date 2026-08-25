@@ -59,6 +59,7 @@ export type LogEvent = LogEventBase &
     | { kind: "pr-opened"; prUrl: string }
     | { kind: "pr-open-failed" }
     | { kind: "contract-verify-failed" }
+    | { kind: "after-create-failed" }
     | { kind: "declare-contract-invalid" }
     | { kind: "declare-sidecar-invalid" }
     | { kind: "declare-red-baseline-unreachable" }

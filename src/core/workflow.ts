@@ -1,10 +1,12 @@
 /**
  * The repository contract (`WORKFLOW.md`, issue #149): Markdown with YAML
- * front matter, naming two top-level keys. `after_create` is a single shell
- * script string that prepares a checkout; `verify` is a flat map of name to
- * command string, naming commands with meaningful exit codes. The Markdown
- * body is prose for humans — nothing here reads it, and no function in this
- * module ever returns it.
+ * front matter, naming three top-level keys. `after_create` is a single
+ * shell script string that prepares a checkout; `verify` is a flat map of
+ * name to command string, naming commands with meaningful exit codes;
+ * `dockerfile` names the path to the repository's own Dockerfile, the
+ * session container is built from (issue #180). The Markdown body is prose
+ * for humans — nothing here reads it, and no function in this module ever
+ * returns it.
  *
  * Parsing is pure functions over a string: front-matter split, key
  * validation, and the flat map shape. No YAML library — the grammar this
@@ -14,23 +16,30 @@
  * as `tests/helpers/workflow-template.ts`'s hand-rolled `run-name` reader.
  */
 
+import { RUN_DIR } from "./types.js";
+
 export class ContractError extends Error {}
 
 /** File name looked up at the target repo's root. */
 export const CONTRACT_FILE = "WORKFLOW.md";
 
 /**
- * The parsed contract: `afterCreate` undefined when the key is absent,
- * `verify` an empty map when the key is absent or declared empty — both are
- * accepted states, not errors (see `parseContract`).
+ * The parsed contract: `afterCreate` and `dockerfile` undefined when their
+ * key is absent, `verify` an empty map when the key is absent or declared
+ * empty — all three are accepted states, not errors (see `parseContract`).
  */
 export interface Contract {
   afterCreate: string | undefined;
   verify: Record<string, string>;
+  dockerfile: string | undefined;
 }
 
 /** The contract a repository with no `WORKFLOW.md`, or an empty one, resolves to. */
-export const EMPTY_CONTRACT: Contract = { afterCreate: undefined, verify: {} };
+export const EMPTY_CONTRACT: Contract = {
+  afterCreate: undefined,
+  verify: {},
+  dockerfile: undefined,
+};
 
 /** One verify command's outcome, exit code only — never the session's report. */
 export interface VerifyCommandOutcome {
@@ -48,6 +57,7 @@ export interface VerifyOutcome {
 
 const AFTER_CREATE_KEY = "after_create";
 const VERIFY_KEY = "verify";
+const DOCKERFILE_KEY = "dockerfile";
 
 /**
  * Symphony's other three lifecycle hooks (ADR context: this repository
@@ -188,9 +198,9 @@ function resolveFlatMap(entry: TopEntry): Record<string, string> {
  * matter, or front matter that is entirely blank, parses as `EMPTY_CONTRACT`
  * rather than failing — an unonboarded or freshly-onboarded-with-nothing
  * repository is a valid state, not an error. Every other shape either
- * resolves the two known keys or throws `ContractError` naming the offending
- * key: an unsupported key, one of the three forward-compat hook keys, or
- * front matter that is not a mapping at all.
+ * resolves the three known keys or throws `ContractError` naming the
+ * offending key: an unsupported key, one of the three forward-compat hook
+ * keys, or front matter that is not a mapping at all.
  */
 export function parseContract(source: string): Contract {
   const frontMatter = splitFrontMatter(source);
@@ -200,11 +210,14 @@ export function parseContract(source: string): Contract {
 
   let afterCreate: string | undefined;
   let verify: Record<string, string> = {};
+  let dockerfile: string | undefined;
   for (const entry of topLevelEntries(frontMatter.split(/\r?\n/))) {
     if (entry.key === AFTER_CREATE_KEY) {
       afterCreate = resolveScalar(entry);
     } else if (entry.key === VERIFY_KEY) {
       verify = resolveFlatMap(entry);
+    } else if (entry.key === DOCKERFILE_KEY) {
+      dockerfile = resolveScalar(entry);
     } else if (FORWARD_COMPAT_HOOK_KEYS.has(entry.key)) {
       throw new ContractError(
         `${CONTRACT_FILE} declares "${entry.key}", which border-collie does not act on yet — a fresh checkout per Attempt makes it a no-op, so it is rejected rather than silently ignored`,
@@ -215,7 +228,41 @@ export function parseContract(source: string): Contract {
       );
     }
   }
-  return { afterCreate, verify };
+  return { afterCreate, verify, dockerfile };
+}
+
+/**
+ * A declared Dockerfile's resolved path, and whether `WORKFLOW.md` named it
+ * itself (issue #180). `declared` is what tells the container-build seam
+ * (adapters/container.ts) how to treat a path that turns out not to exist:
+ * a repository that named a path and does not have it there is a broken
+ * declaration (a named error); a repository that named nothing has simply
+ * declared no Dockerfile, and the fallback path not existing is the
+ * ordinary case for it — see "runs on the base image" (CONTEXT.md "Session
+ * container").
+ */
+export interface DockerfileResolution {
+  path: string;
+  declared: boolean;
+}
+
+/**
+ * The path a repository's Dockerfile is looked up at, relative to its own
+ * root: `contract.dockerfile` verbatim when declared, or a fixed default
+ * under the fleet's own directory (`RUN_DIR`) otherwise — never the
+ * repository's root `Dockerfile`, which is deliberately not used by
+ * convention (it is usually the application's own production image, built
+ * to ship the application rather than to run an agent in it). Pure: no
+ * filesystem read happens here, only the path a caller should check.
+ */
+export const DEFAULT_DOCKERFILE_PATH = `${RUN_DIR}/Dockerfile`;
+
+export function resolveDockerfilePath(
+  declared: string | undefined,
+): DockerfileResolution {
+  return declared === undefined
+    ? { path: DEFAULT_DOCKERFILE_PATH, declared: false }
+    : { path: declared, declared: true };
 }
 
 /** Turn one verify command's exit code into its outcome. */

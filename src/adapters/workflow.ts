@@ -114,3 +114,28 @@ export async function runContractVerify(
   }
   return verifyOutcome(commands);
 }
+
+/** Load a checkout's contract and run its `after_create` command, if it declares one. */
+export type RunAfterCreate = (
+  cwd: string,
+) => Promise<number | null | undefined>;
+
+/**
+ * The declared `after_create` command, run once against `cwd` — `undefined`
+ * when the contract declares none, the same "no result, not a vacuous pass"
+ * shape `runContractVerify` gives an absent `verify:` map. Unlike `verify:`,
+ * which runs after the session and gates nothing (issue #149), this runs
+ * before it: a session container prepares its checkout with this before
+ * starting the Worker's own session at all (issue #180, ADR 0009), so the
+ * caller (`dispatchWorker`, adapters/worker.ts) treats a non-zero exit here
+ * as failing the Attempt outright rather than as a fact to carry forward.
+ */
+export async function runAfterCreate(
+  cwd: string,
+  loadContractFn: LoadContract = loadContract,
+  runVerifyCommand: RunVerifyCommand = realRunVerifyCommand,
+): Promise<number | null | undefined> {
+  const contract = await loadContractFn(cwd);
+  if (contract.afterCreate === undefined) return undefined;
+  return runVerifyCommand(contract.afterCreate, cwd);
+}

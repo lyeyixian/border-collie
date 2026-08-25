@@ -13,7 +13,7 @@
  * malformed input reported as a named error rather than silently dropped.
  */
 
-import type { Contract } from "./workflow.js";
+import { type Contract, resolveDockerfilePath } from "./workflow.js";
 
 export class DeclareSidecarError extends Error {}
 
@@ -216,6 +216,14 @@ export interface DeclareOutcome {
   regressions: string[];
   /** What became of each `kind: "red"` exclusion's tracker issue (issue #151) — empty when none were red. */
   redBaselines: RedBaselineAction[];
+  /**
+   * Whether a Dockerfile exists at `contract.dockerfile`'s resolved path
+   * (issue #180, `resolveDockerfilePath`, core/workflow.ts) — reported the
+   * way an empty verify contract is reported, never failed on: `declare`
+   * never authors a Dockerfile, the same declare-not-author line that keeps
+   * it out of a repository's `CLAUDE.md` (ADR 0009).
+   */
+  dockerfileFound: boolean;
 }
 
 /**
@@ -353,6 +361,15 @@ export function renderDeclareReport(outcome: DeclareOutcome): string {
       lines.push(`  ${name}: ${command}`);
     }
   }
+  const dockerfilePath = resolveDockerfilePath(
+    outcome.contract.dockerfile,
+  ).path;
+  lines.push(
+    "",
+    outcome.dockerfileFound
+      ? `Dockerfile: ${dockerfilePath} — the Worker will run in an image built from it`
+      : `Dockerfile: none at ${dockerfilePath} — the Worker will run on the base image`,
+  );
   if (outcome.excluded.length > 0) {
     lines.push("", "Excluded:");
     for (const { name, reason } of outcome.excluded) {

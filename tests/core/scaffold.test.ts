@@ -115,6 +115,12 @@ describe("SCAFFOLD_FILES", () => {
       ),
     ).toEqual([]);
   });
+
+  it("writes no Dockerfile — declares a repository's toolchain, never authors it (issue #180)", () => {
+    expect(
+      SCAFFOLD_FILES.filter((relPath) => /dockerfile/i.test(relPath)),
+    ).toEqual([]);
+  });
 });
 
 describe("scaffoldContent", () => {
