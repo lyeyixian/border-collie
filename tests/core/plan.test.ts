@@ -53,6 +53,7 @@ function openPr(
     behind: false,
     ci: "passing",
     conflictWorkerAsked: false,
+    conflictWorkerLive: false,
     operatorSteered: false,
     refinement: { rounds: 0, triggerDue: false, givenUp: false },
     queuedBehindNotified: undefined,
@@ -1504,6 +1505,35 @@ describe("plan: conflict scheduling", () => {
           ticket({ number: 9, openBlockers: 1, blockedBy: [3] }),
         ],
         [conflictedPr(3, { conflictWorkerAsked: true }), conflictedPr(4)],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([conflictWorker(40, 4)]);
+  });
+
+  it("never re-dispatches a conflict Worker while its session container is still live (issue #181)", () => {
+    const actions = plan(
+      worldWithPrs(
+        [claimedTicket(3)],
+        [conflictedPr(3, { conflictWorkerLive: true })],
+      ),
+      { maxWorkers: 3, maxOpenPrs: 5 },
+    );
+
+    expect(actions).toEqual([]);
+  });
+
+  it("passes over a PR whose Conflict Worker is still live and takes the next front-runner", () => {
+    const actions = plan(
+      worldWithPrs(
+        [
+          claimedTicket(3),
+          claimedTicket(4),
+          ticket({ number: 8, openBlockers: 1, blockedBy: [3] }),
+          ticket({ number: 9, openBlockers: 1, blockedBy: [3] }),
+        ],
+        [conflictedPr(3, { conflictWorkerLive: true }), conflictedPr(4)],
       ),
       { maxWorkers: 3, maxOpenPrs: 5 },
     );

@@ -1,7 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
   ATTEMPT_LABEL,
+  encodePrSessionLabels,
   encodeSessionLabels,
+  KIND_LABEL,
+  PR_LABEL,
+  type PrSessionLabels,
+  parsePrSessionLabels,
   parseSessionLabels,
   REPOSITORY_LABEL,
   repositoryImageSlug,
@@ -19,6 +24,12 @@ const SESSION: SessionLabels = {
   repository: "acme/widgets",
   ticket: 42,
   attempt: 2,
+};
+
+const PR_SESSION: PrSessionLabels = {
+  repository: "acme/widgets",
+  pr: 30,
+  kind: "conflict",
 };
 
 /** What `docker ps --format '{{.Labels}}'` prints for one container: its whole label set, comma-joined. */
@@ -212,5 +223,55 @@ describe("transcriptsToPrune", () => {
       "ticket-1-attempt-1.jsonl",
       "ticket-1-attempt-1.stderr.log",
     ]);
+  });
+});
+
+describe("encodePrSessionLabels / parsePrSessionLabels", () => {
+  it("round-trips a PR session's identity through docker's own comma-joined labels field", () => {
+    const raw = asDockerLabelsField(encodePrSessionLabels(PR_SESSION));
+
+    expect(parsePrSessionLabels(raw)).toEqual(PR_SESSION);
+  });
+
+  it("round-trips a Refinement round the same way as a Conflict Worker", () => {
+    const session: PrSessionLabels = { ...PR_SESSION, kind: "refinement" };
+    const raw = asDockerLabelsField(encodePrSessionLabels(session));
+
+    expect(parsePrSessionLabels(raw)).toEqual(session);
+  });
+
+  it("ignores labels docker or an operator added alongside ours", () => {
+    const raw = `com.docker.compose.project=fleet,${asDockerLabelsField(encodePrSessionLabels(PR_SESSION))},maintainer=ops`;
+
+    expect(parsePrSessionLabels(raw)).toEqual(PR_SESSION);
+  });
+
+  it("parses nothing from a container that carries none of our labels", () => {
+    expect(
+      parsePrSessionLabels("com.docker.compose.project=fleet"),
+    ).toBeUndefined();
+  });
+
+  it("parses nothing from an empty labels field", () => {
+    expect(parsePrSessionLabels("")).toBeUndefined();
+  });
+
+  it("parses nothing when the repository label is missing", () => {
+    const labels = encodePrSessionLabels(PR_SESSION);
+    delete (labels as Record<string, string | undefined>)[REPOSITORY_LABEL];
+
+    expect(parsePrSessionLabels(asDockerLabelsField(labels))).toBeUndefined();
+  });
+
+  it("parses nothing when the pr label is not a plain integer", () => {
+    const raw = `${REPOSITORY_LABEL}=acme/widgets,${PR_LABEL}=not-a-number,${KIND_LABEL}=conflict`;
+
+    expect(parsePrSessionLabels(raw)).toBeUndefined();
+  });
+
+  it("parses nothing when the kind label is neither conflict nor refinement", () => {
+    const raw = `${REPOSITORY_LABEL}=acme/widgets,${PR_LABEL}=30,${KIND_LABEL}=worker`;
+
+    expect(parsePrSessionLabels(raw)).toBeUndefined();
   });
 });

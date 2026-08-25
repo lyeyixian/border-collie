@@ -5,7 +5,6 @@ import { describe, expect, it } from "vitest";
 import { type Exec, WORKER_WORKFLOW_FILE } from "../../src/adapters/tracker.js";
 import {
   branchCommitSubjects,
-  type ClaudeRunConfig,
   type ConflictWorkerConfig,
   conflictWorkerPrompt,
   dispatchConflictWorker,
@@ -17,6 +16,7 @@ import {
   onboardingWorkerPrompt,
   probeEnvironment,
   pushAgentBranch,
+  type RefinementWorkerConfig,
   realSpawnWorkerProcess,
   refinementWorkerPrompt,
   type SpawnWorkerProcess,
@@ -938,6 +938,7 @@ const CONFLICT_CONFIG: ConflictWorkerConfig = {
   timeoutMs: 60_000,
   stallMs: 30_000,
   maxTurns: 200,
+  inPlace: false,
 };
 
 /**
@@ -1174,14 +1175,96 @@ describe("dispatchConflictWorker", () => {
   });
 });
 
+describe("dispatchConflictWorker (in-place, issue #181)", () => {
+  const IN_PLACE_CONFLICT_CONFIG: ConflictWorkerConfig = {
+    ...CONFLICT_CONFIG,
+    inPlace: true,
+  };
+
+  it("checks the head branch out directly in the current directory, starts the rebase, runs claude there — no worktree, no lock", async () => {
+    const { exec, calls } = fakeConflictExec({ rebased: true });
+    const { spawn, requests } = fakeSpawn(0);
+
+    const outcome = await dispatchConflictWorker(
+      30,
+      3,
+      HEAD_REF,
+      IN_PLACE_CONFLICT_CONFIG,
+      exec,
+      spawn,
+    );
+
+    expect(calls).toEqual([
+      ["git", "fetch", "origin"],
+      ["git", "checkout", "-B", HEAD_REF, `origin/${HEAD_REF}`],
+      ["git", "rebase", "origin/HEAD"],
+      ["git", "merge-base", "--is-ancestor", "origin/HEAD", HEAD_REF],
+      ["git", "rebase", "--abort"],
+    ]);
+    expect(requests[0]).toMatchObject({
+      cmd: "claude",
+      cwd: ".",
+      transcriptPath: CONFLICT_TRANSCRIPT,
+    });
+    expect(outcome.resolved).toBe(true);
+  });
+
+  it("logs the checkout (not worktree) and transcript paths at debug, before spawning", async () => {
+    const { exec } = fakeConflictExec();
+    const { spawn } = fakeSpawn(0);
+    const { log, events } = recordingLog();
+
+    await dispatchConflictWorker(
+      30,
+      3,
+      HEAD_REF,
+      IN_PLACE_CONFLICT_CONFIG,
+      exec,
+      spawn,
+      log,
+    );
+
+    expect(events).toEqual([
+      {
+        kind: "conflict-worker-paths",
+        level: "debug",
+        msg: `Conflict Worker for PR #30: checkout ., transcript ${CONFLICT_TRANSCRIPT}`,
+        pr: 30,
+        worktree: ".",
+        transcript: CONFLICT_TRANSCRIPT,
+      },
+    ]);
+  });
+
+  it("never removes a worktree, even when spawning throws, then rethrows", async () => {
+    const { exec, calls } = fakeConflictExec();
+    const { spawn } = fakeSpawn(new Error("spawn claude ENOENT"));
+
+    await expect(
+      dispatchConflictWorker(
+        30,
+        3,
+        HEAD_REF,
+        IN_PLACE_CONFLICT_CONFIG,
+        exec,
+        spawn,
+      ),
+    ).rejects.toThrow("ENOENT");
+
+    expect(calls.at(-1)).toEqual(["git", "rebase", "--abort"]);
+    expect(calls.some((c) => c.includes("worktree"))).toBe(false);
+  });
+});
+
 const REFINEMENT_WT = ".border-collie/refinement-worktrees/pr-30";
 const REFINEMENT_TRANSCRIPT =
   ".border-collie/transcripts/pr-30-refinement-round-1.jsonl";
-const REFINEMENT_CONFIG: ClaudeRunConfig = {
+const REFINEMENT_CONFIG: RefinementWorkerConfig = {
   model: "sonnet",
   timeoutMs: 60_000,
   stallMs: 30_000,
   maxTurns: 200,
+  inPlace: false,
 };
 
 describe("refinementWorkerPrompt", () => {
@@ -1346,6 +1429,91 @@ describe("dispatchRefinementWorker", () => {
       "remove",
       "--force",
       REFINEMENT_WT,
+    ]);
+  });
+});
+
+describe("dispatchRefinementWorker (in-place, issue #181)", () => {
+  const IN_PLACE_REFINEMENT_CONFIG: RefinementWorkerConfig = {
+    ...REFINEMENT_CONFIG,
+    inPlace: true,
+  };
+
+  it("checks the head branch out directly in the current directory, running claude there — no worktree, no lock", async () => {
+    const { exec, calls } = fakeExec({ newCommits: "3" });
+    const { spawn, requests } = fakeSpawn(0);
+
+    await dispatchRefinementWorker(
+      30,
+      3,
+      HEAD_REF,
+      1,
+      IN_PLACE_REFINEMENT_CONFIG,
+      exec,
+      spawn,
+    );
+
+    expect(calls).toEqual([
+      ["git", "fetch", "origin"],
+      ["git", "checkout", "-B", HEAD_REF, `origin/${HEAD_REF}`],
+      ["git", "rev-parse", HEAD_REF],
+      ["git", "rev-list", "--count", `base-sha..${HEAD_REF}`],
+    ]);
+    expect(requests[0]).toMatchObject({
+      cwd: ".",
+      transcriptPath: REFINEMENT_TRANSCRIPT,
+    });
+  });
+
+  it("logs the checkout (not worktree) and transcript paths at debug, before spawning", async () => {
+    const { exec } = fakeExec({ newCommits: "3" });
+    const { spawn } = fakeSpawn(0);
+    const { log, events } = recordingLog();
+
+    await dispatchRefinementWorker(
+      30,
+      3,
+      HEAD_REF,
+      1,
+      IN_PLACE_REFINEMENT_CONFIG,
+      exec,
+      spawn,
+      log,
+    );
+
+    expect(events).toEqual([
+      {
+        kind: "refinement-worker-paths",
+        level: "debug",
+        msg: `Refinement Worker for PR #30 (round 1): checkout ., transcript ${REFINEMENT_TRANSCRIPT}`,
+        pr: 30,
+        round: 1,
+        worktree: ".",
+        transcript: REFINEMENT_TRANSCRIPT,
+      },
+    ]);
+  });
+
+  it("never removes a worktree, even when spawning throws, then rethrows", async () => {
+    const { exec, calls } = fakeExec({ newCommits: "0" });
+    const { spawn } = fakeSpawn(new Error("spawn claude ENOENT"));
+
+    await expect(
+      dispatchRefinementWorker(
+        30,
+        3,
+        HEAD_REF,
+        1,
+        IN_PLACE_REFINEMENT_CONFIG,
+        exec,
+        spawn,
+      ),
+    ).rejects.toThrow("ENOENT");
+
+    expect(calls).toEqual([
+      ["git", "fetch", "origin"],
+      ["git", "checkout", "-B", HEAD_REF, `origin/${HEAD_REF}`],
+      ["git", "rev-parse", HEAD_REF],
     ]);
   });
 });

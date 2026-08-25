@@ -1049,6 +1049,43 @@ describe("act: PR upkeep", () => {
     expect(events.every((e) => (e as { pr?: number }).pr === 30)).toBe(true);
   });
 
+  it("completes without waiting for a Conflict Worker dispatched fire-and-forget (issue #181)", async () => {
+    const { exec, calls } = recordingExec();
+    const { log, events } = recordingLog();
+    // The session-container dispatch resolves once the container is merely
+    // started — never once it settles. Nothing here ever pushes or drafts,
+    // proving the Tick itself never waited for that to happen.
+    const dispatchConflict: DispatchConflictWorker = async () => undefined;
+
+    const report = await act(
+      [
+        {
+          type: "conflict-worker",
+          pr: 30,
+          ticket: 3,
+          headRef: "border-collie/ticket-3-attempt-1",
+        },
+      ],
+      {
+        dispatch: noDispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict,
+        dispatchRefinement: noRefinement,
+        exec,
+        now,
+        scheduleInterval,
+        log,
+      },
+    );
+
+    expect(calls).toEqual([]); // nothing to write to the tracker yet
+    expect(report).toEqual({ infraFailures: 0 });
+    expect(events.map((e) => e.kind)).toEqual([
+      "conflict-dispatch",
+      "conflict-dispatched-async",
+    ]);
+  });
+
   it("asks for human resolution when the conflict Worker gives up (no push), logged at warn", async () => {
     const { exec, calls } = recordingExec();
     const { log, events } = recordingLog();
@@ -1295,6 +1332,55 @@ describe("act: Refinement", () => {
     expect(msgs(events)).toEqual([
       "started Refinement round 1 for PR #30 (ticket #3)",
       "Refinement Worker finished: 0 new commits on border-collie/ticket-3-attempt-1 (transcript: .border-collie/transcripts/pr-30-refinement-round-1.jsonl)",
+    ]);
+  });
+
+  it("completes without waiting for a Refinement round dispatched fire-and-forget (issue #181), still posting the round marker first", async () => {
+    const { exec, calls } = recordingExec();
+    const { log, events } = recordingLog();
+    // The session-container dispatch resolves once the container is merely
+    // started — never once it settles. Nothing here ever pushes, proving the
+    // Tick itself never waited for that to happen.
+    const dispatchRefinement: DispatchRefinementWorker = async () => undefined;
+
+    const report = await act(
+      [
+        {
+          type: "refine-pr",
+          pr: 30,
+          ticket: 3,
+          headRef: "border-collie/ticket-3-attempt-1",
+          round: 1,
+        },
+      ],
+      {
+        dispatch: noDispatch,
+        openPr: recordingOpenPr().openPr,
+        dispatchConflict: noConflict,
+        dispatchRefinement,
+        exec,
+        now,
+        scheduleInterval,
+        log,
+      },
+    );
+
+    // The round marker is a mechanical tracker write, unaffected by dispatch
+    // being fire-and-forget — it still lands before dispatch, unconditionally.
+    expect(calls).toEqual([
+      [
+        "gh",
+        "pr",
+        "comment",
+        "30",
+        "--body",
+        expect.stringContaining(REFINEMENT_ROUND_MARKER),
+      ],
+    ]);
+    expect(report).toEqual({ infraFailures: 0 });
+    expect(events.map((e) => e.kind)).toEqual([
+      "refinement-round-started",
+      "refinement-dispatched-async",
     ]);
   });
 

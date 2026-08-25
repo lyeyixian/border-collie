@@ -238,3 +238,67 @@ export function transcriptsToPrune(
     })
     .map((file) => file.name);
 }
+
+/**
+ * PR-scoped session identity (issue #181): a Conflict Worker or a Refinement
+ * round, neither of which is an Attempt and neither of which has a ticket
+ * plus attempt number to key on — a PR is the handle both work against, so
+ * `kind` is what tells the two apart on the same label set rather than
+ * `ticket`/`attempt`, which `SessionLabels` above keeps for the Worker
+ * Attempt it is shaped for.
+ */
+export type PrSessionKind = "conflict" | "refinement";
+
+/** The label naming a PR session container's pull request number. */
+export const PR_LABEL = `${LABEL_NAMESPACE}.pr`;
+/** The label naming a PR session container's kind: a Conflict Worker or a Refinement round. */
+export const KIND_LABEL = `${LABEL_NAMESPACE}.kind`;
+
+/** One PR-scoped session container's identity: which repository, pull request and kind it runs. */
+export interface PrSessionLabels {
+  repository: string;
+  pr: number;
+  kind: PrSessionKind;
+}
+
+/** `PrSessionLabels` as the `key=value` map `docker run --label` takes, one entry per field. */
+export function encodePrSessionLabels(
+  session: PrSessionLabels,
+): Record<string, string> {
+  return {
+    [REPOSITORY_LABEL]: session.repository,
+    [PR_LABEL]: String(session.pr),
+    [KIND_LABEL]: session.kind,
+  };
+}
+
+/**
+ * `PrSessionLabels` decoded back from `docker ps`'s own label listing, the
+ * PR-scoped mirror of `parseSessionLabels` above — same undefined-on-anything
+ * untrustworthy contract: a missing label, a `pr` that is not a plain
+ * non-negative integer, or a `kind` that is neither `"conflict"` nor
+ * `"refinement"` all mean this is not a border-collie PR session container.
+ */
+export function parsePrSessionLabels(
+  rawLabels: string,
+): PrSessionLabels | undefined {
+  const labels = new Map<string, string>();
+  for (const pair of rawLabels.split(",")) {
+    const eq = pair.indexOf("=");
+    if (eq === -1) continue;
+    labels.set(pair.slice(0, eq).trim(), pair.slice(eq + 1));
+  }
+  const repository = labels.get(REPOSITORY_LABEL);
+  const prRaw = labels.get(PR_LABEL);
+  const kind = labels.get(KIND_LABEL);
+  if (
+    repository === undefined ||
+    repository === "" ||
+    prRaw === undefined ||
+    !/^\d+$/.test(prRaw) ||
+    (kind !== "conflict" && kind !== "refinement")
+  ) {
+    return undefined;
+  }
+  return { repository, pr: Number(prRaw), kind };
+}

@@ -1,28 +1,26 @@
 import {
   claimTicket,
   closeTicket,
-  commentConflictUnresolved,
   commentQueuedBehind,
   type Exec,
   escalateTicket,
   giveUpOnPr,
-  markPrDraft,
   markPrReady,
   releaseTicket,
   startRefinementRound,
   updatePrBranch,
 } from "../adapters/tracker.js";
-import {
-  type ConflictOutcome,
-  pushAgentBranch,
-  type RefinementOutcome,
-} from "../adapters/worker.js";
+import type { ConflictOutcome, RefinementOutcome } from "../adapters/worker.js";
 import { reclassifyCorrelatedFailures } from "../core/classify.js";
 import { heartbeatSnapshot, type WorkerActivity } from "../core/heartbeat.js";
 import type { Log } from "../core/log.js";
 import { renderHeartbeat } from "../core/render.js";
 import type { Action, WorkerOutcome } from "../core/types.js";
-import { settleAttempt } from "./settle.js";
+import {
+  settleAttempt,
+  settleConflictOutcome,
+  settleRefinementOutcome,
+} from "./settle.js";
 
 /** How often the fleet heartbeat reports, while any Worker is in flight. */
 const HEARTBEAT_INTERVAL_MS = 60_000;
@@ -79,20 +77,57 @@ export type DispatchWorker = (
 /** Open the draft PR for a successful Attempt; resolves with the PR URL. */
 export type OpenPr = (outcome: WorkerOutcome) => Promise<string>;
 
-/** Dispatch one conflict-resolution Worker against one conflicted agent PR. */
-export type DispatchConflictWorker = (
+/**
+ * A conflict-resolution dispatch that waits for the Worker to finish and
+ * resolves with its outcome — the only kind a Conflict Worker's own
+ * settling entrypoint's dispatch call can sensibly be (src/app/
+ * conflict-worker.ts, issue #181), the same reasoning `SyncDispatchWorker`
+ * gives for the Ticket Worker's own entrypoint. A stricter return type than
+ * `DispatchConflictWorker` below, and so always assignable to it.
+ */
+export type SyncDispatchConflictWorker = (
   pr: number,
   ticket: number,
   headRef: string,
 ) => Promise<ConflictOutcome>;
 
-/** Dispatch one Refinement-round Worker against one open agent PR. */
-export type DispatchRefinementWorker = (
+/**
+ * Dispatch one conflict-resolution Worker against one conflicted agent PR.
+ * `undefined` is the fire-and-forget shape (issue #181), the same as
+ * `DispatchWorker`'s own: a session container settles its own outcome
+ * (`src/app/conflict-worker.ts`) and the next Tick reads the result back —
+ * `act` below never waits for a Worker dispatched that way.
+ */
+export type DispatchConflictWorker = (
+  pr: number,
+  ticket: number,
+  headRef: string,
+) => Promise<ConflictOutcome | undefined>;
+
+/**
+ * A Refinement dispatch that waits for the round to finish and resolves with
+ * its outcome — mirroring `SyncDispatchConflictWorker`'s own reasoning, for a
+ * Refinement round's own settling entrypoint (src/app/
+ * refinement-worker.ts, issue #181).
+ */
+export type SyncDispatchRefinementWorker = (
   pr: number,
   ticket: number,
   headRef: string,
   round: number,
 ) => Promise<RefinementOutcome>;
+
+/**
+ * Dispatch one Refinement-round Worker against one open agent PR.
+ * `undefined` is the fire-and-forget shape (issue #181), mirroring
+ * `DispatchConflictWorker`'s own.
+ */
+export type DispatchRefinementWorker = (
+  pr: number,
+  ticket: number,
+  headRef: string,
+  round: number,
+) => Promise<RefinementOutcome | undefined>;
 
 /**
  * What one spawn action came to: the Attempt, and its PR when one was
@@ -109,15 +144,24 @@ interface SpawnResult {
   log: Log;
 }
 
-/** What one conflict-worker action came to: the outcome, and its sub-logger to carry forward. */
+/**
+ * What one conflict-worker action came to: the outcome, and its sub-logger to
+ * carry forward. `outcome` is undefined when the dispatch was fire-and-forget
+ * (issue #181) — the session container settles itself, so there is nothing
+ * here for the act phase to settle.
+ */
 interface ConflictSpawnResult {
-  outcome: ConflictOutcome;
+  outcome: ConflictOutcome | undefined;
   log: Log;
 }
 
-/** What one refine-pr action came to: the outcome, and its sub-logger to carry forward. */
+/**
+ * What one refine-pr action came to: the outcome, and its sub-logger to carry
+ * forward. `outcome` is undefined when the dispatch was fire-and-forget
+ * (issue #181), the same as `ConflictSpawnResult`'s own.
+ */
 interface RefinementSpawnResult {
-  outcome: RefinementOutcome;
+  outcome: RefinementOutcome | undefined;
   log: Log;
 }
 
@@ -206,19 +250,6 @@ function createHeartbeat(
   };
 }
 
-function describeConflict(outcome: ConflictOutcome): string {
-  const where = `on ${outcome.headRef} (transcript: ${outcome.transcript})`;
-  return outcome.resolved
-    ? `Conflict Worker resolved the conflicts ${where}`
-    : `Conflict Worker could not resolve the conflicts (exit ${outcome.exitCode}) ${where}`;
-}
-
-function describeRefinement(outcome: RefinementOutcome): string {
-  const commits = `${outcome.newCommits} new commit${outcome.newCommits === 1 ? "" : "s"}`;
-  const where = `on ${outcome.headRef} (transcript: ${outcome.transcript})`;
-  return `Refinement Worker finished: ${commits} ${where}`;
-}
-
 /**
  * Act phase: perform the planned writes in plan order (releases first), one
  * at a time, narrating each as it lands. Spawns are the exception: each
@@ -245,15 +276,22 @@ function describeRefinement(outcome: RefinementOutcome): string {
  * runs alongside dispatch: the mechanical branch update, draft→ready flip,
  * and queued-behind marking (ADR 0007) are immediate tracker writes; a
  * conflict Worker runs concurrently like a spawn, its resolved rebase pushed
- * (or the PR handed to a human) once it settles. While any dispatch Worker is
- * in flight, a fleet heartbeat reports
+ * (or the PR handed to a human) once it settles — through `settleConflictOutcome`
+ * (src/app/settle.ts), the unit a Conflict Worker settling itself in its own
+ * session container also shares (src/app/conflict-worker.ts, issue #181).
+ * Its dispatch is fire-and-forget-capable the same way a Ticket Worker's is:
+ * `dispatchConflict` hands back `undefined` once a session container is
+ * merely started, and this phase settles nothing for it — the container
+ * settles its own PR write, and a later Tick reads the result back. While any
+ * dispatch Worker is in flight, a fleet heartbeat reports
  * all of them once a minute — elapsed time and time since last output,
  * independently — and stops the moment the last one settles. A Refinement
  * round (CONTEXT.md "Refinement round") runs the same shape as a conflict
- * Worker — the round marker lands first (bounding the round even across a
- * crash), then the Worker runs concurrently, its branch pushed back only
- * when it actually committed a fix. Refinement give-up is an immediate
- * tracker write, like an escalation.
+ * Worker, dispatch included — the round marker lands first (bounding the
+ * round even across a crash, and unconditionally, whichever way `dispatchRefinement`
+ * resolves), then the Worker runs concurrently, its branch pushed back only
+ * when it actually committed a fix, through `settleRefinementOutcome`.
+ * Refinement give-up is an immediate tracker write, like an escalation.
  */
 export async function act(
   actions: Action[],
@@ -346,7 +384,19 @@ export async function act(
         const conflictLog = log.child({ pr: action.pr });
         conflicts.push(
           dispatchConflict(action.pr, action.ticket, action.headRef).then(
-            (outcome) => ({ outcome, log: conflictLog }),
+            (outcome) => {
+              if (outcome === undefined) {
+                // Fire-and-forget: the session container settles its own
+                // outcome elsewhere (src/app/conflict-worker.ts, issue
+                // #181), and the next Tick reads the result back.
+                conflictLog({
+                  kind: "conflict-dispatched-async",
+                  level: "info",
+                  msg: "Conflict Worker dispatched to a session container; it will settle its own outcome",
+                });
+              }
+              return { outcome, log: conflictLog };
+            },
           ),
         );
         conflictLog({
@@ -373,7 +423,19 @@ export async function act(
             action.ticket,
             action.headRef,
             action.round,
-          ).then((outcome) => ({ outcome, log: refinementLog })),
+          ).then((outcome) => {
+            if (outcome === undefined) {
+              // Fire-and-forget: the session container settles its own
+              // outcome elsewhere (src/app/refinement-worker.ts, issue
+              // #181), and the next Tick reads the result back.
+              refinementLog({
+                kind: "refinement-dispatched-async",
+                level: "info",
+                msg: "Refinement Worker dispatched to a session container; it will settle its own outcome",
+              });
+            }
+            return { outcome, log: refinementLog };
+          }),
         );
         break;
       }
@@ -464,69 +526,29 @@ export async function act(
   // Conflict Workers settle alongside the dispatch Workers: a resolved merge is
   // pushed to the PR's branch, an unresolved one handed to a human with the
   // marker that vetoes a second Worker. Both writes are reported before any
-  // infrastructure failure on either fleet rethrows.
+  // infrastructure failure on either fleet rethrows. A fire-and-forget
+  // dispatch (a session container, issue #181) settles nothing here — its
+  // outcome is undefined, and the container settles its own PR write
+  // (src/app/conflict-worker.ts) the same way a fire-and-forget dispatch
+  // Worker settles its own Attempt.
   const settledConflicts = await Promise.allSettled(conflicts);
   for (const result of settledConflicts) {
     if (result.status !== "fulfilled") continue;
     const { outcome, log: conflictLog } = result.value;
-    conflictLog({
-      kind: "conflict-outcome",
-      level: outcome.resolved ? "info" : "warn",
-      msg: describeConflict(outcome),
-      resolved: outcome.resolved,
-    });
-    if (outcome.resolved) {
-      await pushAgentBranch(outcome.headRef, exec);
-      conflictLog({
-        kind: "conflict-pushed",
-        level: "info",
-        msg: "pushed the resolved rebase",
-      });
-      // Then hold the resolution back from merging until it has been looked
-      // at (ADR 0007): a completed rebase says only that git finished, not
-      // that the resolved code still works, and the PR may already carry an
-      // approval from before the resolution existed. Only after the push,
-      // because a resolution that never reached the PR is nothing to gate —
-      // drafting there would just obstruct the operator. Not a planned
-      // Action: it is conditional on this Worker's outcome rather than
-      // derivable from the world snapshot, so it belongs inline here, on the
-      // command-execution dependency the act phase already holds.
-      await markPrDraft(outcome.pr, exec);
-      conflictLog({
-        kind: "conflict-drafted",
-        level: "info",
-        msg: "converted the PR to draft for a re-read before it can merge",
-      });
-    } else {
-      await commentConflictUnresolved(outcome.pr, exec);
-      conflictLog({
-        kind: "conflict-unresolved",
-        level: "warn",
-        msg: "asked for human resolution",
-      });
-    }
+    if (outcome === undefined) continue;
+    await settleConflictOutcome(outcome, conflictLog, exec);
   }
   // Refinement-round Workers settle the same way: the branch is pushed back
   // only when the round actually committed a fix — a round that changed
-  // nothing leaves the PR as it was, for the next Tick to judge afresh.
+  // nothing leaves the PR as it was, for the next Tick to judge afresh. A
+  // fire-and-forget dispatch settles nothing here either, for the same
+  // reason as the Conflict Worker above.
   const settledRefinements = await Promise.allSettled(refinements);
   for (const result of settledRefinements) {
     if (result.status !== "fulfilled") continue;
     const { outcome, log: refinementLog } = result.value;
-    refinementLog({
-      kind: "refinement-outcome",
-      level: "info",
-      msg: describeRefinement(outcome),
-      newCommits: outcome.newCommits,
-    });
-    if (outcome.newCommits > 0) {
-      await pushAgentBranch(outcome.headRef, exec);
-      refinementLog({
-        kind: "refinement-pushed",
-        level: "info",
-        msg: "pushed the Refinement fix",
-      });
-    }
+    if (outcome === undefined) continue;
+    await settleRefinementOutcome(outcome, refinementLog, exec);
   }
 
   const rejected = settled.find((result) => result.status === "rejected");

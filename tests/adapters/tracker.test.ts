@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { liveContainerTickets } from "../../src/adapters/container.js";
+import {
+  liveContainerPrs,
+  liveContainerTickets,
+} from "../../src/adapters/container.js";
 import {
   claimTicket,
   closeTicket,
@@ -884,6 +887,103 @@ describe("readScope", () => {
     expect(world.tickets[0]?.hasLiveWorker).toBe(false);
   });
 
+  it("reads Conflict Worker liveness only when a PR is conflicted (issue #181)", async () => {
+    const { exec } = fakeExec({
+      api: {
+        [SUB_ISSUES]: [[issue({ number: 5 })]],
+        [comments(5)]: [[]],
+        [comments(50)]: [[]],
+        [pullComments(50)]: [[]],
+        [pullReviews(50)]: [[]],
+        [CLOSED_PULLS]: [[]],
+      },
+      prList: [prItem({ number: 50 })],
+    });
+    const readLiveConflictPrs = async (): Promise<Set<number>> => {
+      throw new Error("readLiveConflictPrs should not be called");
+    };
+
+    await expect(
+      readScope(
+        { kind: "parent", parent: 1 },
+        exec,
+        undefined,
+        readLiveConflictPrs,
+      ),
+    ).resolves.toBeDefined();
+  });
+
+  it("derives Conflict Worker liveness from an injected backend for a conflicted PR (issue #181)", async () => {
+    const REPOSITORY = "acme/widgets";
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "gh" && args[0] === "api") {
+        const api: Record<string, unknown> = {
+          [SUB_ISSUES]: [[issue({ number: 5 })]],
+          [comments(5)]: [[]],
+          [comments(50)]: [[]],
+          [pullComments(50)]: [[]],
+          [pullReviews(50)]: [[]],
+          [CLOSED_PULLS]: [[]],
+        };
+        return JSON.stringify(api[args[1] ?? ""]);
+      }
+      if (cmd === "gh" && args[0] === "pr" && args[1] === "list") {
+        return JSON.stringify([
+          prItem({ number: 50, mergeable: "CONFLICTING" }),
+        ]);
+      }
+      if (cmd === "docker" && args[0] === "ps") {
+        return "sh.border-collie.repository=acme/widgets,sh.border-collie.pr=50,sh.border-collie.kind=conflict";
+      }
+      throw new Error(`unexpected call: ${[cmd, ...args].join(" ")}`);
+    };
+
+    const world = await readScope(
+      { kind: "parent", parent: 1 },
+      exec,
+      undefined,
+      (e) => liveContainerPrs(REPOSITORY, "conflict", e),
+    );
+
+    expect(world.openAgentPrs[0]?.conflictWorkerLive).toBe(true);
+    expect(calls.some((c) => c[0] === "docker" && c[1] === "ps")).toBe(true);
+  });
+
+  it("reads a conflicted PR as un-live once the injected container backend reports no running container", async () => {
+    const REPOSITORY = "acme/widgets";
+    const exec: Exec = async (cmd, args) => {
+      if (cmd === "gh" && args[0] === "api") {
+        const api: Record<string, unknown> = {
+          [SUB_ISSUES]: [[issue({ number: 5 })]],
+          [comments(5)]: [[]],
+          [comments(50)]: [[]],
+          [pullComments(50)]: [[]],
+          [pullReviews(50)]: [[]],
+          [CLOSED_PULLS]: [[]],
+        };
+        return JSON.stringify(api[args[1] ?? ""]);
+      }
+      if (cmd === "gh" && args[0] === "pr" && args[1] === "list") {
+        return JSON.stringify([
+          prItem({ number: 50, mergeable: "CONFLICTING" }),
+        ]);
+      }
+      if (cmd === "docker" && args[0] === "ps") return "";
+      throw new Error(`unexpected call: ${[cmd, ...args].join(" ")}`);
+    };
+
+    const world = await readScope(
+      { kind: "parent", parent: 1 },
+      exec,
+      undefined,
+      (e) => liveContainerPrs(REPOSITORY, "conflict", e),
+    );
+
+    expect(world.openAgentPrs[0]?.conflictWorkerLive).toBe(false);
+  });
+
   it("maps open agent-branch PRs with their upkeep signals, ignoring other branches", async () => {
     const { exec } = fakeExec({
       api: {
@@ -912,6 +1012,7 @@ describe("readScope", () => {
         behind: false,
         ci: "none",
         conflictWorkerAsked: false,
+        conflictWorkerLive: false,
         operatorSteered: false,
         refinement: { rounds: 0, triggerDue: false, givenUp: false },
       },
@@ -1016,6 +1117,7 @@ describe("readScope", () => {
         behind: false,
         ci: "none",
         conflictWorkerAsked: true,
+        conflictWorkerLive: false,
         operatorSteered: false,
         refinement: { rounds: 0, triggerDue: false, givenUp: false },
       },
@@ -1028,6 +1130,7 @@ describe("readScope", () => {
         behind: false,
         ci: "none",
         conflictWorkerAsked: false,
+        conflictWorkerLive: false,
         operatorSteered: false,
         refinement: { rounds: 0, triggerDue: false, givenUp: false },
       },

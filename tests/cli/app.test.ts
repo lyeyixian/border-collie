@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import type {
+  ConflictOutcome,
+  RefinementOutcome,
+} from "../../src/adapters/worker.js";
 import { runCli } from "../../src/cli/app.js";
 import type { Context } from "../../src/cli/context.js";
 import { VERSION } from "../../src/cli/version.js";
@@ -79,6 +83,34 @@ function workerOutcome(overrides: Partial<WorkerOutcome> = {}): WorkerOutcome {
   };
 }
 
+function conflictOutcome(
+  overrides: Partial<ConflictOutcome> = {},
+): ConflictOutcome {
+  return {
+    pr: 30,
+    ticket: 3,
+    headRef: "border-collie/ticket-3-attempt-1",
+    transcript: ".border-collie/transcripts/pr-30-conflict.jsonl",
+    exitCode: 0,
+    resolved: true,
+    ...overrides,
+  };
+}
+
+function refinementOutcome(
+  overrides: Partial<RefinementOutcome> = {},
+): RefinementOutcome {
+  return {
+    pr: 30,
+    ticket: 3,
+    headRef: "border-collie/ticket-3-attempt-1",
+    transcript: ".border-collie/transcripts/pr-30-refinement-round-1.jsonl",
+    exitCode: 0,
+    newCommits: 1,
+    ...overrides,
+  };
+}
+
 function declareOutcome(
   overrides: Partial<DeclareOutcome> = {},
 ): DeclareOutcome {
@@ -125,6 +157,21 @@ interface FakeContext {
     attempt: number;
     inPlace: boolean;
   }[];
+  runConflictWorkerCalls: {
+    config: WorkerAttemptConfig;
+    pr: number;
+    ticket: number;
+    headRef: string;
+    inPlace: boolean;
+  }[];
+  runRefinementCalls: {
+    config: WorkerAttemptConfig;
+    pr: number;
+    ticket: number;
+    headRef: string;
+    round: number;
+    inPlace: boolean;
+  }[];
   probeCalls: string[];
   events: LogEvent[];
   verbosityCalls: boolean[];
@@ -150,6 +197,8 @@ function fakeContext(
     loadConfig?: (flags: Flags) => ResolvedConfig;
     tickResults?: { world: WorldSnapshot; infraFailures?: number }[];
     runWorkerOutcome?: WorkerOutcome;
+    runConflictWorkerOutcome?: ConflictOutcome;
+    runRefinementOutcome?: RefinementOutcome;
     initScaffoldResult?: ScaffoldAction[];
     initLabelsResult?: LabelAction[];
     declareResult?: DeclareOutcome;
@@ -170,6 +219,21 @@ function fakeContext(
     attempt: number;
     inPlace: boolean;
   }[] = [];
+  const runConflictWorkerCalls: {
+    config: WorkerAttemptConfig;
+    pr: number;
+    ticket: number;
+    headRef: string;
+    inPlace: boolean;
+  }[] = [];
+  const runRefinementCalls: {
+    config: WorkerAttemptConfig;
+    pr: number;
+    ticket: number;
+    headRef: string;
+    round: number;
+    inPlace: boolean;
+  }[] = [];
   const probeCalls: string[] = [];
   const events: LogEvent[] = [];
   const verbosityCalls: boolean[] = [];
@@ -180,6 +244,10 @@ function fakeContext(
   const daemonCalls: DaemonConfig[] = [];
   const tickResults = overrides.tickResults ?? [{ world: CLOSED_WORLD }];
   const runWorkerOutcome = overrides.runWorkerOutcome ?? workerOutcome();
+  const runConflictWorkerOutcome =
+    overrides.runConflictWorkerOutcome ?? conflictOutcome();
+  const runRefinementOutcome =
+    overrides.runRefinementOutcome ?? refinementOutcome();
   const initScaffoldResult = overrides.initScaffoldResult ?? [];
   const initLabelsResult = overrides.initLabelsResult ?? [];
   const declareResult = overrides.declareResult ?? declareOutcome();
@@ -220,6 +288,14 @@ function fakeContext(
     runWorker: async (config, ticket, attempt, inPlace) => {
       runWorkerCalls.push({ config, ticket, attempt, inPlace });
       return runWorkerOutcome;
+    },
+    runConflictWorker: async (config, pr, ticket, headRef, inPlace) => {
+      runConflictWorkerCalls.push({ config, pr, ticket, headRef, inPlace });
+      return runConflictWorkerOutcome;
+    },
+    runRefinement: async (config, pr, ticket, headRef, round, inPlace) => {
+      runRefinementCalls.push({ config, pr, ticket, headRef, round, inPlace });
+      return runRefinementOutcome;
     },
     probe: async (model) => {
       probeCalls.push(model);
@@ -263,6 +339,8 @@ function fakeContext(
     loadConfigCalls,
     tickCalls,
     runWorkerCalls,
+    runConflictWorkerCalls,
+    runRefinementCalls,
     probeCalls,
     events,
     verbosityCalls,
@@ -432,6 +510,45 @@ describe("command routing", () => {
 
     expect(fake.runWorkerCalls).toEqual([
       { config: FAKE_RESOLVED_CONFIG, ticket: 7, attempt: 2, inPlace: false },
+    ]);
+  });
+
+  it("routes `conflict-worker` with its pr/ticket/headRef positional args to runConflictWorker", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["conflict-worker", "30", "3", "border-collie/ticket-3-attempt-1"],
+      fake.context,
+    );
+
+    expect(fake.runConflictWorkerCalls).toEqual([
+      {
+        config: FAKE_RESOLVED_CONFIG,
+        pr: 30,
+        ticket: 3,
+        headRef: "border-collie/ticket-3-attempt-1",
+        inPlace: false,
+      },
+    ]);
+  });
+
+  it("routes `refine` with its pr/ticket/headRef/round positional args to runRefinement", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["refine", "30", "3", "border-collie/ticket-3-attempt-1", "2"],
+      fake.context,
+    );
+
+    expect(fake.runRefinementCalls).toEqual([
+      {
+        config: FAKE_RESOLVED_CONFIG,
+        pr: 30,
+        ticket: 3,
+        headRef: "border-collie/ticket-3-attempt-1",
+        round: 2,
+        inPlace: false,
+      },
     ]);
   });
 });
@@ -625,6 +742,282 @@ describe("daemon command", () => {
       "worker image (--image or BORDER_COLLIE_WORKER_IMAGE) must be a non-empty string, got undefined",
     );
     expect(fake.daemonCalls).toHaveLength(0);
+  });
+});
+
+describe("conflict-worker command", () => {
+  it("forwards a --model override to config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      [
+        "conflict-worker",
+        "30",
+        "3",
+        "border-collie/ticket-3-attempt-1",
+        "--model",
+        "haiku",
+      ],
+      fake.context,
+    );
+
+    expect(fake.loadConfigCalls).toEqual([{ model: "haiku" }]);
+  });
+
+  it("forwards a --timeout-minutes override to config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      [
+        "conflict-worker",
+        "30",
+        "3",
+        "border-collie/ticket-3-attempt-1",
+        "--timeout-minutes",
+        "50",
+      ],
+      fake.context,
+    );
+
+    expect(fake.loadConfigCalls).toEqual([{ timeoutMinutes: 50 }]);
+  });
+
+  it("omits unset flags from config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["conflict-worker", "30", "3", "border-collie/ticket-3-attempt-1"],
+      fake.context,
+    );
+
+    expect(fake.loadConfigCalls).toEqual([{}]);
+  });
+
+  it("lowers the console's minimum level to debug when --verbose is passed", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      [
+        "conflict-worker",
+        "30",
+        "3",
+        "border-collie/ticket-3-attempt-1",
+        "--verbose",
+      ],
+      fake.context,
+    );
+
+    expect(fake.verbosityCalls).toEqual([true]);
+  });
+
+  it("defaults --in-place to false, isolating the local path in a worktree", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["conflict-worker", "30", "3", "border-collie/ticket-3-attempt-1"],
+      fake.context,
+    );
+
+    expect(fake.runConflictWorkerCalls[0]?.inPlace).toBe(false);
+  });
+
+  it("forwards --in-place through to runConflictWorker, for a session container's own checkout", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      [
+        "conflict-worker",
+        "30",
+        "3",
+        "border-collie/ticket-3-attempt-1",
+        "--in-place",
+      ],
+      fake.context,
+    );
+
+    expect(fake.runConflictWorkerCalls[0]?.inPlace).toBe(true);
+  });
+
+  it("rejects a non-integer pr without calling runConflictWorker", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["conflict-worker", "abc", "3", "border-collie/ticket-3-attempt-1"],
+      fake.context,
+    );
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.runConflictWorkerCalls).toHaveLength(0);
+  });
+
+  it("rejects a non-integer ticket without calling runConflictWorker", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["conflict-worker", "30", "abc", "border-collie/ticket-3-attempt-1"],
+      fake.context,
+    );
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.runConflictWorkerCalls).toHaveLength(0);
+  });
+
+  it("exits 0 when the conflict was resolved", async () => {
+    const fake = fakeContext({
+      runConflictWorkerOutcome: conflictOutcome({ resolved: true }),
+    });
+
+    await runCli(
+      ["conflict-worker", "30", "3", "border-collie/ticket-3-attempt-1"],
+      fake.context,
+    );
+
+    expect(fake.context.process.exitCode).toBeFalsy();
+  });
+
+  it("exits non-zero when the conflict was not resolved", async () => {
+    const fake = fakeContext({
+      runConflictWorkerOutcome: conflictOutcome({
+        resolved: false,
+        exitCode: 1,
+      }),
+    });
+
+    await runCli(
+      ["conflict-worker", "30", "3", "border-collie/ticket-3-attempt-1"],
+      fake.context,
+    );
+
+    expect(fake.context.process.exitCode).toBe(1);
+  });
+
+  it("a config error prints a one-line message, exits 1, and never calls runConflictWorker", async () => {
+    const fake = fakeContext({
+      loadConfig: () => {
+        throw new ConfigError("worker_max_turns must be a positive integer");
+      },
+    });
+
+    await runCli(
+      ["conflict-worker", "30", "3", "border-collie/ticket-3-attempt-1"],
+      fake.context,
+    );
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.stderr().trim()).toBe(
+      "worker_max_turns must be a positive integer",
+    );
+    expect(fake.runConflictWorkerCalls).toHaveLength(0);
+  });
+});
+
+describe("refine command", () => {
+  it("forwards a --model override to config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      [
+        "refine",
+        "30",
+        "3",
+        "border-collie/ticket-3-attempt-1",
+        "1",
+        "--model",
+        "haiku",
+      ],
+      fake.context,
+    );
+
+    expect(fake.loadConfigCalls).toEqual([{ model: "haiku" }]);
+  });
+
+  it("omits unset flags from config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["refine", "30", "3", "border-collie/ticket-3-attempt-1", "1"],
+      fake.context,
+    );
+
+    expect(fake.loadConfigCalls).toEqual([{}]);
+  });
+
+  it("lowers the console's minimum level to debug when --verbose is passed", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      [
+        "refine",
+        "30",
+        "3",
+        "border-collie/ticket-3-attempt-1",
+        "1",
+        "--verbose",
+      ],
+      fake.context,
+    );
+
+    expect(fake.verbosityCalls).toEqual([true]);
+  });
+
+  it("defaults --in-place to false, isolating the local path in a worktree", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["refine", "30", "3", "border-collie/ticket-3-attempt-1", "1"],
+      fake.context,
+    );
+
+    expect(fake.runRefinementCalls[0]?.inPlace).toBe(false);
+  });
+
+  it("forwards --in-place through to runRefinement, for a session container's own checkout", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      [
+        "refine",
+        "30",
+        "3",
+        "border-collie/ticket-3-attempt-1",
+        "1",
+        "--in-place",
+      ],
+      fake.context,
+    );
+
+    expect(fake.runRefinementCalls[0]?.inPlace).toBe(true);
+  });
+
+  it("rejects a non-integer round without calling runRefinement", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      ["refine", "30", "3", "border-collie/ticket-3-attempt-1", "abc"],
+      fake.context,
+    );
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.runRefinementCalls).toHaveLength(0);
+  });
+
+  it("a config error prints a one-line message, exits 1, and never calls runRefinement", async () => {
+    const fake = fakeContext({
+      loadConfig: () => {
+        throw new ConfigError("worker_max_turns must be a positive integer");
+      },
+    });
+
+    await runCli(
+      ["refine", "30", "3", "border-collie/ticket-3-attempt-1", "1"],
+      fake.context,
+    );
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.stderr().trim()).toBe(
+      "worker_max_turns must be a positive integer",
+    );
+    expect(fake.runRefinementCalls).toHaveLength(0);
   });
 });
 

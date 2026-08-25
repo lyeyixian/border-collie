@@ -5,9 +5,12 @@ import { describe, expect, it } from "vitest";
 import {
   ContainerImageError,
   type ContainerWorkerConfig,
+  dispatchContainerConflictWorker,
+  dispatchContainerRefinementWorker,
   dispatchContainerWorker,
   type EnsureDir,
   type ListTranscripts,
+  liveContainerPrs,
   liveContainerTickets,
   type PathExists,
   pruneTranscripts,
@@ -21,12 +24,15 @@ import {
 } from "../../src/adapters/container.js";
 import type { Exec } from "../../src/adapters/tracker.js";
 import {
+  encodePrSessionLabels,
   encodeSessionLabels,
+  type PrSessionKind,
   type TranscriptFile,
 } from "../../src/core/container.js";
 import { RUN_DIR } from "../../src/core/types.js";
 
 const REPOSITORY = "acme/widgets";
+const HEAD_REF = "border-collie/ticket-3-attempt-1";
 const TRANSCRIPTS_ROOT = "/var/lib/border-collie/transcripts";
 
 const CONFIG: ContainerWorkerConfig = {
@@ -60,6 +66,16 @@ function labelsField(
   attempt: number,
 ): string {
   return Object.entries(encodeSessionLabels({ repository, ticket, attempt }))
+    .map(([key, value]) => `${key}=${value}`)
+    .join(",");
+}
+
+function prLabelsField(
+  repository: string,
+  pr: number,
+  kind: PrSessionKind,
+): string {
+  return Object.entries(encodePrSessionLabels({ repository, pr, kind }))
     .map(([key, value]) => `${key}=${value}`)
     .join(",");
 }
@@ -633,5 +649,206 @@ describe("realListTranscripts / realRemoveTranscript / realEnsureDir", () => {
     expect(removed).toEqual([stale]);
     expect(existsSync(stale)).toBe(false);
     expect(existsSync(fresh)).toBe(true);
+  });
+});
+
+describe("dispatchContainerConflictWorker", () => {
+  it("starts a detached, self-removing container labelled with repository, pr and kind, resolving with no outcome", async () => {
+    const { exec, calls } = fakeExec();
+
+    const result = await dispatchContainerConflictWorker(
+      30,
+      3,
+      HEAD_REF,
+      REPOSITORY,
+      CONFIG,
+      exec,
+    );
+
+    expect(result).toBeUndefined();
+    expect(calls).toEqual([
+      [
+        "docker",
+        "run",
+        "--detach",
+        "--rm",
+        "--label",
+        `sh.border-collie.repository=${REPOSITORY}`,
+        "--label",
+        "sh.border-collie.pr=30",
+        "--label",
+        "sh.border-collie.kind=conflict",
+        "--env",
+        "GH_TOKEN=gh-secret",
+        "--env",
+        "CLAUDE_CODE_OAUTH_TOKEN=claude-secret",
+        "--env",
+        `REPOSITORY=${REPOSITORY}`,
+        "--env",
+        "PR=30",
+        "--env",
+        "TICKET=3",
+        "--env",
+        `HEAD_REF=${HEAD_REF}`,
+        "--env",
+        "TIMEOUT_MINUTES=45",
+        CONFIG.image,
+        "sh",
+        "-c",
+        'gh repo clone "$REPOSITORY" . && border-collie conflict-worker "$PR" "$TICKET" "$HEAD_REF" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+      ],
+    ]);
+  });
+
+  it("never interpolates a dynamic value into the shell script body", async () => {
+    const { exec, calls } = fakeExec();
+
+    await dispatchContainerConflictWorker(
+      30,
+      3,
+      HEAD_REF,
+      "acme/widgets; rm -rf /",
+      CONFIG,
+      exec,
+    );
+
+    const script = calls[0]?.at(-1);
+    expect(script).not.toContain("rm -rf");
+    expect(script).toBe(
+      'gh repo clone "$REPOSITORY" . && border-collie conflict-worker "$PR" "$TICKET" "$HEAD_REF" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+    );
+  });
+});
+
+describe("dispatchContainerRefinementWorker", () => {
+  it("starts a detached, self-removing container labelled with repository, pr and kind, carrying the round as an env var", async () => {
+    const { exec, calls } = fakeExec();
+
+    const result = await dispatchContainerRefinementWorker(
+      30,
+      3,
+      HEAD_REF,
+      2,
+      REPOSITORY,
+      CONFIG,
+      exec,
+    );
+
+    expect(result).toBeUndefined();
+    expect(calls).toEqual([
+      [
+        "docker",
+        "run",
+        "--detach",
+        "--rm",
+        "--label",
+        `sh.border-collie.repository=${REPOSITORY}`,
+        "--label",
+        "sh.border-collie.pr=30",
+        "--label",
+        "sh.border-collie.kind=refinement",
+        "--env",
+        "GH_TOKEN=gh-secret",
+        "--env",
+        "CLAUDE_CODE_OAUTH_TOKEN=claude-secret",
+        "--env",
+        `REPOSITORY=${REPOSITORY}`,
+        "--env",
+        "PR=30",
+        "--env",
+        "TICKET=3",
+        "--env",
+        `HEAD_REF=${HEAD_REF}`,
+        "--env",
+        "ROUND=2",
+        "--env",
+        "TIMEOUT_MINUTES=45",
+        CONFIG.image,
+        "sh",
+        "-c",
+        'gh repo clone "$REPOSITORY" . && border-collie refine "$PR" "$TICKET" "$HEAD_REF" "$ROUND" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+      ],
+    ]);
+  });
+
+  it("never interpolates a dynamic value into the shell script body", async () => {
+    const { exec, calls } = fakeExec();
+
+    await dispatchContainerRefinementWorker(
+      30,
+      3,
+      HEAD_REF,
+      2,
+      "acme/widgets; rm -rf /",
+      CONFIG,
+      exec,
+    );
+
+    const script = calls[0]?.at(-1);
+    expect(script).not.toContain("rm -rf");
+    expect(script).toBe(
+      'gh repo clone "$REPOSITORY" . && border-collie refine "$PR" "$TICKET" "$HEAD_REF" "$ROUND" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+    );
+  });
+});
+
+describe("liveContainerPrs", () => {
+  it("filters docker ps by this repository's label", async () => {
+    const { exec, calls } = fakeExec();
+
+    await liveContainerPrs(REPOSITORY, "conflict", exec);
+
+    expect(calls).toEqual([
+      [
+        "docker",
+        "ps",
+        "--filter",
+        `label=sh.border-collie.repository=${REPOSITORY}`,
+        "--format",
+        "{{.Labels}}",
+      ],
+    ]);
+  });
+
+  it("collects PRs of the requested kind from every running container's labels", async () => {
+    const stdout = [
+      prLabelsField(REPOSITORY, 30, "conflict"),
+      `com.docker.compose.project=fleet,${prLabelsField(REPOSITORY, 40, "conflict")}`,
+    ].join("\n");
+    const { exec } = fakeExec(stdout);
+
+    expect(await liveContainerPrs(REPOSITORY, "conflict", exec)).toEqual(
+      new Set([30, 40]),
+    );
+  });
+
+  it("never mistakes a live Refinement round for a live Conflict Worker on the same PR", async () => {
+    const { exec } = fakeExec(prLabelsField(REPOSITORY, 30, "refinement"));
+
+    expect(await liveContainerPrs(REPOSITORY, "conflict", exec)).toEqual(
+      new Set(),
+    );
+    const { exec: exec2 } = fakeExec(
+      prLabelsField(REPOSITORY, 30, "refinement"),
+    );
+    expect(await liveContainerPrs(REPOSITORY, "refinement", exec2)).toEqual(
+      new Set([30]),
+    );
+  });
+
+  it("never counts a container docker did not list as live", async () => {
+    const { exec } = fakeExec("");
+
+    expect(await liveContainerPrs(REPOSITORY, "conflict", exec)).toEqual(
+      new Set(),
+    );
+  });
+
+  it("ignores a container labelled for a different repository", async () => {
+    const { exec } = fakeExec(prLabelsField("other/repo", 30, "conflict"));
+
+    expect(await liveContainerPrs(REPOSITORY, "conflict", exec)).toEqual(
+      new Set(),
+    );
   });
 });
