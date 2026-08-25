@@ -301,7 +301,7 @@ describe("pruneTranscripts", () => {
     expect(removed).toEqual(calls);
   });
 
-  it("never deletes a transcript for a Ticket still running, however old", async () => {
+  it("never deletes a transcript for the exact Ticket-and-Attempt still running, however old", async () => {
     const { exec } = fakeExec(labelsField(REPOSITORY, 1, 1));
     const { listTranscripts } = fakeListTranscripts([
       { name: "ticket-1-attempt-1.jsonl", mtimeMs: NOW - 30 * DAY },
@@ -319,6 +319,53 @@ describe("pruneTranscripts", () => {
     );
 
     expect(calls).toEqual([]);
+  });
+
+  it("deletes a settled Attempt's aged-out transcript even while a later Attempt of the same Ticket is running", async () => {
+    const { exec } = fakeExec(labelsField(REPOSITORY, 1, 2));
+    const { listTranscripts } = fakeListTranscripts([
+      { name: "ticket-1-attempt-1.jsonl", mtimeMs: NOW - 20 * DAY },
+      { name: "ticket-1-attempt-2.jsonl", mtimeMs: NOW - 20 * DAY },
+    ]);
+    const { removeTranscript, calls } = fakeRemoveTranscript();
+
+    await pruneTranscripts(
+      REPOSITORY,
+      TRANSCRIPTS_ROOT,
+      14 * DAY,
+      exec,
+      listTranscripts,
+      removeTranscript,
+      NOW,
+    );
+
+    expect(calls).toEqual([
+      `${TRANSCRIPTS_ROOT}/${REPOSITORY}/ticket-1-attempt-1.jsonl`,
+    ]);
+  });
+
+  it("falls back to the default retention window when the caller does not supply one", async () => {
+    const { exec } = fakeExec();
+    const { listTranscripts } = fakeListTranscripts([
+      {
+        name: "ticket-1-attempt-1.jsonl",
+        mtimeMs: Date.now() - 15 * DAY,
+      },
+    ]);
+    const { removeTranscript, calls } = fakeRemoveTranscript();
+
+    await pruneTranscripts(
+      REPOSITORY,
+      TRANSCRIPTS_ROOT,
+      undefined,
+      exec,
+      listTranscripts,
+      removeTranscript,
+    );
+
+    expect(calls).toEqual([
+      `${TRANSCRIPTS_ROOT}/${REPOSITORY}/ticket-1-attempt-1.jsonl`,
+    ]);
   });
 });
 

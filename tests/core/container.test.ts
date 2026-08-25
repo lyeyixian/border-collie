@@ -5,10 +5,11 @@ import {
   parseSessionLabels,
   REPOSITORY_LABEL,
   type SessionLabels,
+  sessionFromTranscriptFileName,
   TICKET_LABEL,
   type TranscriptFile,
-  ticketFromTranscriptFileName,
   transcriptHostDir,
+  transcriptSessionKey,
   transcriptsToPrune,
 } from "../../src/core/container.js";
 
@@ -93,20 +94,23 @@ describe("transcriptHostDir", () => {
   });
 });
 
-describe("ticketFromTranscriptFileName", () => {
-  it("parses the Ticket from a session's stdout transcript file name", () => {
-    expect(ticketFromTranscriptFileName("ticket-42-attempt-2.jsonl")).toBe(42);
+describe("sessionFromTranscriptFileName", () => {
+  it("parses the Ticket and Attempt from a session's stdout transcript file name", () => {
+    expect(sessionFromTranscriptFileName("ticket-42-attempt-2.jsonl")).toEqual({
+      ticket: 42,
+      attempt: 2,
+    });
   });
 
-  it("parses the Ticket from a session's stderr file name", () => {
-    expect(ticketFromTranscriptFileName("ticket-42-attempt-2.stderr.log")).toBe(
-      42,
-    );
+  it("parses the Ticket and Attempt from a session's stderr file name", () => {
+    expect(
+      sessionFromTranscriptFileName("ticket-42-attempt-2.stderr.log"),
+    ).toEqual({ ticket: 42, attempt: 2 });
   });
 
   it("parses nothing from a file this shape did not write", () => {
-    expect(ticketFromTranscriptFileName("declare.jsonl")).toBeUndefined();
-    expect(ticketFromTranscriptFileName("notes.txt")).toBeUndefined();
+    expect(sessionFromTranscriptFileName("declare.jsonl")).toBeUndefined();
+    expect(sessionFromTranscriptFileName("notes.txt")).toBeUndefined();
   });
 });
 
@@ -133,10 +137,24 @@ describe("transcriptsToPrune", () => {
     expect(transcriptsToPrune(files, now, 14 * DAY, new Set())).toEqual([]);
   });
 
-  it("never prunes a Ticket whose session container is still running, no matter its age", () => {
+  it("never prunes the exact session (Ticket and Attempt) still running, no matter its age", () => {
     const files = [file("ticket-1-attempt-1.jsonl", 30 * DAY)];
+    const live = new Set([transcriptSessionKey(1, 1)]);
 
-    expect(transcriptsToPrune(files, now, 14 * DAY, new Set([1]))).toEqual([]);
+    expect(transcriptsToPrune(files, now, 14 * DAY, live)).toEqual([]);
+  });
+
+  it("prunes a settled Attempt's aged-out transcript even while a later Attempt of the same Ticket is running", () => {
+    const files = [
+      file("ticket-1-attempt-1.jsonl", 20 * DAY),
+      file("ticket-1-attempt-1.stderr.log", 20 * DAY),
+    ];
+    const live = new Set([transcriptSessionKey(1, 2)]);
+
+    expect(transcriptsToPrune(files, now, 14 * DAY, live)).toEqual([
+      "ticket-1-attempt-1.jsonl",
+      "ticket-1-attempt-1.stderr.log",
+    ]);
   });
 
   it("leaves a file it cannot parse as a session transcript alone, however old", () => {

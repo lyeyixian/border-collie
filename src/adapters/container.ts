@@ -1,12 +1,14 @@
 import { mkdir, readdir, stat, unlink } from "node:fs/promises";
 import { join } from "node:path";
 import {
+  DEFAULT_TRANSCRIPT_RETENTION_MS,
   encodeSessionLabels,
   parseSessionLabels,
   REPOSITORY_LABEL,
   type SessionLabels,
   type TranscriptFile,
   transcriptHostDir,
+  transcriptSessionKey,
   transcriptsToPrune,
 } from "../core/container.js";
 import { type Exec, realExec } from "./tracker.js";
@@ -150,19 +152,19 @@ export async function dispatchContainerWorker(
 }
 
 /**
- * Ticket numbers with a session container Docker still counts as running,
- * for one repository — the container replacement for `liveWorkerTickets`'s
- * `gh run list` read (adapters/tracker.ts, issue #73), matching its own
- * shape: Worker liveness read from the environment itself rather than a
- * promise held in the Orchestrator's memory, so a restarted Orchestrator
- * reaches the same verdict a long-running one would, and a container that
- * has already exited (`docker ps` lists running containers only, with no
- * `--all`) is never mistaken for one still live.
+ * Every session Docker still counts as running for one repository, read
+ * straight from `docker ps`'s own label listing — a container that has
+ * already exited (`docker ps` lists running containers only, with no
+ * `--all`) is simply absent, never mistaken for one still live. Shared by
+ * `liveContainerTickets` (Ticket-level liveness, the orphan check's needs)
+ * and `pruneTranscripts` below (Ticket-*and*-Attempt liveness, since a
+ * transcript directory holds one entry per Attempt): both read the same
+ * `docker ps` call, so listing and parsing it lives in exactly one place.
  */
-export async function liveContainerTickets(
+async function liveSessions(
   repository: string,
-  exec: Exec = realExec,
-): Promise<Set<number>> {
+  exec: Exec,
+): Promise<SessionLabels[]> {
   const stdout = await exec("docker", [
     "ps",
     "--filter",
@@ -170,15 +172,31 @@ export async function liveContainerTickets(
     "--format",
     "{{.Labels}}",
   ]);
-  const live = new Set<number>();
+  const sessions: SessionLabels[] = [];
   for (const line of stdout.split("\n")) {
     if (line.trim() === "") continue;
     const session = parseSessionLabels(line);
     if (session !== undefined && session.repository === repository) {
-      live.add(session.ticket);
+      sessions.push(session);
     }
   }
-  return live;
+  return sessions;
+}
+
+/**
+ * Ticket numbers with a session container Docker still counts as running,
+ * for one repository — the container replacement for `liveWorkerTickets`'s
+ * `gh run list` read (adapters/tracker.ts, issue #73), matching its own
+ * shape: Worker liveness read from the environment itself rather than a
+ * promise held in the Orchestrator's memory, so a restarted Orchestrator
+ * reaches the same verdict a long-running one would.
+ */
+export async function liveContainerTickets(
+  repository: string,
+  exec: Exec = realExec,
+): Promise<Set<number>> {
+  const sessions = await liveSessions(repository, exec);
+  return new Set(sessions.map((session) => session.ticket));
 }
 
 /** Directory-listing half of the retention sweep, injectable for tests. Yields nothing for a repository with no transcript directory yet, rather than failing the sweep over it. */
@@ -207,28 +225,38 @@ export const realRemoveTranscript: RemoveTranscript = (path) => unlink(path);
 
 /**
  * Delete one repository's session-container transcripts and stderr logs
- * that have aged past the retention window, skipping any still belonging to
- * a Ticket `liveContainerTickets` reports as running (issue #182's pruning
- * rule: age decides for a settled session, liveness always overrides age for
- * one still running). The decision itself is `transcriptsToPrune`
- * (core/container.ts, pure); this is its I/O — list, ask Docker who is
- * still live, delete. Returns the host paths it removed, for logging.
+ * that have aged past the retention window (default `DEFAULT_TRANSCRIPT_
+ * RETENTION_MS`, overridable by the caller — issue #182's "the window is
+ * configurable" criterion), skipping any still belonging to the exact
+ * Ticket-and-Attempt session `liveSessions` reports as running: a settled
+ * Attempt 1 must still age out while Attempt 2 runs, so this checks the pair,
+ * not the Ticket alone (`liveContainerTickets`, above, deliberately checks
+ * only the Ticket — the orphan check it serves cares whether the Ticket has
+ * any live Worker, not which Attempt). The decision itself is
+ * `transcriptsToPrune` (core/container.ts, pure); this is its I/O — list,
+ * ask Docker who is still live, delete. Returns the host paths it removed,
+ * for logging.
  */
 export async function pruneTranscripts(
   repository: string,
   transcriptsRoot: string,
-  retentionMs: number,
+  retentionMs: number = DEFAULT_TRANSCRIPT_RETENTION_MS,
   exec: Exec = realExec,
   listTranscripts: ListTranscripts = realListTranscripts,
   removeTranscript: RemoveTranscript = realRemoveTranscript,
   now: number = Date.now(),
 ): Promise<string[]> {
   const dir = transcriptHostDir(transcriptsRoot, repository);
-  const [files, liveTickets] = await Promise.all([
+  const [files, sessions] = await Promise.all([
     listTranscripts(dir),
-    liveContainerTickets(repository, exec),
+    liveSessions(repository, exec),
   ]);
-  const toRemove = transcriptsToPrune(files, now, retentionMs, liveTickets);
+  const liveKeys = new Set(
+    sessions.map((session) =>
+      transcriptSessionKey(session.ticket, session.attempt),
+    ),
+  );
+  const toRemove = transcriptsToPrune(files, now, retentionMs, liveKeys);
   for (const name of toRemove) {
     await removeTranscript(join(dir, name));
   }
