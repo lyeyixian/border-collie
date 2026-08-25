@@ -746,15 +746,28 @@ export async function createIssue(
   return Number(match[1]);
 }
 
+/** Reads which Ticket numbers a live Worker is running against, for one dispatch backend. */
+export type ReadLiveWorkerTickets = (exec: Exec) => Promise<Set<number>>;
+
 /**
  * Observe phase: read the Scope from GitHub. Parent scope lists the parent's
  * sub-issues (open and closed — the planner needs closed ones to reason about
  * later); repo-wide scope lists open agent-ready issues, excluding PRs
  * (GitHub's issues listing includes them).
+ *
+ * `readLiveWorkerTickets` picks which dispatch backend's liveness read this
+ * Scope trusts — `liveWorkerTickets` (this file, GitHub Actions) by default,
+ * so every existing caller is unaffected; `liveContainerTickets` (adapters/
+ * container.ts, issue #177) is the session-container backend's own, injected
+ * by a caller that dispatches Workers into containers instead. Not core's
+ * concern which backend a Tick actually used to dispatch — this seam only
+ * reads liveness back, the same way `hasLiveWorker` itself carries no opinion
+ * about where a Worker runs (core/types.ts).
  */
 export async function readScope(
   scope: Scope,
   exec: Exec = realExec,
+  readLiveWorkerTickets: ReadLiveWorkerTickets = liveWorkerTickets,
 ): Promise<WorldSnapshot> {
   const endpoint =
     scope.kind === "parent"
@@ -796,7 +809,7 @@ export async function readScope(
     (t) => t.state === "open" && t.labels.includes(CLAIM_LABEL),
   );
   if (claimedOpenTickets.length > 0) {
-    const live = await liveWorkerTickets(exec);
+    const live = await readLiveWorkerTickets(exec);
     for (const ticket of claimedOpenTickets) {
       ticket.hasLiveWorker = live.has(ticket.number);
     }
