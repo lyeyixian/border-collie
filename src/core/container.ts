@@ -83,10 +83,15 @@ export function parseSessionLabels(
  * Default retention window for session-container transcripts kept on the
  * host (issue #182): long enough to cover a weekend an operator did not look
  * at the fleet, short enough that a long-running host does not accumulate
- * every transcript it has ever written. Overridable by the caller — see
- * `pruneTranscripts` (adapters/container.ts).
+ * every transcript it has ever written. `pruneTranscripts` (adapters/
+ * container.ts) defaults its own retention window to this; a caller with a
+ * configured window overrides it there.
  */
 export const DEFAULT_TRANSCRIPT_RETENTION_DAYS = 14;
+
+/** {@link DEFAULT_TRANSCRIPT_RETENTION_DAYS}, in the milliseconds `transcriptsToPrune` compares ages in. */
+export const DEFAULT_TRANSCRIPT_RETENTION_MS =
+  DEFAULT_TRANSCRIPT_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 
 /**
  * One repository's session-container transcripts live on the host nested
@@ -111,17 +116,36 @@ export function transcriptHostDir(root: string, repository: string): string {
 
 /** A session container's transcript or stderr file, matching `dispatchWorker`'s own naming (adapters/worker.ts, `--in-place`). */
 const TRANSCRIPT_FILE_PATTERN =
-  /^ticket-(\d+)-attempt-\d+\.(?:jsonl|stderr\.log)$/;
+  /^ticket-(\d+)-attempt-(\d+)\.(?:jsonl|stderr\.log)$/;
 
 /**
- * The Ticket one file in a repository's transcript directory belongs to,
- * parsed from the file name `dispatchWorker` already fixes. Undefined for
- * anything else found there, so pruning only ever touches a file this shape
- * actually wrote rather than guessing at unrecognised content.
+ * The session — Ticket and Attempt — one file in a repository's transcript
+ * directory belongs to, parsed from the file name `dispatchWorker` already
+ * fixes. Undefined for anything else found there, so pruning only ever
+ * touches a file this shape actually wrote rather than guessing at
+ * unrecognised content.
  */
-export function ticketFromTranscriptFileName(name: string): number | undefined {
+export function sessionFromTranscriptFileName(
+  name: string,
+): { ticket: number; attempt: number } | undefined {
   const match = TRANSCRIPT_FILE_PATTERN.exec(name);
-  return match ? Number(match[1]) : undefined;
+  if (!match) return undefined;
+  return { ticket: Number(match[1]), attempt: Number(match[2]) };
+}
+
+/**
+ * A live-session set's own key, one Ticket's one Attempt — `dispatchWorker`
+ * runs at most one Attempt at a time per Ticket, but a transcript directory
+ * still holds every past Attempt's evidence side by side (namespaced per
+ * attempt so a retry never clobbers the last one's), so pruning must not
+ * collapse "this Ticket has a live Attempt" into "every file this Ticket
+ * ever wrote is live" — a stale Attempt 1 must still age out while Attempt 2
+ * runs. Shared between `transcriptsToPrune` below and whichever adapter
+ * function builds the live set from `docker ps` labels, so both sides of the
+ * comparison always agree on the key's shape.
+ */
+export function transcriptSessionKey(ticket: number, attempt: number): string {
+  return `${ticket}:${attempt}`;
 }
 
 /** One file `pruneTranscripts` (adapters/container.ts) is deciding about: its name and last-modified time. */
@@ -133,20 +157,27 @@ export interface TranscriptFile {
 /**
  * File names, among one repository's transcript directory listing, that a
  * retention sweep should delete (issue #182's pruning rule): older than the
- * window, and — the acceptance criterion that overrides age — not a Ticket a
- * session container is still running for. A file whose name does not parse
- * as one `dispatchWorker` wrote is left alone rather than guessed at.
+ * window, and — the acceptance criterion that overrides age — not the exact
+ * session (Ticket and Attempt) a session container is still running.
+ * `liveSessions` is keyed by `transcriptSessionKey`. A file whose name does
+ * not parse as one `dispatchWorker` wrote is left alone rather than guessed
+ * at.
  */
 export function transcriptsToPrune(
   files: readonly TranscriptFile[],
   now: number,
   retentionMs: number,
-  liveTickets: ReadonlySet<number>,
+  liveSessions: ReadonlySet<string>,
 ): string[] {
   return files
     .filter((file) => {
-      const ticket = ticketFromTranscriptFileName(file.name);
-      if (ticket === undefined || liveTickets.has(ticket)) return false;
+      const session = sessionFromTranscriptFileName(file.name);
+      if (session === undefined) return false;
+      if (
+        liveSessions.has(transcriptSessionKey(session.ticket, session.attempt))
+      ) {
+        return false;
+      }
       return now - file.mtimeMs > retentionMs;
     })
     .map((file) => file.name);
