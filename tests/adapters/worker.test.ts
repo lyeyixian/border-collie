@@ -689,12 +689,25 @@ describe("dispatchRemoteWorker", () => {
 
 describe("dispatchWorker (in-place, issue #75)", () => {
   const IN_PLACE_CONFIG: WorkerConfig = { ...CONFIG, inPlace: true };
+  // In-place runs in the current directory, which for these tests is this
+  // repository — and this repository has a real WORKFLOW.md. Without a fake
+  // here the default `verify` would shell out to the declared contract for
+  // real, so a unit test would run the whole gate.
+  const noContract: RunContractVerify = async () => undefined;
 
   it("checks the branch out directly in the current directory, running claude there — no worktree, no lock", async () => {
     const { exec, calls } = fakeExec({ newCommits: "3" });
     const { spawn, requests } = fakeSpawn(0);
 
-    await dispatchWorker(4, IN_PLACE_CONFIG, exec, spawn);
+    await dispatchWorker(
+      4,
+      IN_PLACE_CONFIG,
+      exec,
+      spawn,
+      undefined,
+      undefined,
+      noContract,
+    );
 
     expect(calls).toEqual([
       ["git", "fetch", "origin"],
@@ -710,7 +723,15 @@ describe("dispatchWorker (in-place, issue #75)", () => {
     const { spawn } = fakeSpawn(0);
     const { log, events } = recordingLog();
 
-    await dispatchWorker(4, IN_PLACE_CONFIG, exec, spawn, log);
+    await dispatchWorker(
+      4,
+      IN_PLACE_CONFIG,
+      exec,
+      spawn,
+      log,
+      undefined,
+      noContract,
+    );
 
     expect(events).toEqual([
       {
@@ -744,7 +765,15 @@ describe("dispatchWorker (in-place, issue #75)", () => {
     const { exec } = fakeExec({ newCommits: "3" });
     const { spawn } = fakeSpawn(0);
 
-    const outcome = await dispatchWorker(4, IN_PLACE_CONFIG, exec, spawn);
+    const outcome = await dispatchWorker(
+      4,
+      IN_PLACE_CONFIG,
+      exec,
+      spawn,
+      undefined,
+      undefined,
+      noContract,
+    );
 
     expect(outcome).toMatchObject({
       ticket: 4,
