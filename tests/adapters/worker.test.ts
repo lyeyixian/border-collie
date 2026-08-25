@@ -1458,4 +1458,25 @@ describe("realSpawnWorkerProcess", () => {
 
     expect(exit.endedBy).toBe("stall");
   });
+
+  it("never forwards the GitHub App private key into a Worker's environment, while every other variable still inherits (issue #178)", async () => {
+    const previousKey = process.env.BORDER_COLLIE_APP_PRIVATE_KEY;
+    process.env.BORDER_COLLIE_APP_PRIVATE_KEY = "-----BEGIN PRIVATE KEY-----";
+    try {
+      const req = request(
+        `console.log(process.env.BORDER_COLLIE_APP_PRIVATE_KEY ?? "absent", process.env.PATH === undefined ? "no-path" : "has-path")`,
+        { timeoutMs: 5_000, stallMs: 5_000 },
+      );
+
+      const exit = await realSpawnWorkerProcess(req);
+
+      expect(exit.stdoutTail).toBe("absent has-path\n");
+    } finally {
+      if (previousKey === undefined) {
+        delete process.env.BORDER_COLLIE_APP_PRIVATE_KEY;
+      } else {
+        process.env.BORDER_COLLIE_APP_PRIVATE_KEY = previousKey;
+      }
+    }
+  });
 });

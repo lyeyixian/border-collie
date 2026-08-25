@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createWriteStream, mkdirSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { stripAppPrivateKey } from "../core/app-auth.js";
 import {
   classifyInfrastructure,
   parseResultEvent,
@@ -141,6 +142,7 @@ export const realSpawnWorkerProcess: SpawnWorkerProcess = (request) =>
     const child = spawn(request.cmd, request.args, {
       cwd: request.cwd,
       stdio: ["ignore", "pipe", "pipe"],
+      env: stripAppPrivateKey(process.env),
     });
     const stdoutTail = makeTail();
     const stderrTail = makeTail();
