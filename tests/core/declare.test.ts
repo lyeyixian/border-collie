@@ -17,6 +17,7 @@ import {
   renderDeclareReport,
   type TrackerIssueRef,
 } from "../../src/core/declare.js";
+import { RUN_DIR } from "../../src/core/types.js";
 import { EMPTY_CONTRACT } from "../../src/core/workflow.js";
 
 describe("parseDeclareSidecar", () => {
@@ -89,15 +90,21 @@ function outcome(overrides: Partial<DeclareOutcome> = {}): DeclareOutcome {
     excluded: [],
     regressions: [],
     redBaselines: [],
+    dockerfileFound: false,
     ...overrides,
   };
 }
 
 describe("declareRegressions", () => {
   it("is empty when every previously declared command is still declared", () => {
-    const previous = { afterCreate: undefined, verify: { lint: "pnpm lint" } };
+    const previous = {
+      afterCreate: undefined,
+      dockerfile: undefined,
+      verify: { lint: "pnpm lint" },
+    };
     const next = {
       afterCreate: undefined,
+      dockerfile: undefined,
       verify: { lint: "pnpm lint", test: "pnpm test" },
     };
 
@@ -107,15 +114,24 @@ describe("declareRegressions", () => {
   it("names a previously declared command missing from the new contract", () => {
     const previous = {
       afterCreate: undefined,
+      dockerfile: undefined,
       verify: { lint: "pnpm lint", test: "pnpm test" },
     };
-    const next = { afterCreate: undefined, verify: { lint: "pnpm lint" } };
+    const next = {
+      afterCreate: undefined,
+      dockerfile: undefined,
+      verify: { lint: "pnpm lint" },
+    };
 
     expect(declareRegressions(previous, next)).toEqual(["test"]);
   });
 
   it("is empty when there was no previous contract", () => {
-    const next = { afterCreate: undefined, verify: { lint: "pnpm lint" } };
+    const next = {
+      afterCreate: undefined,
+      dockerfile: undefined,
+      verify: { lint: "pnpm lint" },
+    };
 
     expect(declareRegressions(EMPTY_CONTRACT, next)).toEqual([]);
   });
@@ -123,6 +139,7 @@ describe("declareRegressions", () => {
   it("names every previously declared command the new contract drops", () => {
     const previous = {
       afterCreate: undefined,
+      dockerfile: undefined,
       verify: { lint: "pnpm lint", test: "pnpm test", build: "pnpm build" },
     };
 
@@ -150,6 +167,7 @@ describe("renderDeclareReport", () => {
       outcome({
         contract: {
           afterCreate: undefined,
+          dockerfile: undefined,
           verify: { lint: "pnpm lint", test: "pnpm test" },
         },
       }),
@@ -157,6 +175,29 @@ describe("renderDeclareReport", () => {
 
     expect(report).toContain("lint: pnpm lint");
     expect(report).toContain("test: pnpm test");
+  });
+
+  it("reports a missing Dockerfile, at its default path, without failing", () => {
+    const report = renderDeclareReport(outcome({ dockerfileFound: false }));
+
+    expect(report).toContain(`Dockerfile: none at ${RUN_DIR}/Dockerfile`);
+    expect(report).not.toContain("Warning:");
+  });
+
+  it("reports a found Dockerfile at its declared path", () => {
+    const report = renderDeclareReport(
+      outcome({
+        contract: {
+          afterCreate: undefined,
+          dockerfile: "docker/agent.Dockerfile",
+          verify: {},
+        },
+        dockerfileFound: true,
+      }),
+    );
+
+    expect(report).toContain("Dockerfile: docker/agent.Dockerfile");
+    expect(report).not.toContain("none at");
   });
 
   it("lists every excluded candidate with its reason", () => {
@@ -181,7 +222,11 @@ describe("renderDeclareReport", () => {
     const report = renderDeclareReport(
       outcome({
         endedBy: "timeout",
-        contract: { afterCreate: undefined, verify: { lint: "pnpm lint" } },
+        contract: {
+          afterCreate: undefined,
+          dockerfile: undefined,
+          verify: { lint: "pnpm lint" },
+        },
       }),
     );
 
@@ -221,7 +266,11 @@ describe("renderDeclareReport", () => {
     const report = renderDeclareReport(
       outcome({
         regressions: ["test"],
-        contract: { afterCreate: undefined, verify: { lint: "pnpm lint" } },
+        contract: {
+          afterCreate: undefined,
+          dockerfile: undefined,
+          verify: { lint: "pnpm lint" },
+        },
       }),
     );
 

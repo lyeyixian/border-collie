@@ -1,16 +1,28 @@
-import { mkdir, readdir, stat, unlink } from "node:fs/promises";
-import { join } from "node:path";
+import {
+  access,
+  mkdir,
+  readdir,
+  stat,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   DEFAULT_TRANSCRIPT_RETENTION_MS,
   encodeSessionLabels,
   parseSessionLabels,
   REPOSITORY_LABEL,
+  repositoryImageSlug,
   type SessionLabels,
+  sessionLayerDockerfile,
   type TranscriptFile,
   transcriptHostDir,
   transcriptSessionKey,
   transcriptsToPrune,
 } from "../core/container.js";
+import { RUN_DIR } from "../core/types.js";
+import { resolveDockerfilePath } from "../core/workflow.js";
+import { cliVersion } from "./scaffold.js";
 import { type Exec, realExec } from "./tracker.js";
 
 /**
@@ -31,12 +43,14 @@ import { type Exec, realExec } from "./tracker.js";
 
 /**
  * What a session container needs to run one Worker Attempt to completion.
- * `image` is never resolved here — the caller names it, the border-collie
- * base image today (issue #177's own scope: "Repository-specific images
- * come later") or a repository's own built image once issue #180 lands, the
- * same way `WorkerConfig.model` (adapters/worker.ts) is resolved by the
- * caller rather than this seam. `ghToken` and `claudeCodeOAuthToken` are the
- * same two credentials the Worker's Actions job already sets as environment
+ * `image` is never resolved here — the caller names it, either the
+ * border-collie base image directly or `resolveSessionImage`'s result (issue
+ * #180: the border-collie base image when a repository declares no
+ * Dockerfile, or an image built from its own Dockerfile and layered with
+ * border-collie's own tools otherwise), the same way `WorkerConfig.model`
+ * (adapters/worker.ts) is resolved by the caller rather than this seam.
+ * `ghToken` and `claudeCodeOAuthToken` are the same two credentials the
+ * Worker's Actions job already sets as environment
  * (`.github/workflows/border-collie-worker.yml`); minting them is issue
  * #178's concern, not this one's.
  */
@@ -261,4 +275,146 @@ export async function pruneTranscripts(
     await removeTranscript(join(dir, name));
   }
   return toRemove.map((name) => join(dir, name));
+}
+
+/**
+ * A declared Dockerfile that names a path the checkout does not have, or
+ * whose build fails, naming the repository (issue #180) — the caller (the
+ * daemon, once wired) reports this rather than silently falling back to the
+ * base image, since the repository asked for a Dockerfile it does not have
+ * working. Never thrown for a repository that declares no Dockerfile at
+ * all: that resolves to the base image with no error, the same posture the
+ * verify contract already keeps for an empty `WORKFLOW.md`.
+ */
+export class ContainerImageError extends Error {}
+
+/** Filesystem existence check, injectable for tests. */
+export type PathExists = (path: string) => Promise<boolean>;
+
+export const realPathExists: PathExists = async (path) => {
+  try {
+    await access(path);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
+/** Writes border-collie's own layer Dockerfile to disk, injectable for tests. */
+export type WriteLayerDockerfile = (
+  path: string,
+  content: string,
+) => Promise<void>;
+
+export const realWriteLayerDockerfile: WriteLayerDockerfile = async (
+  path,
+  content,
+) => {
+  await mkdir(dirname(path), { recursive: true });
+  await writeFile(path, content, "utf8");
+};
+
+/** What `resolveSessionImage` needs to pick, and if needed build, a session container's image. */
+export interface SessionImageInput {
+  repository: string;
+  /**
+   * Wherever the caller already has this repository checked out — `dockerfile`
+   * (and the intermediate Dockerfile this writes) are resolved against it.
+   * This function never clones or fetches anything itself.
+   */
+  cwd: string;
+  /** The border-collie base image, used verbatim when the repository declares no Dockerfile (issue #177). */
+  baseImage: string;
+  /** `Contract.dockerfile`, from the checkout's own `WORKFLOW.md`. */
+  dockerfile: string | undefined;
+}
+
+const REPO_IMAGE_NAME = "border-collie-repo-image";
+const SESSION_IMAGE_NAME = "border-collie-session-image";
+const SESSION_LAYER_DOCKERFILE = "session-layer.Dockerfile";
+
+/** An error's message, or its stringified form when it isn't an `Error` — for folding into a `ContainerImageError`'s own message. */
+function messageOf(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}
+
+/**
+ * Resolve the image a session container runs from (issue #180): the
+ * border-collie base image, verbatim, when the repository declares no
+ * Dockerfile, or its default path (`.border-collie/Dockerfile`) does not
+ * exist in this checkout; a two-stage build otherwise — the repository's
+ * own Dockerfile first, then border-collie's own layer
+ * (`sessionLayerDockerfile`, core/container.ts) on top of whatever it
+ * produced. The repository's own file is never asked to `FROM` a
+ * border-collie image and never installs border-collie's own tools itself
+ * — the layer above does both, so the repository's file never has to know
+ * border-collie exists (ADR 0009).
+ *
+ * A path `WORKFLOW.md` itself declared that does not exist, or a Dockerfile
+ * (declared or the default one) that fails to build, is a named
+ * `ContainerImageError` naming the repository — never a silent fall back to
+ * the base image, since a declared path that does not work is the
+ * repository's own broken declaration to fix, not a "declares nothing"
+ * state. The default path simply not existing is not an error at all: that
+ * is what a repository that declares no Dockerfile looks like on disk.
+ */
+export async function resolveSessionImage(
+  input: SessionImageInput,
+  exec: Exec = realExec,
+  pathExists: PathExists = realPathExists,
+  writeLayerDockerfile: WriteLayerDockerfile = realWriteLayerDockerfile,
+  borderCollieVersion: string = cliVersion(),
+): Promise<string> {
+  const resolution = resolveDockerfilePath(input.dockerfile);
+  const dockerfilePath = join(input.cwd, resolution.path);
+  const exists = await pathExists(dockerfilePath);
+  if (!exists) {
+    if (resolution.declared) {
+      throw new ContainerImageError(
+        `${input.repository} declares a Dockerfile at "${resolution.path}" that does not exist`,
+      );
+    }
+    return input.baseImage;
+  }
+
+  const slug = repositoryImageSlug(input.repository);
+  const repoTag = `${REPO_IMAGE_NAME}:${slug}`;
+  try {
+    await exec("docker", [
+      "build",
+      "-f",
+      dockerfilePath,
+      "-t",
+      repoTag,
+      input.cwd,
+    ]);
+  } catch (error) {
+    throw new ContainerImageError(
+      `${input.repository}'s Dockerfile at "${resolution.path}" failed to build: ${messageOf(error)}`,
+    );
+  }
+
+  const layerPath = join(input.cwd, RUN_DIR, SESSION_LAYER_DOCKERFILE);
+  await writeLayerDockerfile(
+    layerPath,
+    sessionLayerDockerfile(borderCollieVersion),
+  );
+  const sessionTag = `${SESSION_IMAGE_NAME}:${slug}`;
+  try {
+    await exec("docker", [
+      "build",
+      "-f",
+      layerPath,
+      "--build-arg",
+      `REPO_IMAGE=${repoTag}`,
+      "-t",
+      sessionTag,
+      input.cwd,
+    ]);
+  } catch (error) {
+    throw new ContainerImageError(
+      `${input.repository}: layering border-collie's own tools onto its Dockerfile's image failed: ${messageOf(error)}`,
+    );
+  }
+  return sessionTag;
 }

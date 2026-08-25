@@ -91,6 +91,7 @@ function declareOutcome(
     excluded: [],
     regressions: [],
     redBaselines: [],
+    dockerfileFound: false,
     ...overrides,
   };
 }
@@ -633,6 +634,7 @@ describe("declare command", () => {
       declareResult: declareOutcome({
         contract: {
           afterCreate: undefined,
+          dockerfile: undefined,
           verify: { test: "pnpm test" },
         },
       }),
@@ -842,6 +844,7 @@ describe("init command", () => {
       declareResult: declareOutcome({
         contract: {
           afterCreate: undefined,
+          dockerfile: undefined,
           verify: { lint: "pnpm lint" },
         },
       }),

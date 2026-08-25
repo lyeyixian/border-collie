@@ -118,7 +118,8 @@ export type FailureReason =
   | "no-commits"
   | "timeout"
   | "stall"
-  | "budget";
+  | "budget"
+  | "after-create-failed";
 
 export const FAILURE_DESCRIPTIONS: Record<FailureReason, string> = {
   "nonzero-exit": "the Worker process exited non-zero",
@@ -127,6 +128,8 @@ export const FAILURE_DESCRIPTIONS: Record<FailureReason, string> = {
   stall: "the Worker produced no output events for the stall window",
   budget:
     "the Worker hit the turn-cap budget backstop and was halted mid-flight",
+  "after-create-failed":
+    "WORKFLOW.md's after_create failed, so no session was ever started",
 };
 
 /**

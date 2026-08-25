@@ -25,7 +25,10 @@ import {
   type WorkerProcessRequest,
   workerPrompt,
 } from "../../src/adapters/worker.js";
-import type { RunContractVerify } from "../../src/adapters/workflow.js";
+import type {
+  RunAfterCreate,
+  RunContractVerify,
+} from "../../src/adapters/workflow.js";
 import { DECLARE_SIDECAR_FILE } from "../../src/core/declare.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
 import { SKILL_FILES } from "../../src/core/scaffold.js";
@@ -448,6 +451,108 @@ describe("dispatchWorker", () => {
     const failed = events.find((e) => e.kind === "contract-verify-failed");
     expect(failed?.level).toBe("warn");
     expect(failed?.msg).toContain("oops");
+  });
+
+  it("runs after_create in the checkout before spawning the session", async () => {
+    const { exec } = fakeExec({ newCommits: "1" });
+    const { spawn, requests } = fakeSpawn(0);
+    const seen: string[] = [];
+    const runAfterCreateFn: RunAfterCreate = async (cwd) => {
+      seen.push(cwd);
+      return 0;
+    };
+
+    await dispatchWorker(
+      4,
+      CONFIG,
+      exec,
+      spawn,
+      undefined,
+      undefined,
+      undefined,
+      runAfterCreateFn,
+    );
+
+    expect(seen).toEqual([WORKTREE]);
+    expect(requests).toHaveLength(1);
+  });
+
+  it("fails the attempt with after-create-failed and never starts the session when after_create exits non-zero", async () => {
+    const { exec } = fakeExec({ newCommits: "0" });
+    const { spawn, requests } = fakeSpawn(0);
+    const runAfterCreateFn: RunAfterCreate = async () => 1;
+
+    const outcome = await dispatchWorker(
+      4,
+      CONFIG,
+      exec,
+      spawn,
+      undefined,
+      undefined,
+      undefined,
+      runAfterCreateFn,
+    );
+
+    expect(requests).toHaveLength(0);
+    expect(outcome).toMatchObject({
+      ok: false,
+      exitCode: 1,
+      failure: "after-create-failed",
+      verify: undefined,
+    });
+  });
+
+  it("never fails the attempt over WORKFLOW.md itself being unreadable — that is not a failure in after_create, so the session still starts", async () => {
+    const { exec } = fakeExec({ newCommits: "1" });
+    const { spawn, requests } = fakeSpawn(0);
+    const { log, events } = recordingLog();
+    const runAfterCreateFn: RunAfterCreate = async () => {
+      throw new Error('WORKFLOW.md front matter has an unsupported key "oops"');
+    };
+
+    const outcome = await dispatchWorker(
+      4,
+      CONFIG,
+      exec,
+      spawn,
+      log,
+      undefined,
+      undefined,
+      runAfterCreateFn,
+    );
+
+    expect(requests).toHaveLength(1);
+    expect(outcome.ok).toBe(true);
+    expect(outcome.failure).toBeUndefined();
+    const warned = events.find((e) => e.kind === "contract-verify-failed");
+    expect(warned?.level).toBe("warn");
+    expect(warned?.msg).toContain("oops");
+  });
+
+  it("still counts commits on the branch and removes the worktree when after_create fails", async () => {
+    const { exec, calls } = fakeExec({ newCommits: "2" });
+    const { spawn } = fakeSpawn(0);
+    const runAfterCreateFn: RunAfterCreate = async () => 1;
+
+    const outcome = await dispatchWorker(
+      4,
+      CONFIG,
+      exec,
+      spawn,
+      undefined,
+      undefined,
+      undefined,
+      runAfterCreateFn,
+    );
+
+    expect(outcome.newCommits).toBe(2);
+    expect(calls.at(-1)).toEqual([
+      "git",
+      "worktree",
+      "remove",
+      "--force",
+      WORKTREE,
+    ]);
   });
 
   it("fails the attempt as a budget breach when the Worker hit the turn cap", async () => {

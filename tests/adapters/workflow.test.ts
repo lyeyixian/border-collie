@@ -6,6 +6,7 @@ import {
   loadContract,
   readContractRaw,
   realRunVerifyCommand,
+  runAfterCreate,
   runContractVerify,
   writeContractRaw,
 } from "../../src/adapters/workflow.js";
@@ -97,6 +98,7 @@ describe("runContractVerify", () => {
   it("is undefined for a contract with no verify commands, and never touches the command runner", async () => {
     const loadContractFn = async (): Promise<Contract> => ({
       afterCreate: undefined,
+      dockerfile: undefined,
       verify: {},
     });
     let ran = false;
@@ -118,6 +120,7 @@ describe("runContractVerify", () => {
   it("runs every declared command in cwd, deriving pass/fail from exit codes alone", async () => {
     const loadContractFn = async (): Promise<Contract> => ({
       afterCreate: undefined,
+      dockerfile: undefined,
       verify: { lint: "pnpm lint", test: "pnpm test" },
     });
     const calls: Array<{ command: string; cwd: string }> = [];
@@ -148,6 +151,7 @@ describe("runContractVerify", () => {
   it("is ok when every declared command exits zero", async () => {
     const loadContractFn = async (): Promise<Contract> => ({
       afterCreate: undefined,
+      dockerfile: undefined,
       verify: { build: "pnpm build" },
     });
 
@@ -180,5 +184,65 @@ describe("runContractVerify", () => {
         { name: "fail", command: "false", exitCode: 1, ok: false },
       ],
     });
+  });
+});
+
+describe("runAfterCreate", () => {
+  it("is undefined for a contract with no after_create, and never touches the command runner", async () => {
+    const loadContractFn = async (): Promise<Contract> => ({
+      afterCreate: undefined,
+      dockerfile: undefined,
+      verify: {},
+    });
+    let ran = false;
+    const runVerifyCommand = async () => {
+      ran = true;
+      return 0;
+    };
+
+    const result = await runAfterCreate(
+      "/repo",
+      loadContractFn,
+      runVerifyCommand,
+    );
+
+    expect(result).toBeUndefined();
+    expect(ran).toBe(false);
+  });
+
+  it("runs the declared after_create command in cwd, resolving its exit code", async () => {
+    const loadContractFn = async (): Promise<Contract> => ({
+      afterCreate: "pnpm install --frozen-lockfile",
+      dockerfile: undefined,
+      verify: {},
+    });
+    const calls: Array<{ command: string; cwd: string }> = [];
+    const runVerifyCommand = async (command: string, cwd: string) => {
+      calls.push({ command, cwd });
+      return 1;
+    };
+
+    const result = await runAfterCreate(
+      "/repo/worktree",
+      loadContractFn,
+      runVerifyCommand,
+    );
+
+    expect(calls).toEqual([
+      { command: "pnpm install --frozen-lockfile", cwd: "/repo/worktree" },
+    ]);
+    expect(result).toBe(1);
+  });
+
+  it("wires the real reader and the real shell end to end", async () => {
+    const dir = tmpRepo();
+    writeFileSync(
+      join(dir, "WORKFLOW.md"),
+      ["---", "after_create: true", "---"].join("\n"),
+    );
+
+    await expect(
+      runAfterCreate(dir, loadContract, realRunVerifyCommand),
+    ).resolves.toBe(0);
   });
 });

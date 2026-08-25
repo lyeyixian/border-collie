@@ -45,6 +45,7 @@ function fakeDeps(overrides: Partial<DeclareDeps> = {}): DeclareDeps {
     createIssue: async () => {
       throw new Error("createIssue not stubbed");
     },
+    checkDockerfile: async () => false,
     log,
     ...overrides,
   };
@@ -56,7 +57,11 @@ function redExclusion(name: string, reason = "exits 1"): DeclareExclusion {
 
 describe("runDeclare", () => {
   it("runs the session, then reads the contract and the sidecar it left behind", async () => {
-    const contract = { afterCreate: undefined, verify: { lint: "pnpm lint" } };
+    const contract = {
+      afterCreate: undefined,
+      dockerfile: undefined,
+      verify: { lint: "pnpm lint" },
+    };
     const excluded: DeclareExclusion[] = [
       { name: "e2e", kind: "missing", reason: "does not exist" },
     ];
@@ -162,6 +167,35 @@ describe("runDeclare", () => {
     expect(cleared).toBe(true);
   });
 
+  it("reports no Dockerfile found, without failing, when the checked path does not exist", async () => {
+    const deps = fakeDeps({ checkDockerfile: async () => false });
+
+    const outcome = await runDeclare(deps);
+
+    expect(outcome.dockerfileFound).toBe(false);
+    expect(outcome.exitCode).toBe(0);
+  });
+
+  it("checks the contract's resolved Dockerfile path, and reports it found", async () => {
+    const seen: string[] = [];
+    const deps = fakeDeps({
+      loadContractFn: async () => ({
+        afterCreate: undefined,
+        dockerfile: "docker/agent.Dockerfile",
+        verify: {},
+      }),
+      checkDockerfile: async (path) => {
+        seen.push(path);
+        return true;
+      },
+    });
+
+    const outcome = await runDeclare(deps);
+
+    expect(seen).toEqual(["docker/agent.Dockerfile"]);
+    expect(outcome.dockerfileFound).toBe(true);
+  });
+
   describe("regression refusal", () => {
     const previousRaw =
       "---\nverify:\n  lint: pnpm lint\n  test: pnpm test\n---\n";
@@ -172,6 +206,7 @@ describe("runDeclare", () => {
         readExistingContract: async () => previousRaw,
         loadContractFn: async () => ({
           afterCreate: undefined,
+          dockerfile: undefined,
           verify: { lint: "pnpm lint" },
         }),
         loadSidecar: async () => [redExclusion("test")],
@@ -185,6 +220,7 @@ describe("runDeclare", () => {
       expect(restored).toEqual([{ cwd: ".", raw: previousRaw }]);
       expect(outcome.contract).toEqual({
         afterCreate: undefined,
+        dockerfile: undefined,
         verify: { lint: "pnpm lint", test: "pnpm test" },
       });
     });
@@ -194,6 +230,7 @@ describe("runDeclare", () => {
         readExistingContract: async () => previousRaw,
         loadContractFn: async () => ({
           afterCreate: undefined,
+          dockerfile: undefined,
           verify: { lint: "pnpm lint" },
         }),
       });
@@ -208,6 +245,7 @@ describe("runDeclare", () => {
         readExistingContract: async () => previousRaw,
         loadContractFn: async () => ({
           afterCreate: undefined,
+          dockerfile: undefined,
           verify: { lint: "pnpm lint" },
         }),
         loadSidecar: async () => [redExclusion("test")],
@@ -222,6 +260,7 @@ describe("runDeclare", () => {
       const restored: unknown[] = [];
       const nextContract = {
         afterCreate: undefined,
+        dockerfile: undefined,
         verify: { lint: "pnpm lint", test: "pnpm test", build: "pnpm build" },
       };
       const deps = fakeDeps({
@@ -242,6 +281,7 @@ describe("runDeclare", () => {
     it("is unaffected on a first declare with no existing contract", async () => {
       const nextContract = {
         afterCreate: undefined,
+        dockerfile: undefined,
         verify: { lint: "pnpm lint" },
       };
       const deps = fakeDeps({

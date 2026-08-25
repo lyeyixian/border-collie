@@ -1,3 +1,4 @@
+import { type PathExists, realPathExists } from "../adapters/container.js";
 import {
   type ClearDeclareSidecar,
   clearDeclareSidecar,
@@ -40,6 +41,7 @@ import {
   type Contract,
   EMPTY_CONTRACT,
   parseContract,
+  resolveDockerfilePath,
 } from "../core/workflow.js";
 
 /**
@@ -59,6 +61,8 @@ export interface DeclareDeps {
   clearSidecar: ClearDeclareSidecar;
   listOpenIssues: ListOpenIssues;
   createIssue: CreateIssue;
+  /** Whether a Dockerfile exists at a resolved path (issue #180) — never authored, only checked. */
+  checkDockerfile: PathExists;
   log: Log;
 }
 
@@ -182,6 +186,7 @@ export async function runDeclare(deps: DeclareDeps): Promise<DeclareOutcome> {
     restoreContract,
     loadSidecar,
     clearSidecar,
+    checkDockerfile,
     log,
   } = deps;
   const previousRaw = await readExistingContract(".");
@@ -233,10 +238,21 @@ export async function runDeclare(deps: DeclareDeps): Promise<DeclareOutcome> {
       contract: previousContract,
       excluded: [],
       regressions,
+      dockerfileFound: await checkDockerfile(
+        resolveDockerfilePath(previousContract.dockerfile).path,
+      ),
     };
   }
 
-  return { ...runFacts, contract, excluded, regressions: [] };
+  return {
+    ...runFacts,
+    contract,
+    excluded,
+    regressions: [],
+    dockerfileFound: await checkDockerfile(
+      resolveDockerfilePath(contract.dockerfile).path,
+    ),
+  };
 }
 
 /**
@@ -269,6 +285,7 @@ export function declareOnce(
     clearSidecar: clearDeclareSidecar,
     listOpenIssues: listOpenIssuesReal,
     createIssue: createIssueReal,
+    checkDockerfile: realPathExists,
     log,
   });
 }

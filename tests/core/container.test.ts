@@ -4,8 +4,10 @@ import {
   encodeSessionLabels,
   parseSessionLabels,
   REPOSITORY_LABEL,
+  repositoryImageSlug,
   type SessionLabels,
   sessionFromTranscriptFileName,
+  sessionLayerDockerfile,
   TICKET_LABEL,
   type TranscriptFile,
   transcriptHostDir,
@@ -66,6 +68,42 @@ describe("encodeSessionLabels / parseSessionLabels", () => {
     const raw = `${REPOSITORY_LABEL}=acme/widgets,${TICKET_LABEL}=42,${ATTEMPT_LABEL}=two`;
 
     expect(parseSessionLabels(raw)).toBeUndefined();
+  });
+});
+
+describe("repositoryImageSlug", () => {
+  it("lowercases and replaces the slash between owner and repo", () => {
+    expect(repositoryImageSlug("acme/widgets")).toBe("acme-widgets");
+  });
+
+  it("collapses any run of non-tag-safe characters to one dash", () => {
+    expect(repositoryImageSlug("Acme Corp/My--Repo!!")).toBe(
+      "acme-corp-my--repo",
+    );
+  });
+
+  it("trims leading and trailing dashes left over from unsafe characters at the edges", () => {
+    expect(repositoryImageSlug("-acme/widgets-")).toBe("acme-widgets");
+  });
+});
+
+describe("sessionLayerDockerfile", () => {
+  it("builds on top of the build-arg image, never a fixed one", () => {
+    const content = sessionLayerDockerfile("0.6.0");
+
+    expect(content).toContain("ARG REPO_IMAGE");
+    expect(content).toContain(`FROM ${"$"}{REPO_IMAGE}`);
+  });
+
+  it("pins border-collie's own install to the given version", () => {
+    expect(sessionLayerDockerfile("0.6.0")).toContain("border-collie@0.6.0");
+  });
+
+  it("installs Claude Code and gh, the rest of what a session needs", () => {
+    const content = sessionLayerDockerfile("0.6.0");
+
+    expect(content).toContain("@anthropic-ai/claude-code");
+    expect(content).toContain("apt-get install -y --no-install-recommends gh");
   });
 });
 

@@ -18,7 +18,12 @@ import {
 } from "../core/types.js";
 import { CONTRACT_FILE, type VerifyOutcome } from "../core/workflow.js";
 import { type Exec, realExec, WORKER_WORKFLOW_FILE } from "./tracker.js";
-import { type RunContractVerify, runContractVerify } from "./workflow.js";
+import {
+  type RunAfterCreate,
+  type RunContractVerify,
+  runAfterCreate,
+  runContractVerify,
+} from "./workflow.js";
 
 /**
  * The WorkerHost seam: everything a dispatched Worker needs around it —
@@ -339,6 +344,8 @@ export async function dispatchWorker(
   onActivity: () => void = () => {},
   /** Runs the repo's declared verify contract against the checkout once the session ends (issue #149). */
   verify: RunContractVerify = runContractVerify,
+  /** Runs the repo's declared after_create against the checkout before the session starts (issue #180). */
+  runAfterCreateFn: RunAfterCreate = runAfterCreate,
 ): Promise<WorkerOutcome> {
   const branch = `${AGENT_BRANCH_PREFIX}${ticket}-attempt-${config.attempt}`;
   const worktree = join(RUN_DIR, "worktrees", `ticket-${ticket}`);
@@ -392,7 +399,66 @@ export async function dispatchWorker(
     transcript,
   });
 
+  // Shared by the after_create failure path below and the normal-flow return
+  // that follows it, both of which need this Attempt's commit count against
+  // the same base and branch.
+  const newCommitsSince = async (): Promise<number> =>
+    Number(
+      (
+        await gitPhase(() =>
+          exec("git", ["rev-list", "--count", `${base}..${branch}`]),
+        )
+      ).trim(),
+    );
+
   try {
+    // Runs before the session starts, against the checkout this Attempt just
+    // cut — a session container's own preparation step (issue #180, ADR
+    // 0009). Only an `after_create` that was actually identified and run
+    // fails the Attempt outright: a WORKFLOW.md too broken to even read is
+    // not a failure *in* `after_create` specifically, and is treated the
+    // same lenient way the post-session `verify` read below treats it — a
+    // warning, with the session let through rather than blocked over a
+    // contract problem this Attempt did not cause.
+    let afterCreateExitCode: number | null | undefined;
+    try {
+      afterCreateExitCode = await runAfterCreateFn(cwd);
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      log({
+        kind: "contract-verify-failed",
+        level: "warn",
+        msg: `WORKFLOW.md could not be read before the session started: ${reason}`,
+      });
+      afterCreateExitCode = undefined;
+    }
+    if (afterCreateExitCode !== undefined && afterCreateExitCode !== 0) {
+      log({
+        kind: "after-create-failed",
+        level: "error",
+        msg: `WORKFLOW.md's after_create exited ${afterCreateExitCode}`,
+      });
+      return {
+        ticket,
+        attempt: config.attempt,
+        branch,
+        base,
+        transcript,
+        model: config.model,
+        exitCode: afterCreateExitCode,
+        newCommits: await newCommitsSince(),
+        failure: "after-create-failed",
+        infra: undefined,
+        costUsd: undefined,
+        turns: undefined,
+        durationMs: undefined,
+        subtype: undefined,
+        costOverrun: false,
+        ok: false,
+        verify: undefined,
+      };
+    }
+
     // Headless Workers cannot answer permission prompts; skipping them is
     // what confines the blast radius to the checkout plus the operator's
     // own tracker.
@@ -406,13 +472,7 @@ export async function dispatchWorker(
       stallMs: config.stallMs,
       onActivity,
     });
-    const newCommits = Number(
-      (
-        await gitPhase(() =>
-          exec("git", ["rev-list", "--count", `${base}..${branch}`]),
-        )
-      ).trim(),
-    );
+    const newCommits = await newCommitsSince();
     // A killed Worker fails even with commits on the branch: it never got to
     // finish, so the work is unverified and the PR description is missing.
     const trigger: FailureReason | undefined =

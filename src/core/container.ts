@@ -80,6 +80,62 @@ export function parseSessionLabels(
 }
 
 /**
+ * A Docker-safe slug for `repository` ("owner/repo"), naming the
+ * intermediate images `resolveSessionImage` (adapters/container.ts) builds
+ * for one repository (issue #180). Docker image names must be lowercase, so
+ * this lowercases; every run of characters outside `[a-z0-9._-]` (a `/`
+ * included) collapses to a single `-` so an unusual repository name still
+ * yields one valid tag component rather than an invalid reference.
+ */
+export function repositoryImageSlug(repository: string): string {
+  return repository
+    .toLowerCase()
+    .replace(/[^a-z0-9._-]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/**
+ * Border-collie's own layer, built on top of whatever a repository's own
+ * Dockerfile produced (issue #180): `${REPO_IMAGE}` is a build arg, filled
+ * in by `resolveSessionImage` (adapters/container.ts) with the repository's
+ * own image tag, never the repository's own file — this is border-collie's
+ * file, so the repository's Dockerfile never has to `FROM` a border-collie
+ * image or install border-collie's own tools itself (ADR 0009: "must never
+ * be required to start from a border-collie base image"). `version` pins
+ * this daemon's own install of border-collie, the same discipline
+ * `pinCliVersion` (core/scaffold.ts) gives the Actions workflow templates.
+ *
+ * Assumes a Debian-or-Ubuntu-family repository image (`apt-get`, `dpkg`) —
+ * a documented limit rather than a silently narrower promise than the rest
+ * of this ticket, the same way ADR 0009 states its own limitations plainly
+ * rather than leaving them to be discovered. A repository whose Dockerfile
+ * produces a non-Debian image needs a different layer than this one; that
+ * is out of scope here.
+ */
+export function sessionLayerDockerfile(version: string): string {
+  return [
+    "ARG REPO_IMAGE",
+    // Built rather than written as the literal "FROM ${REPO_IMAGE}": that
+    // reads as a forgotten JS template placeholder, though it is Docker's
+    // own ARG substitution syntax.
+    `FROM ${"$"}{REPO_IMAGE}`,
+    "",
+    "RUN apt-get update \\",
+    " && apt-get install -y --no-install-recommends curl git ca-certificates gnupg \\",
+    " && curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \\",
+    " && apt-get install -y --no-install-recommends nodejs \\",
+    " && curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg \\",
+    " && chmod go+r /usr/share/keyrings/githubcli-archive-keyring.gpg \\",
+    ' && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list \\',
+    " && apt-get update \\",
+    " && apt-get install -y --no-install-recommends gh \\",
+    ` && npm install -g @anthropic-ai/claude-code@latest border-collie@${version} \\`,
+    " && rm -rf /var/lib/apt/lists/*",
+    "",
+  ].join("\n");
+}
+
+/**
  * Default retention window for session-container transcripts kept on the
  * host (issue #182): long enough to cover a weekend an operator did not look
  * at the fleet, short enough that a long-running host does not accumulate
