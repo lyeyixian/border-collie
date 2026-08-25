@@ -8,6 +8,12 @@
  * better place to put it, structured rather than string-shaped. Kept pure
  * and here in core, same as that pair, so the shape is tested as plain
  * inputs and outputs with no subprocess involved.
+ *
+ * Also holds the pure half of keeping a session's transcript on the host
+ * after its container exits (issue #182): where a repository's transcripts
+ * live on disk, which file belongs to which Ticket, and which of them a
+ * retention sweep may delete. The I/O — the bind mount, the directory
+ * listing, the delete — is adapters/container.ts's `pruneTranscripts`.
  */
 
 const LABEL_NAMESPACE = "sh.border-collie";
@@ -71,4 +77,77 @@ export function parseSessionLabels(
     return undefined;
   }
   return { repository, ticket: Number(ticketRaw), attempt: Number(attemptRaw) };
+}
+
+/**
+ * Default retention window for session-container transcripts kept on the
+ * host (issue #182): long enough to cover a weekend an operator did not look
+ * at the fleet, short enough that a long-running host does not accumulate
+ * every transcript it has ever written. Overridable by the caller — see
+ * `pruneTranscripts` (adapters/container.ts).
+ */
+export const DEFAULT_TRANSCRIPT_RETENTION_DAYS = 14;
+
+/**
+ * One repository's session-container transcripts live on the host nested
+ * owner then name — the same shape GitHub itself names a repository
+ * (`SessionLabels.repository`, above), so two repositories can never
+ * collide without a separate encoding scheme to keep in sync with it.
+ * Rejects anything that is not a plain `"owner/repo"` pair, since this
+ * feeds a `docker run --volume` bind-mount source and a path-traversal
+ * component (`..`, a leading `/`) has no business reaching one.
+ */
+export function transcriptHostDir(root: string, repository: string): string {
+  const parts = repository.split("/");
+  const validPart = (part: string) =>
+    part !== "." && part !== ".." && /^[\w.-]+$/.test(part);
+  if (parts.length !== 2 || !parts.every(validPart)) {
+    throw new Error(
+      `repository must be "owner/repo", got ${JSON.stringify(repository)}`,
+    );
+  }
+  return `${root.replace(/\/+$/, "")}/${parts[0]}/${parts[1]}`;
+}
+
+/** A session container's transcript or stderr file, matching `dispatchWorker`'s own naming (adapters/worker.ts, `--in-place`). */
+const TRANSCRIPT_FILE_PATTERN =
+  /^ticket-(\d+)-attempt-\d+\.(?:jsonl|stderr\.log)$/;
+
+/**
+ * The Ticket one file in a repository's transcript directory belongs to,
+ * parsed from the file name `dispatchWorker` already fixes. Undefined for
+ * anything else found there, so pruning only ever touches a file this shape
+ * actually wrote rather than guessing at unrecognised content.
+ */
+export function ticketFromTranscriptFileName(name: string): number | undefined {
+  const match = TRANSCRIPT_FILE_PATTERN.exec(name);
+  return match ? Number(match[1]) : undefined;
+}
+
+/** One file `pruneTranscripts` (adapters/container.ts) is deciding about: its name and last-modified time. */
+export interface TranscriptFile {
+  name: string;
+  mtimeMs: number;
+}
+
+/**
+ * File names, among one repository's transcript directory listing, that a
+ * retention sweep should delete (issue #182's pruning rule): older than the
+ * window, and — the acceptance criterion that overrides age — not a Ticket a
+ * session container is still running for. A file whose name does not parse
+ * as one `dispatchWorker` wrote is left alone rather than guessed at.
+ */
+export function transcriptsToPrune(
+  files: readonly TranscriptFile[],
+  now: number,
+  retentionMs: number,
+  liveTickets: ReadonlySet<number>,
+): string[] {
+  return files
+    .filter((file) => {
+      const ticket = ticketFromTranscriptFileName(file.name);
+      if (ticket === undefined || liveTickets.has(ticket)) return false;
+      return now - file.mtimeMs > retentionMs;
+    })
+    .map((file) => file.name);
 }

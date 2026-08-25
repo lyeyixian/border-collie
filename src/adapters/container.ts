@@ -1,8 +1,13 @@
+import { mkdir, readdir, stat, unlink } from "node:fs/promises";
+import { join } from "node:path";
 import {
   encodeSessionLabels,
   parseSessionLabels,
   REPOSITORY_LABEL,
   type SessionLabels,
+  type TranscriptFile,
+  transcriptHostDir,
+  transcriptsToPrune,
 } from "../core/container.js";
 import { type Exec, realExec } from "./tracker.js";
 
@@ -14,6 +19,12 @@ import { type Exec, realExec } from "./tracker.js";
  * it; the Actions path stays the default until the cutover (issue #176).
  * Everything here goes through the `docker` CLI via the injected `Exec` seam,
  * the same shape every `gh`/`git` call in this codebase already takes.
+ *
+ * Also carries transcripts on the host past a container's exit and their
+ * retention sweep (issue #182): `dispatchContainerWorker` bind-mounts a
+ * per-repository host directory into every session it starts, and
+ * `pruneTranscripts` deletes what has aged out of it, deferring the pure
+ * decision of what qualifies to core/container.ts.
  */
 
 /**
@@ -32,7 +43,31 @@ export interface ContainerWorkerConfig {
   timeoutMinutes: number;
   ghToken: string;
   claudeCodeOAuthToken: string;
+  /**
+   * Host directory transcripts live under, one subdirectory per repository
+   * (`transcriptHostDir`, core/container.ts) — the operator's disk, not the
+   * session container's, so a session's evidence survives the `--rm` below
+   * (issue #182).
+   */
+  transcriptsRoot: string;
 }
+
+/**
+ * Where a repository's transcript directory is bind-mounted inside a
+ * session container. Deliberately outside the git checkout root: `gh repo
+ * clone "$REPOSITORY" .` refuses to clone into a directory that already has
+ * anything in it, hidden or not, so the mount cannot sit under `.` at
+ * container start — the entrypoint script symlinks `.border-collie/
+ * transcripts` to this path only after the clone has already landed.
+ */
+const CONTAINER_TRANSCRIPTS_MOUNT = "/border-collie/transcripts";
+
+/** Directory-creation half of the transcript seam, injectable for tests. */
+export type EnsureDir = (path: string) => Promise<void>;
+
+export const realEnsureDir: EnsureDir = async (path) => {
+  await mkdir(path, { recursive: true });
+};
 
 /** One session container's `docker run --label key=value` arguments, from its identity. */
 function labelArgs(session: SessionLabels): string[] {
@@ -56,10 +91,15 @@ function labelArgs(session: SessionLabels): string[] {
  * ticket's Worker liveness from the container's own labels
  * (`liveContainerTickets` below) rather than waiting on it here.
  *
- * `--rm`: a session container's transcript is not yet kept on the host
- * (issue #182), so nothing is lost by letting Docker clean up an exited
- * container itself — there is nothing left in it worth inspecting after the
- * tracker write above has landed.
+ * `--rm`: the container itself leaves nothing behind once it exits — its
+ * transcript already does, bind-mounted from the host directory this
+ * repository's transcripts live under (`transcriptHostDir`, issue #182), so
+ * an operator reads it after the fact the same way whether the session
+ * succeeded or failed. The bind mount lands at `CONTAINER_TRANSCRIPTS_MOUNT`,
+ * outside the checkout `gh repo clone` writes into — cloning into a
+ * directory that already has anything in it, hidden included, fails — so the
+ * script clones first and only then symlinks `.border-collie/transcripts` to
+ * the mount, before the Worker entrypoint that writes there ever runs.
  *
  * The clone-and-run script is a fixed string with every dynamic value
  * carried in through `--env` and read back with `$VAR`, never interpolated
@@ -68,7 +108,9 @@ function labelArgs(session: SessionLabels): string[] {
  * (`.github/workflows/border-collie-worker.yml`: "Dispatch inputs arrive as
  * environment, never interpolated into the script body"), for the same
  * reason: a value spliced straight into a shell string is a command
- * injection waiting on whatever that value turns out to contain.
+ * injection waiting on whatever that value turns out to contain. The mount
+ * path itself is a fixed, code-controlled constant, never a repository- or
+ * ticket-derived value, so it needs no such guard.
  */
 export async function dispatchContainerWorker(
   ticket: number,
@@ -76,7 +118,10 @@ export async function dispatchContainerWorker(
   repository: string,
   config: ContainerWorkerConfig,
   exec: Exec = realExec,
+  ensureDir: EnsureDir = realEnsureDir,
 ): Promise<undefined> {
+  const hostDir = transcriptHostDir(config.transcriptsRoot, repository);
+  await ensureDir(hostDir);
   await exec("docker", [
     "run",
     "--detach",
@@ -94,10 +139,12 @@ export async function dispatchContainerWorker(
     `ATTEMPT=${attempt}`,
     "--env",
     `TIMEOUT_MINUTES=${config.timeoutMinutes}`,
+    "--volume",
+    `${hostDir}:${CONTAINER_TRANSCRIPTS_MOUNT}`,
     config.image,
     "sh",
     "-c",
-    'gh repo clone "$REPOSITORY" . && border-collie worker "$TICKET" "$ATTEMPT" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+    `gh repo clone "$REPOSITORY" . && mkdir -p .border-collie && ln -sfn ${CONTAINER_TRANSCRIPTS_MOUNT} .border-collie/transcripts && border-collie worker "$TICKET" "$ATTEMPT" --in-place --timeout-minutes "$TIMEOUT_MINUTES"`,
   ]);
   return undefined;
 }
@@ -132,4 +179,58 @@ export async function liveContainerTickets(
     }
   }
   return live;
+}
+
+/** Directory-listing half of the retention sweep, injectable for tests. Yields nothing for a repository with no transcript directory yet, rather than failing the sweep over it. */
+export type ListTranscripts = (dir: string) => Promise<TranscriptFile[]>;
+
+export const realListTranscripts: ListTranscripts = async (dir) => {
+  let names: string[];
+  try {
+    names = await readdir(dir);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw err;
+  }
+  const files: TranscriptFile[] = [];
+  for (const name of names) {
+    const info = await stat(join(dir, name));
+    if (info.isFile()) files.push({ name, mtimeMs: info.mtimeMs });
+  }
+  return files;
+};
+
+/** Delete half of the retention sweep, injectable for tests. */
+export type RemoveTranscript = (path: string) => Promise<void>;
+
+export const realRemoveTranscript: RemoveTranscript = (path) => unlink(path);
+
+/**
+ * Delete one repository's session-container transcripts and stderr logs
+ * that have aged past the retention window, skipping any still belonging to
+ * a Ticket `liveContainerTickets` reports as running (issue #182's pruning
+ * rule: age decides for a settled session, liveness always overrides age for
+ * one still running). The decision itself is `transcriptsToPrune`
+ * (core/container.ts, pure); this is its I/O — list, ask Docker who is
+ * still live, delete. Returns the host paths it removed, for logging.
+ */
+export async function pruneTranscripts(
+  repository: string,
+  transcriptsRoot: string,
+  retentionMs: number,
+  exec: Exec = realExec,
+  listTranscripts: ListTranscripts = realListTranscripts,
+  removeTranscript: RemoveTranscript = realRemoveTranscript,
+  now: number = Date.now(),
+): Promise<string[]> {
+  const dir = transcriptHostDir(transcriptsRoot, repository);
+  const [files, liveTickets] = await Promise.all([
+    listTranscripts(dir),
+    liveContainerTickets(repository, exec),
+  ]);
+  const toRemove = transcriptsToPrune(files, now, retentionMs, liveTickets);
+  for (const name of toRemove) {
+    await removeTranscript(join(dir, name));
+  }
+  return toRemove.map((name) => join(dir, name));
 }
