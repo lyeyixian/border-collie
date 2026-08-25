@@ -4,6 +4,8 @@ import type { Context } from "../../src/cli/context.js";
 import { VERSION } from "../../src/cli/version.js";
 import {
   ConfigError,
+  type DaemonConfig,
+  type DaemonFlags,
   type Flags,
   type ResolvedConfig,
   type WorkerAttemptConfig,
@@ -128,7 +130,19 @@ interface FakeContext {
   initScaffoldCalls: boolean[];
   initLabelsCalls: boolean[];
   declareCalls: WorkerAttemptConfig[];
+  loadDaemonConfigCalls: DaemonFlags[];
+  daemonCalls: DaemonConfig[];
 }
+
+const FAKE_DAEMON_CONFIG: DaemonConfig = {
+  pollSeconds: 30,
+  image: "ghcr.io/acme/border-collie-base:latest",
+  stateDir: "/home/operator/.border-collie",
+  appId: "123456",
+  appPrivateKey: "-----BEGIN PRIVATE KEY-----",
+  claudeCodeOAuthToken: "claude-token",
+  probeModel: "sonnet",
+};
 
 function fakeContext(
   overrides: {
@@ -138,6 +152,7 @@ function fakeContext(
     initScaffoldResult?: ScaffoldAction[];
     initLabelsResult?: LabelAction[];
     declareResult?: DeclareOutcome;
+    loadDaemonConfig?: (flags: DaemonFlags) => DaemonConfig;
   } = {},
 ): FakeContext {
   const stdoutLines: string[] = [];
@@ -160,6 +175,8 @@ function fakeContext(
   const initScaffoldCalls: boolean[] = [];
   const initLabelsCalls: boolean[] = [];
   const declareCalls: WorkerAttemptConfig[] = [];
+  const loadDaemonConfigCalls: DaemonFlags[] = [];
+  const daemonCalls: DaemonConfig[] = [];
   const tickResults = overrides.tickResults ?? [{ world: CLOSED_WORLD }];
   const runWorkerOutcome = overrides.runWorkerOutcome ?? workerOutcome();
   const initScaffoldResult = overrides.initScaffoldResult ?? [];
@@ -226,6 +243,16 @@ function fakeContext(
       declareCalls.push(config);
       return declareResult;
     },
+    loadDaemonConfig: (flags) => {
+      loadDaemonConfigCalls.push(flags);
+      return overrides.loadDaemonConfig
+        ? overrides.loadDaemonConfig(flags)
+        : FAKE_DAEMON_CONFIG;
+    },
+    daemon: async (config) => {
+      daemonCalls.push(config);
+      return undefined as never;
+    },
   };
 
   return {
@@ -241,6 +268,8 @@ function fakeContext(
     initScaffoldCalls,
     initLabelsCalls,
     declareCalls,
+    loadDaemonConfigCalls,
+    daemonCalls,
   };
 }
 
@@ -530,6 +559,71 @@ describe("worker command", () => {
       "worker_max_turns must be a positive integer",
     );
     expect(fake.runWorkerCalls).toHaveLength(0);
+  });
+});
+
+describe("daemon command", () => {
+  it("resolves daemon config through loadDaemonConfig and runs the daemon with it", async () => {
+    const fake = fakeContext();
+
+    await runCli(["daemon"], fake.context);
+
+    expect(fake.loadDaemonConfigCalls).toEqual([{}]);
+    expect(fake.daemonCalls).toEqual([FAKE_DAEMON_CONFIG]);
+  });
+
+  it("forwards --poll-seconds, --image, --state-dir and --probe-model to config resolution", async () => {
+    const fake = fakeContext();
+
+    await runCli(
+      [
+        "daemon",
+        "--poll-seconds",
+        "60",
+        "--image",
+        "ghcr.io/acme/other:latest",
+        "--state-dir",
+        "/srv/border-collie",
+        "--probe-model",
+        "opus",
+      ],
+      fake.context,
+    );
+
+    expect(fake.loadDaemonConfigCalls).toEqual([
+      {
+        pollSeconds: 60,
+        image: "ghcr.io/acme/other:latest",
+        stateDir: "/srv/border-collie",
+        probeModel: "opus",
+      },
+    ]);
+  });
+
+  it("lowers the console's minimum level to debug when --verbose is passed", async () => {
+    const fake = fakeContext();
+
+    await runCli(["daemon", "--verbose"], fake.context);
+
+    expect(fake.verbosityCalls).toEqual([true]);
+  });
+
+  it("a config error prints a one-line message, exits 1, and never runs the daemon", async () => {
+    const fake = fakeContext({
+      loadDaemonConfig: () => {
+        throw new ConfigError(
+          "worker image (--image or BORDER_COLLIE_WORKER_IMAGE) must be a non-empty string, got undefined",
+        );
+      },
+    });
+
+    await runCli(["daemon"], fake.context);
+
+    expect(fake.context.process.exitCode).toBe(1);
+    expect(fake.stderr().trim()).toBe(
+      "worker image (--image or BORDER_COLLIE_WORKER_IMAGE) must be a non-empty string, got undefined",
+    );
+    expect(fake.daemonCalls).toHaveLength(0);
   });
 });
 

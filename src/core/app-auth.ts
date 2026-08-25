@@ -10,6 +10,9 @@
 /** Named rather than a bare Error, so a missing or malformed key is a diagnosable failure, not a crash (issue #178). */
 export class AppAuthError extends Error {}
 
+/** Env var name the operator sets the GitHub App's own id in — the JWT's `iss` claim. */
+export const APP_ID_ENV = "BORDER_COLLIE_APP_ID";
+
 /** Env var name the operator sets the GitHub App's private key in. Never forwarded to a Worker process — see `stripAppPrivateKey`. */
 export const APP_PRIVATE_KEY_ENV = "BORDER_COLLIE_APP_PRIVATE_KEY";
 

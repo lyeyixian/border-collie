@@ -1,7 +1,18 @@
+import { join } from "node:path";
+import { APP_ID_ENV, APP_PRIVATE_KEY_ENV } from "./app-auth.js";
 import { isValidTimeZone, type WorkingHours } from "./work-hours.js";
 
 /** File name looked up at the target repo's root. */
 export const CONFIG_FILE = "border-collie.json";
+
+/** Env var name the operator sets a Claude subscription OAuth token in — handed to a session container as `CLAUDE_CODE_OAUTH_TOKEN` (issue #183). */
+export const CLAUDE_CODE_OAUTH_TOKEN_ENV = "CLAUDE_CODE_OAUTH_TOKEN";
+
+/** Env var name naming the border-collie session image a Worker Attempt's container runs (issue #177; repository-specific images are issue #180). */
+export const WORKER_IMAGE_ENV = "BORDER_COLLIE_WORKER_IMAGE";
+
+/** The daemon's own local checkout directory, under the operator-supplied home directory (issue #183). */
+export const DEFAULT_STATE_DIR_NAME = ".border-collie";
 
 const DEFAULT_MAX_WORKERS = 3;
 const DEFAULT_MAX_OPEN_PRS = 5;
@@ -263,4 +274,89 @@ export function modelForAttempt(
   attempt: number,
 ): string {
   return attempt >= 2 ? config.retryModel : config.model;
+}
+
+const DEFAULT_PROBE_MODEL = "sonnet";
+
+/** Flags parsed from the command line for `daemon`; every field optional. */
+export interface DaemonFlags {
+  pollSeconds?: number;
+  image?: string;
+  stateDir?: string;
+  /** Model the circuit breaker's recovery probe runs on — shared across every repository (an infrastructure failure is account-wide, not per-repository). */
+  probeModel?: string;
+}
+
+/**
+ * The daemon's own config (issue #183) — deliberately not the target repos'
+ * `border-collie.json` (each repository's own Tick still resolves that for
+ * itself, unaffected) and deliberately not a fleet-policy file of its own
+ * either: ADR 0009 retires `border-collie.json`'s loop-policy fields to one
+ * file on the daemon host, but building that file is issue #184's job, not
+ * this one's. For now the daemon takes CLI flags and environment variables
+ * only, the same two sources every other command already reads.
+ */
+export interface DaemonConfig {
+  /** Seconds between polls, and the round-robin interval a repository must idle before it is due again. */
+  pollSeconds: number;
+  /** The border-collie session image a Worker Attempt's container runs. */
+  image: string;
+  /** The daemon's own local checkout directory (`adapters/checkout.ts`). */
+  stateDir: string;
+  /** The GitHub App's own id (the JWT's `iss` claim). */
+  appId: string;
+  /** The GitHub App's private key (PEM) — never forwarded to a Worker's environment (`stripAppPrivateKey`, core/app-auth.ts). */
+  appPrivateKey: string;
+  /** A Claude subscription OAuth token, handed to every session container as `CLAUDE_CODE_OAUTH_TOKEN`. */
+  claudeCodeOAuthToken: string;
+  /** Model the circuit breaker's recovery probe runs on, shared across every repository. */
+  probeModel: string;
+}
+
+/**
+ * Resolves the daemon's own config from CLI flags, environment variables,
+ * and the operator's home directory (for `stateDir`'s default) — pure over
+ * those three inputs, so the CLI layer's own `os.homedir()` read is the only
+ * I/O involved (ADR 0005: the pure/impure boundary sits at the read, not
+ * inside this function).
+ */
+export function resolveDaemonConfig(
+  flags: DaemonFlags,
+  env: NodeJS.ProcessEnv,
+  homeDir: string,
+): DaemonConfig {
+  const pollSeconds = asPositiveInt(
+    flags.pollSeconds ?? DEFAULT_POLL_SECONDS,
+    "poll_seconds",
+  );
+  const image = asNonEmptyString(
+    flags.image ?? env[WORKER_IMAGE_ENV],
+    `worker image (--image or ${WORKER_IMAGE_ENV})`,
+  );
+  const stateDir = asNonEmptyString(
+    flags.stateDir ?? join(homeDir, DEFAULT_STATE_DIR_NAME),
+    "state dir (--state-dir)",
+  );
+  const appId = asNonEmptyString(env[APP_ID_ENV], APP_ID_ENV);
+  const appPrivateKey = asNonEmptyString(
+    env[APP_PRIVATE_KEY_ENV],
+    APP_PRIVATE_KEY_ENV,
+  );
+  const claudeCodeOAuthToken = asNonEmptyString(
+    env[CLAUDE_CODE_OAUTH_TOKEN_ENV],
+    CLAUDE_CODE_OAUTH_TOKEN_ENV,
+  );
+  const probeModel = asNonEmptyString(
+    flags.probeModel ?? DEFAULT_PROBE_MODEL,
+    "probe_model",
+  );
+  return {
+    pollSeconds,
+    image,
+    stateDir,
+    appId,
+    appPrivateKey,
+    claudeCodeOAuthToken,
+    probeModel,
+  };
 }

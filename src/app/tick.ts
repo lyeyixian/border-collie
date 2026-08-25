@@ -1,6 +1,15 @@
+import {
+  dispatchContainerWorker,
+  liveContainerTickets,
+} from "../adapters/container.js";
 import { openPrForOutcome } from "../adapters/pr.js";
 import { fileExists } from "../adapters/scaffold.js";
-import { readScope, realExec, withDebugLogging } from "../adapters/tracker.js";
+import {
+  type Exec,
+  readScope,
+  realExec,
+  withDebugLogging,
+} from "../adapters/tracker.js";
 import {
   dispatchConflictWorker,
   dispatchRefinementWorker,
@@ -41,6 +50,37 @@ export interface TickDeps {
    * relative to.
    */
   cwd: string;
+  /**
+   * The subprocess boundary every `gh`/`git` call in this Tick drives.
+   * Defaults to `realExec` (today's every-caller-but-one behaviour, which
+   * resolves `{owner}/{repo}` from the git remote of the process's own
+   * `process.cwd()`). The daemon path (issue #183) injects one instead,
+   * bound to this repository's own checkout directory and installation
+   * token (`adapters/checkout.ts`'s `execAtRepo`) — a daemon ticks several
+   * repositories concurrently from one process, which cannot itself hold
+   * more than one `process.cwd()` at a time.
+   */
+  exec?: Exec;
+  /**
+   * Set on the daemon path (issue #183) to dispatch a Worker Attempt into
+   * its own session container instead of running it in-process or
+   * triggering a GitHub Actions job (ADR 0009), and to read Worker liveness
+   * back from that container's own labels (`liveContainerTickets`,
+   * adapters/container.ts) instead of an Actions job-run listing. Conflict
+   * Workers and Refinement rounds are unaffected either way — they still
+   * dispatch inline against `cwd`'s checkout until issue #181 moves them
+   * into containers too.
+   */
+  container?: {
+    /** `"owner/name"`, matched against a container's own repository label. */
+    repository: string;
+    /** The border-collie session image a Worker Attempt's container runs (issue #177; repository-specific images are issue #180). */
+    image: string;
+    /** This Attempt's repository-scoped installation token (ADR 0009), handed to the container as `GH_TOKEN`. */
+    ghToken: string;
+    /** Handed to the container as `CLAUDE_CODE_OAUTH_TOKEN`. */
+    claudeCodeOAuthToken: string;
+  };
 }
 
 /**
@@ -65,13 +105,27 @@ export async function tickOnce(
   dispatchPaused = false,
   deps: TickDeps,
 ): Promise<TickResult> {
-  const { log, now, scheduleInterval, remoteDispatch = false, cwd } = deps;
+  const {
+    log,
+    now,
+    scheduleInterval,
+    remoteDispatch = false,
+    cwd,
+    exec: injectedExec,
+    container,
+  } = deps;
   // Every command this Tick issues through the adapters — gh and git alike
   // — plus its exit code, is narrated at debug through the same seam:
   // detail that does not exist today, hidden from the console unless
   // --verbose is passed.
-  const exec = withDebugLogging(realExec, log);
-  const world = await readScope(config.scope, exec);
+  const exec = withDebugLogging(injectedExec ?? realExec, log);
+  const world = await readScope(
+    config.scope,
+    exec,
+    container
+      ? (execArg) => liveContainerTickets(container.repository, execArg)
+      : undefined,
+  );
   // Resolved fresh against wall-clock time each Tick (CONTEXT.md "Working
   // hours") — not encoded in a cron expression.
   const withinWorkingHours = isWithinWorkingHours(config.workingHours, now());
@@ -110,29 +164,43 @@ export async function tickOnce(
   if (!dryRun) {
     const titles = new Map(world.tickets.map((t) => [t.number, t.title]));
     const report = await act(actions, {
-      dispatch: remoteDispatch
-        ? (ticket, attempt) => dispatchRemoteWorker(ticket, attempt, exec)
-        : (ticket, attempt, onActivity) =>
-            dispatchWorker(
+      dispatch: container
+        ? (ticket, attempt) =>
+            dispatchContainerWorker(
               ticket,
+              attempt,
+              container.repository,
               {
-                model: modelForAttempt(config, attempt),
-                attempt,
-                timeoutMs: config.timeoutMinutes * 60_000,
-                stallMs: config.stallMinutes * 60_000,
-                maxTurns: config.maxTurns,
-                maxCostUsd: config.maxCostUsd,
-                // A Tick may dispatch several Workers concurrently into this
-                // same checkout, so each still needs its own isolated worktree —
-                // never in-place (that path is a Worker job's own dedicated
-                // checkout; see src/app/worker.ts).
-                inPlace: false,
+                image: container.image,
+                timeoutMinutes: config.timeoutMinutes,
+                ghToken: container.ghToken,
+                claudeCodeOAuthToken: container.claudeCodeOAuthToken,
               },
               exec,
-              realSpawnWorkerProcess,
-              log,
-              onActivity,
-            ),
+            )
+        : remoteDispatch
+          ? (ticket, attempt) => dispatchRemoteWorker(ticket, attempt, exec)
+          : (ticket, attempt, onActivity) =>
+              dispatchWorker(
+                ticket,
+                {
+                  model: modelForAttempt(config, attempt),
+                  attempt,
+                  timeoutMs: config.timeoutMinutes * 60_000,
+                  stallMs: config.stallMinutes * 60_000,
+                  maxTurns: config.maxTurns,
+                  maxCostUsd: config.maxCostUsd,
+                  // A Tick may dispatch several Workers concurrently into this
+                  // same checkout, so each still needs its own isolated worktree —
+                  // never in-place (that path is a Worker job's own dedicated
+                  // checkout; see src/app/worker.ts).
+                  inPlace: false,
+                },
+                exec,
+                realSpawnWorkerProcess,
+                log,
+                onActivity,
+              ),
       openPr: (outcome) =>
         openPrForOutcome(
           outcome,

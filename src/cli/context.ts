@@ -1,7 +1,15 @@
+import { homedir } from "node:os";
 import { join } from "node:path";
 import type { CommandContext, StricliProcess } from "@stricli/core";
 import { Logger } from "tslog";
 import { fileTransport } from "tslog/transports/file";
+import {
+  listFleetRepositories,
+  mintRepositoryToken,
+  parseRepositoryFullName,
+  repositoryFullName,
+} from "../adapters/app-auth.js";
+import { ensureCheckout, execAtRepo } from "../adapters/checkout.js";
 import { loadConfigFile } from "../adapters/config-file.js";
 import {
   readScopeFromLabel,
@@ -10,14 +18,18 @@ import {
 } from "../adapters/tracker.js";
 import { probeEnvironment } from "../adapters/worker.js";
 import type { IntervalScheduler } from "../app/act.js";
+import { type DaemonDeps, daemon as runDaemon } from "../app/daemon.js";
 import { declareOnce } from "../app/declare.js";
 import { initLabelsOnce, initScaffoldOnce } from "../app/init.js";
 import { type TickResult, tickOnce } from "../app/tick.js";
 import { workerAttemptOnce } from "../app/worker.js";
 import {
+  type DaemonConfig,
+  type DaemonFlags,
   type Flags,
   type ResolvedConfig,
   resolveConfig,
+  resolveDaemonConfig,
   resolveWorkerConfig,
   scopeFromFlags,
   type WorkerAttemptConfig,
@@ -46,6 +58,12 @@ export interface Context extends CommandContext {
   readonly loadConfig: (flags: Flags) => Promise<ResolvedConfig>;
   /** Config resolution for the worker command: no Scope required (issue #71); see `resolveWorkerConfig`. */
   readonly loadWorkerConfig: (flags: Flags) => WorkerAttemptConfig;
+  /**
+   * Config resolution for `daemon` (issue #183): CLI flags plus environment
+   * variables and the operator's home directory, none of which need a
+   * network read — synchronous like `loadWorkerConfig`, unlike `loadConfig`.
+   */
+  readonly loadDaemonConfig: (flags: DaemonFlags) => DaemonConfig;
   readonly tick: (
     config: ResolvedConfig,
     dryRun: boolean,
@@ -82,6 +100,14 @@ export interface Context extends CommandContext {
   readonly sleep: (ms: number) => Promise<void>;
   /** The fleet heartbeat's scheduler; see src/app/act.ts. */
   readonly scheduleInterval: IntervalScheduler;
+  /**
+   * `daemon` (issue #183): walks the fleet on an interval and runs one Tick
+   * per repository, each with its own repository-scoped token and Worker
+   * Attempts dispatched into their own session containers. Never returns —
+   * the process exits only when its own runner (a service manager, or a
+   * signal handler wired outside this context) stops it.
+   */
+  readonly daemon: (config: DaemonConfig) => Promise<never>;
   /** The single logging seam narration travels through; see src/core/log.ts. */
   readonly log: Log;
   /** The verbosity flag: lowers the console's minimum level to debug. Scoped to the console sink only. */
@@ -108,11 +134,17 @@ function nodeProcessAdapter(): StricliProcess {
   };
 }
 
-/** The console tag for a Worker's (or Conflict Worker's) sub-logger — what distinguishes its interleaved lines. */
+/** The console tag for a Worker's (or Conflict Worker's, or a daemon repository's) sub-logger — what distinguishes its interleaved lines. */
 function tagFor(bindings: LogBindings): string {
-  if (bindings.pr !== undefined) return `PR #${bindings.pr}`;
-  if (bindings.ticket !== undefined) return `#${bindings.ticket}`;
-  return "";
+  const suffix =
+    bindings.pr !== undefined
+      ? ` PR #${bindings.pr}`
+      : bindings.ticket !== undefined
+        ? ` #${bindings.ticket}`
+        : "";
+  if (bindings.repository !== undefined)
+    return `${bindings.repository}${suffix}`;
+  return suffix.trim();
 }
 
 /**
@@ -224,6 +256,67 @@ function buildLog(
   };
 }
 
+/**
+ * Wires the daemon's own effects (issue #183) onto the real adapters: the
+ * fleet read and token mint go through the GitHub App (`adapters/
+ * app-auth.ts`), and each due repository's own Tick runs through the same
+ * `tickOnce` every other command shares, given that repository's own
+ * checkout (`adapters/checkout.ts`) and a session-container dispatch
+ * (`TickDeps.container`) instead of the local or Actions-job dispatch the
+ * `tick`/`run` commands use.
+ */
+function buildDaemonDeps(
+  config: DaemonConfig,
+  log: Log,
+  now: () => number,
+  scheduleInterval: IntervalScheduler,
+): DaemonDeps {
+  const credentials = { appId: config.appId, privateKey: config.appPrivateKey };
+  return {
+    listFleet: async () => {
+      const repositories = await listFleetRepositories(credentials, now());
+      return repositories.map(repositoryFullName);
+    },
+    mintToken: async (repository) => {
+      const { token } = await mintRepositoryToken(
+        credentials,
+        parseRepositoryFullName(repository),
+        now(),
+      );
+      return token;
+    },
+    tick: async (repository, token, dispatchPaused) => {
+      const dir = await ensureCheckout(config.stateDir, repository, token);
+      const repoLog = log.child({ repository });
+      // Bound to this repository's own checkout and token, never the
+      // daemon process's own `process.cwd()` — see `execAtRepo`'s own doc
+      // for why a daemon ticking several repositories concurrently needs
+      // this instead of the every-other-caller default.
+      const exec = execAtRepo(dir, token);
+      const scope = await readScopeFromLabel(withDebugLogging(exec, repoLog));
+      const repoConfig = resolveConfig(loadConfigFile(dir), {}, scope);
+      return tickOnce(repoConfig, false, dispatchPaused, {
+        log: repoLog,
+        now,
+        scheduleInterval,
+        cwd: dir,
+        exec,
+        container: {
+          repository,
+          image: config.image,
+          ghToken: token,
+          claudeCodeOAuthToken: config.claudeCodeOAuthToken,
+        },
+      });
+    },
+    probe: () => probeEnvironment(config.probeModel),
+    now,
+    sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+    log,
+    pollSeconds: config.pollSeconds,
+  };
+}
+
 /** The real context: today's collaborators, wired exactly as the entry point wired them before. */
 export function buildRealContext(
   cwd: string = process.cwd(),
@@ -246,6 +339,7 @@ export function buildRealContext(
     },
     loadWorkerConfig: (flags) =>
       resolveWorkerConfig(loadConfigFile(cwd), flags),
+    loadDaemonConfig: (flags) => resolveDaemonConfig(flags, env, homedir()),
     tick: (config, dryRun, dispatchPaused) =>
       tickOnce(config, dryRun, dispatchPaused, {
         log,
@@ -261,6 +355,8 @@ export function buildRealContext(
     declare: (config) => declareOnce(config, { log }),
     initScaffold: (force) => initScaffoldOnce(cwd, force),
     initLabels: () => initLabelsOnce(),
+    daemon: (config) =>
+      runDaemon(buildDaemonDeps(config, log, now, scheduleInterval)),
     now,
     sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
     scheduleInterval,

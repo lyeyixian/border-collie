@@ -102,6 +102,17 @@ export interface RepositoryRef {
   name: string;
 }
 
+/** `"owner/name"`, as the daemon's fleet scheduler (core/fleet.ts) names a repository. */
+export function repositoryFullName(repository: RepositoryRef): string {
+  return `${repository.owner}/${repository.name}`;
+}
+
+/** The inverse of `repositoryFullName`, for a fleet member the scheduler hands back to mint a token against. */
+export function parseRepositoryFullName(fullName: string): RepositoryRef {
+  const slash = fullName.indexOf("/");
+  return { owner: fullName.slice(0, slash), name: fullName.slice(slash + 1) };
+}
+
 export interface InstallationToken {
   token: string;
   expiresAt: string;
