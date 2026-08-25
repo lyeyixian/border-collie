@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { liveContainerTickets } from "../../src/adapters/container.js";
 import {
   claimTicket,
   closeTicket,
@@ -811,6 +812,74 @@ describe("readScope", () => {
     });
 
     const world = await readScope({ kind: "parent", parent: 1 }, exec);
+
+    expect(world.tickets[0]?.hasLiveWorker).toBe(false);
+  });
+
+  it("derives liveness from an injected backend instead, when one is given (issue #177: the container path beside the Actions default)", async () => {
+    const REPOSITORY = "acme/widgets";
+    const calls: string[][] = [];
+    const exec: Exec = async (cmd, args) => {
+      calls.push([cmd, ...args]);
+      if (cmd === "gh" && args[0] === "api") {
+        const api: Record<string, unknown> = {
+          [SUB_ISSUES]: [
+            [
+              issue({
+                number: 5,
+                labels: [{ name: "ready-for-agent" }, { name: CLAIM_LABEL }],
+              }),
+            ],
+          ],
+          [comments(5)]: [[{ body: `${CLAIM_MARKER}\n🐕 claimed` }]],
+          [CLOSED_PULLS]: [[]],
+        };
+        return JSON.stringify(api[args[1] ?? ""]);
+      }
+      if (cmd === "gh" && args[0] === "pr" && args[1] === "list") return "[]";
+      if (cmd === "docker" && args[0] === "ps") {
+        return "sh.border-collie.repository=acme/widgets,sh.border-collie.ticket=5,sh.border-collie.attempt=1";
+      }
+      throw new Error(`unexpected call: ${[cmd, ...args].join(" ")}`);
+    };
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec, (e) =>
+      liveContainerTickets(REPOSITORY, e),
+    );
+
+    expect(world.tickets[0]?.hasLiveWorker).toBe(true);
+    expect(calls.some((c) => c[0] === "docker" && c[1] === "ps")).toBe(true);
+    // The Actions-only read never runs when a different backend is injected.
+    expect(calls.some((c) => c[0] === "gh" && c[1] === "run")).toBe(false);
+  });
+
+  it("reads a claim as un-live once the injected container backend reports the container no longer running — what the existing orphan check (core/plan.ts) then releases", async () => {
+    const REPOSITORY = "acme/widgets";
+    const exec: Exec = async (cmd, args) => {
+      if (cmd === "gh" && args[0] === "api") {
+        const api: Record<string, unknown> = {
+          [SUB_ISSUES]: [
+            [
+              issue({
+                number: 5,
+                labels: [{ name: "ready-for-agent" }, { name: CLAIM_LABEL }],
+              }),
+            ],
+          ],
+          [comments(5)]: [[{ body: `${CLAIM_MARKER}\n🐕 claimed` }]],
+          [CLOSED_PULLS]: [[]],
+        };
+        return JSON.stringify(api[args[1] ?? ""]);
+      }
+      if (cmd === "gh" && args[0] === "pr" && args[1] === "list") return "[]";
+      // Empty docker ps: the ticket's container has already exited.
+      if (cmd === "docker" && args[0] === "ps") return "";
+      throw new Error(`unexpected call: ${[cmd, ...args].join(" ")}`);
+    };
+
+    const world = await readScope({ kind: "parent", parent: 1 }, exec, (e) =>
+      liveContainerTickets(REPOSITORY, e),
+    );
 
     expect(world.tickets[0]?.hasLiveWorker).toBe(false);
   });
