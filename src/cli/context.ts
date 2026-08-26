@@ -306,6 +306,7 @@ function buildDaemonDeps(
           image: config.image,
           ghToken: token,
           claudeCodeOAuthToken: config.claudeCodeOAuthToken,
+          transcriptsRoot: join(config.stateDir, "transcripts"),
         },
       });
     },

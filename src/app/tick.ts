@@ -80,6 +80,8 @@ export interface TickDeps {
     ghToken: string;
     /** Handed to the container as `CLAUDE_CODE_OAUTH_TOKEN`. */
     claudeCodeOAuthToken: string;
+    /** Host directory transcripts live under, one subdirectory per repository (`ContainerWorkerConfig.transcriptsRoot`, adapters/container.ts). */
+    transcriptsRoot: string;
   };
 }
 
@@ -175,6 +177,7 @@ export async function tickOnce(
                 timeoutMinutes: config.timeoutMinutes,
                 ghToken: container.ghToken,
                 claudeCodeOAuthToken: container.claudeCodeOAuthToken,
+                transcriptsRoot: container.transcriptsRoot,
               },
               exec,
             )
