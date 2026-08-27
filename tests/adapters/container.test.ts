@@ -593,6 +593,76 @@ describe("pruneTranscripts", () => {
       `${TRANSCRIPTS_ROOT}/${REPOSITORY}/ticket-1-attempt-1.jsonl`,
     ]);
   });
+
+  it("deletes an aged-out Conflict Worker transcript and stderr log, keeping a recent Refinement round's", async () => {
+    const { exec } = fakeExec();
+    const { listTranscripts } = fakeListTranscripts([
+      { name: "pr-30-conflict.jsonl", mtimeMs: NOW - 20 * DAY },
+      { name: "pr-30-conflict.stderr.log", mtimeMs: NOW - 20 * DAY },
+      { name: "pr-30-refinement-round-1.jsonl", mtimeMs: NOW - DAY },
+    ]);
+    const { removeTranscript, calls } = fakeRemoveTranscript();
+
+    const removed = await pruneTranscripts(
+      REPOSITORY,
+      TRANSCRIPTS_ROOT,
+      14 * DAY,
+      exec,
+      listTranscripts,
+      removeTranscript,
+      NOW,
+    );
+
+    const dir = `${TRANSCRIPTS_ROOT}/${REPOSITORY}`;
+    expect(calls).toEqual([
+      `${dir}/pr-30-conflict.jsonl`,
+      `${dir}/pr-30-conflict.stderr.log`,
+    ]);
+    expect(removed).toEqual(calls);
+  });
+
+  it("never deletes a Conflict Worker transcript for a PR whose Conflict Worker container is still running, however old", async () => {
+    const { exec } = fakeExec(prLabelsField(REPOSITORY, 30, "conflict"));
+    const { listTranscripts } = fakeListTranscripts([
+      { name: "pr-30-conflict.jsonl", mtimeMs: NOW - 30 * DAY },
+    ]);
+    const { removeTranscript, calls } = fakeRemoveTranscript();
+
+    await pruneTranscripts(
+      REPOSITORY,
+      TRANSCRIPTS_ROOT,
+      14 * DAY,
+      exec,
+      listTranscripts,
+      removeTranscript,
+      NOW,
+    );
+
+    expect(calls).toEqual([]);
+  });
+
+  it("deletes a stale Conflict Worker transcript even while a Refinement round for the same PR is running", async () => {
+    const { exec } = fakeExec(prLabelsField(REPOSITORY, 30, "refinement"));
+    const { listTranscripts } = fakeListTranscripts([
+      { name: "pr-30-conflict.jsonl", mtimeMs: NOW - 20 * DAY },
+      { name: "pr-30-refinement-round-1.jsonl", mtimeMs: NOW - 20 * DAY },
+    ]);
+    const { removeTranscript, calls } = fakeRemoveTranscript();
+
+    await pruneTranscripts(
+      REPOSITORY,
+      TRANSCRIPTS_ROOT,
+      14 * DAY,
+      exec,
+      listTranscripts,
+      removeTranscript,
+      NOW,
+    );
+
+    expect(calls).toEqual([
+      `${TRANSCRIPTS_ROOT}/${REPOSITORY}/pr-30-conflict.jsonl`,
+    ]);
+  });
 });
 
 describe("realListTranscripts / realRemoveTranscript / realEnsureDir", () => {
@@ -655,6 +725,7 @@ describe("realListTranscripts / realRemoveTranscript / realEnsureDir", () => {
 describe("dispatchContainerConflictWorker", () => {
   it("starts a detached, self-removing container labelled with repository, pr and kind, resolving with no outcome", async () => {
     const { exec, calls } = fakeExec();
+    const { ensureDir } = fakeEnsureDir();
 
     const result = await dispatchContainerConflictWorker(
       30,
@@ -663,6 +734,7 @@ describe("dispatchContainerConflictWorker", () => {
       REPOSITORY,
       CONFIG,
       exec,
+      ensureDir,
     );
 
     expect(result).toBeUndefined();
@@ -692,37 +764,78 @@ describe("dispatchContainerConflictWorker", () => {
         `HEAD_REF=${HEAD_REF}`,
         "--env",
         "TIMEOUT_MINUTES=45",
+        "--volume",
+        `${TRANSCRIPTS_ROOT}/${REPOSITORY}:/border-collie/transcripts`,
         CONFIG.image,
         "sh",
         "-c",
-        'gh repo clone "$REPOSITORY" . && border-collie conflict-worker "$PR" "$TICKET" "$HEAD_REF" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+        'gh repo clone "$REPOSITORY" . && mkdir -p .border-collie && ln -sfn /border-collie/transcripts .border-collie/transcripts && border-collie conflict-worker "$PR" "$TICKET" "$HEAD_REF" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
       ],
     ]);
   });
 
-  it("never interpolates a dynamic value into the shell script body", async () => {
-    const { exec, calls } = fakeExec();
+  it("ensures this repository's host transcript directory exists before starting the container", async () => {
+    const { exec } = fakeExec();
+    const { ensureDir, calls } = fakeEnsureDir();
 
     await dispatchContainerConflictWorker(
       30,
       3,
       HEAD_REF,
-      "acme/widgets; rm -rf /",
+      REPOSITORY,
       CONFIG,
       exec,
+      ensureDir,
+    );
+
+    expect(calls).toEqual([`${TRANSCRIPTS_ROOT}/${REPOSITORY}`]);
+  });
+
+  it("never interpolates a dynamic value into the shell script body", async () => {
+    const { exec, calls } = fakeExec();
+    const { ensureDir } = fakeEnsureDir();
+
+    await dispatchContainerConflictWorker(
+      30,
+      3,
+      HEAD_REF,
+      "acme/rm-rf-widgets",
+      CONFIG,
+      exec,
+      ensureDir,
     );
 
     const script = calls[0]?.at(-1);
-    expect(script).not.toContain("rm -rf");
+    expect(script).not.toContain("rm-rf-widgets");
     expect(script).toBe(
-      'gh repo clone "$REPOSITORY" . && border-collie conflict-worker "$PR" "$TICKET" "$HEAD_REF" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+      'gh repo clone "$REPOSITORY" . && mkdir -p .border-collie && ln -sfn /border-collie/transcripts .border-collie/transcripts && border-collie conflict-worker "$PR" "$TICKET" "$HEAD_REF" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
     );
+  });
+
+  it("rejects a repository that is not a plain owner/repo pair before touching the disk or docker", async () => {
+    const { exec, calls } = fakeExec();
+    const { ensureDir, calls: dirCalls } = fakeEnsureDir();
+
+    await expect(
+      dispatchContainerConflictWorker(
+        30,
+        3,
+        HEAD_REF,
+        "acme/widgets; rm -rf /",
+        CONFIG,
+        exec,
+        ensureDir,
+      ),
+    ).rejects.toThrow();
+    expect(calls).toEqual([]);
+    expect(dirCalls).toEqual([]);
   });
 });
 
 describe("dispatchContainerRefinementWorker", () => {
   it("starts a detached, self-removing container labelled with repository, pr and kind, carrying the round as an env var", async () => {
     const { exec, calls } = fakeExec();
+    const { ensureDir } = fakeEnsureDir();
 
     const result = await dispatchContainerRefinementWorker(
       30,
@@ -732,6 +845,7 @@ describe("dispatchContainerRefinementWorker", () => {
       REPOSITORY,
       CONFIG,
       exec,
+      ensureDir,
     );
 
     expect(result).toBeUndefined();
@@ -763,32 +877,74 @@ describe("dispatchContainerRefinementWorker", () => {
         "ROUND=2",
         "--env",
         "TIMEOUT_MINUTES=45",
+        "--volume",
+        `${TRANSCRIPTS_ROOT}/${REPOSITORY}:/border-collie/transcripts`,
         CONFIG.image,
         "sh",
         "-c",
-        'gh repo clone "$REPOSITORY" . && border-collie refine "$PR" "$TICKET" "$HEAD_REF" "$ROUND" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+        'gh repo clone "$REPOSITORY" . && mkdir -p .border-collie && ln -sfn /border-collie/transcripts .border-collie/transcripts && border-collie refine "$PR" "$TICKET" "$HEAD_REF" "$ROUND" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
       ],
     ]);
   });
 
-  it("never interpolates a dynamic value into the shell script body", async () => {
-    const { exec, calls } = fakeExec();
+  it("ensures this repository's host transcript directory exists before starting the container", async () => {
+    const { exec } = fakeExec();
+    const { ensureDir, calls } = fakeEnsureDir();
 
     await dispatchContainerRefinementWorker(
       30,
       3,
       HEAD_REF,
       2,
-      "acme/widgets; rm -rf /",
+      REPOSITORY,
       CONFIG,
       exec,
+      ensureDir,
+    );
+
+    expect(calls).toEqual([`${TRANSCRIPTS_ROOT}/${REPOSITORY}`]);
+  });
+
+  it("never interpolates a dynamic value into the shell script body", async () => {
+    const { exec, calls } = fakeExec();
+    const { ensureDir } = fakeEnsureDir();
+
+    await dispatchContainerRefinementWorker(
+      30,
+      3,
+      HEAD_REF,
+      2,
+      "acme/rm-rf-widgets",
+      CONFIG,
+      exec,
+      ensureDir,
     );
 
     const script = calls[0]?.at(-1);
-    expect(script).not.toContain("rm -rf");
+    expect(script).not.toContain("rm-rf-widgets");
     expect(script).toBe(
-      'gh repo clone "$REPOSITORY" . && border-collie refine "$PR" "$TICKET" "$HEAD_REF" "$ROUND" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+      'gh repo clone "$REPOSITORY" . && mkdir -p .border-collie && ln -sfn /border-collie/transcripts .border-collie/transcripts && border-collie refine "$PR" "$TICKET" "$HEAD_REF" "$ROUND" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
     );
+  });
+
+  it("rejects a repository that is not a plain owner/repo pair before touching the disk or docker", async () => {
+    const { exec, calls } = fakeExec();
+    const { ensureDir, calls: dirCalls } = fakeEnsureDir();
+
+    await expect(
+      dispatchContainerRefinementWorker(
+        30,
+        3,
+        HEAD_REF,
+        2,
+        "acme/widgets; rm -rf /",
+        CONFIG,
+        exec,
+        ensureDir,
+      ),
+    ).rejects.toThrow();
+    expect(calls).toEqual([]);
+    expect(dirCalls).toEqual([]);
   });
 });
 

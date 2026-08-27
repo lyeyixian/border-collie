@@ -14,6 +14,9 @@
  * live on disk, which file belongs to which Ticket, and which of them a
  * retention sweep may delete. The I/O — the bind mount, the directory
  * listing, the delete — is adapters/container.ts's `pruneTranscripts`.
+ * Issue #198 extends this to a Conflict Worker's and a Refinement round's
+ * PR-scoped files, sharing the same directory and sweep but keyed by PR and
+ * kind (`PrSessionLabels`, below) rather than Ticket and Attempt.
  */
 
 const LABEL_NAMESPACE = "sh.border-collie";
@@ -212,12 +215,14 @@ export interface TranscriptFile {
 
 /**
  * File names, among one repository's transcript directory listing, that a
- * retention sweep should delete (issue #182's pruning rule): older than the
- * window, and — the acceptance criterion that overrides age — not the exact
- * session (Ticket and Attempt) a session container is still running.
- * `liveSessions` is keyed by `transcriptSessionKey`. A file whose name does
- * not parse as one `dispatchWorker` wrote is left alone rather than guessed
- * at.
+ * retention sweep should delete: older than the window, and — the
+ * acceptance criterion that overrides age — not the exact live session it
+ * belongs to. A Worker Attempt file is judged against `transcriptSessionKey`
+ * (Ticket and Attempt, issue #182); a Conflict Worker or Refinement-round
+ * file, against `prTranscriptSessionKey` (PR and kind, issue #198) — the
+ * one `liveSessions` set carries both key shapes at once, told apart by
+ * `prTranscriptSessionKey`'s `pr:` prefix. A file whose name does not parse
+ * as either shape is left alone rather than guessed at.
  */
 export function transcriptsToPrune(
   files: readonly TranscriptFile[],
@@ -228,13 +233,26 @@ export function transcriptsToPrune(
   return files
     .filter((file) => {
       const session = sessionFromTranscriptFileName(file.name);
-      if (session === undefined) return false;
-      if (
-        liveSessions.has(transcriptSessionKey(session.ticket, session.attempt))
-      ) {
-        return false;
+      if (session !== undefined) {
+        if (
+          liveSessions.has(
+            transcriptSessionKey(session.ticket, session.attempt),
+          )
+        ) {
+          return false;
+        }
+        return now - file.mtimeMs > retentionMs;
       }
-      return now - file.mtimeMs > retentionMs;
+      const prSession = prSessionFromTranscriptFileName(file.name);
+      if (prSession !== undefined) {
+        if (
+          liveSessions.has(prTranscriptSessionKey(prSession.pr, prSession.kind))
+        ) {
+          return false;
+        }
+        return now - file.mtimeMs > retentionMs;
+      }
+      return false;
     })
     .map((file) => file.name);
 }
@@ -301,4 +319,48 @@ export function parsePrSessionLabels(
     return undefined;
   }
   return { repository, pr: Number(prRaw), kind };
+}
+
+/** A Conflict Worker's transcript or stderr file, matching `dispatchConflictWorker`'s own naming (adapters/worker.ts, `--in-place`). */
+const PR_CONFLICT_TRANSCRIPT_PATTERN =
+  /^pr-(\d+)-conflict\.(?:jsonl|stderr\.log)$/;
+/** A Refinement round's transcript or stderr file, matching `dispatchRefinementWorker`'s own naming (adapters/worker.ts, `--in-place`). */
+const PR_REFINEMENT_TRANSCRIPT_PATTERN =
+  /^pr-(\d+)-refinement-round-(\d+)\.(?:jsonl|stderr\.log)$/;
+
+/**
+ * The PR-scoped session — pull request and kind — one file in a
+ * repository's transcript directory belongs to (issue #198), the PR-scoped
+ * mirror of `sessionFromTranscriptFileName` above: a Conflict Worker's
+ * `pr-N-conflict.*` or a Refinement round's `pr-N-refinement-round-R.*`.
+ * The round number itself is parsed only to match the file name shape —
+ * `PrSessionLabels` carries no round, so liveness (like `liveContainerPrs`)
+ * is judged at the PR-and-kind grain, not per round — a settled round's
+ * transcript is kept alive by any later round of the same kind still
+ * running on that PR, same as `dispatchContainerRefinementWorker` labels
+ * it. Undefined for anything else found there, same "leave it alone"
+ * contract as `sessionFromTranscriptFileName`.
+ */
+export function prSessionFromTranscriptFileName(
+  name: string,
+): { pr: number; kind: PrSessionKind } | undefined {
+  const conflict = PR_CONFLICT_TRANSCRIPT_PATTERN.exec(name);
+  if (conflict) return { pr: Number(conflict[1]), kind: "conflict" };
+  const refinement = PR_REFINEMENT_TRANSCRIPT_PATTERN.exec(name);
+  if (refinement) return { pr: Number(refinement[1]), kind: "refinement" };
+  return undefined;
+}
+
+/**
+ * A live-session set's own key, one PR's one kind — the PR-scoped mirror of
+ * `transcriptSessionKey` above. Prefixed `pr:` so its key space can never
+ * collide with a `transcriptSessionKey` value (always plain digits either
+ * side of a colon) once both are mixed into the one live-session set
+ * `transcriptsToPrune` compares against.
+ */
+export function prTranscriptSessionKey(
+  pr: number,
+  kind: PrSessionKind,
+): string {
+  return `pr:${pr}:${kind}`;
 }

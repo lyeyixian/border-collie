@@ -15,6 +15,7 @@ import {
   type PrSessionLabels,
   parsePrSessionLabels,
   parseSessionLabels,
+  prTranscriptSessionKey,
   REPOSITORY_LABEL,
   repositoryImageSlug,
   type SessionLabels,
@@ -42,7 +43,11 @@ import { type Exec, realExec } from "./tracker.js";
  * retention sweep (issue #182): `dispatchContainerWorker` bind-mounts a
  * per-repository host directory into every session it starts, and
  * `pruneTranscripts` deletes what has aged out of it, deferring the pure
- * decision of what qualifies to core/container.ts.
+ * decision of what qualifies to core/container.ts. `dispatchContainer
+ * ConflictWorker` and `dispatchContainerRefinementWorker` bind-mount the
+ * same per-repository directory into their own sessions too (issue #198),
+ * so one sweep covers a Worker Attempt's, a Conflict Worker's and a
+ * Refinement round's transcripts alike.
  */
 
 /**
@@ -170,19 +175,24 @@ export async function dispatchContainerWorker(
 }
 
 /**
- * Every session Docker still counts as running for one repository, read
- * straight from `docker ps`'s own label listing — a container that has
- * already exited (`docker ps` lists running containers only, with no
- * `--all`) is simply absent, never mistaken for one still live. Shared by
- * `liveContainerTickets` (Ticket-level liveness, the orphan check's needs)
- * and `pruneTranscripts` below (Ticket-*and*-Attempt liveness, since a
- * transcript directory holds one entry per Attempt): both read the same
- * `docker ps` call, so listing and parsing it lives in exactly one place.
+ * Every session container Docker still counts as running for one
+ * repository, read straight from `docker ps`'s own label listing — a
+ * container that has already exited (`docker ps` lists running containers
+ * only, with no `--all`) is simply absent, never mistaken for one still
+ * live. One `docker ps` call yields both label shapes at once (a Worker
+ * Attempt's `SessionLabels`, a Conflict Worker's or Refinement round's
+ * `PrSessionLabels`, issue #198) — each line matches at most one, so
+ * parsing both from the same listing costs nothing extra. Shared by
+ * `liveContainerTickets` and `liveContainerPrs` below (each repository's
+ * own liveness read) and `pruneTranscripts` below (both shapes' liveness at
+ * once, since one transcript directory holds both kinds of file side by
+ * side): every reader of one repository's `docker ps` listing goes through
+ * here, so listing and parsing it lives in exactly one place.
  */
-async function liveSessions(
+async function liveContainers(
   repository: string,
   exec: Exec,
-): Promise<SessionLabels[]> {
+): Promise<{ sessions: SessionLabels[]; prSessions: PrSessionLabels[] }> {
   const stdout = await exec("docker", [
     "ps",
     "--filter",
@@ -191,14 +201,19 @@ async function liveSessions(
     "{{.Labels}}",
   ]);
   const sessions: SessionLabels[] = [];
+  const prSessions: PrSessionLabels[] = [];
   for (const line of stdout.split("\n")) {
     if (line.trim() === "") continue;
     const session = parseSessionLabels(line);
     if (session !== undefined && session.repository === repository) {
       sessions.push(session);
     }
+    const prSession = parsePrSessionLabels(line);
+    if (prSession !== undefined && prSession.repository === repository) {
+      prSessions.push(prSession);
+    }
   }
-  return sessions;
+  return { sessions, prSessions };
 }
 
 /**
@@ -213,7 +228,7 @@ export async function liveContainerTickets(
   repository: string,
   exec: Exec = realExec,
 ): Promise<Set<number>> {
-  const sessions = await liveSessions(repository, exec);
+  const { sessions } = await liveContainers(repository, exec);
   return new Set(sessions.map((session) => session.ticket));
 }
 
@@ -245,15 +260,18 @@ export const realRemoveTranscript: RemoveTranscript = (path) => unlink(path);
  * Delete one repository's session-container transcripts and stderr logs
  * that have aged past the retention window (default `DEFAULT_TRANSCRIPT_
  * RETENTION_MS`, overridable by the caller — issue #182's "the window is
- * configurable" criterion), skipping any still belonging to the exact
- * Ticket-and-Attempt session `liveSessions` reports as running: a settled
- * Attempt 1 must still age out while Attempt 2 runs, so this checks the pair,
- * not the Ticket alone (`liveContainerTickets`, above, deliberately checks
- * only the Ticket — the orphan check it serves cares whether the Ticket has
- * any live Worker, not which Attempt). The decision itself is
- * `transcriptsToPrune` (core/container.ts, pure); this is its I/O — list,
- * ask Docker who is still live, delete. Returns the host paths it removed,
- * for logging.
+ * configurable" criterion), skipping any still belonging to a live session:
+ * a Worker Attempt still running is checked Ticket-*and*-Attempt (a settled
+ * Attempt 1 must still age out while Attempt 2 runs, so this checks the
+ * pair, not the Ticket alone — `liveContainerTickets`, above, deliberately
+ * checks only the Ticket, the orphan check it serves cares whether the
+ * Ticket has any live Worker, not which Attempt); a Conflict Worker or
+ * Refinement round still running is checked PR-*and*-kind, the same
+ * discipline (issue #198) — a stale Conflict Worker transcript must still
+ * age out while a Refinement round for the same PR runs. The decision
+ * itself is `transcriptsToPrune` (core/container.ts, pure); this is its I/O
+ * — list, ask Docker who is still live, delete. Returns the host paths it
+ * removed, for logging.
  */
 export async function pruneTranscripts(
   repository: string,
@@ -265,15 +283,17 @@ export async function pruneTranscripts(
   now: number = Date.now(),
 ): Promise<string[]> {
   const dir = transcriptHostDir(transcriptsRoot, repository);
-  const [files, sessions] = await Promise.all([
+  const [files, { sessions, prSessions }] = await Promise.all([
     listTranscripts(dir),
-    liveSessions(repository, exec),
+    liveContainers(repository, exec),
   ]);
-  const liveKeys = new Set(
-    sessions.map((session) =>
-      transcriptSessionKey(session.ticket, session.attempt),
-    ),
-  );
+  const liveKeys = new Set<string>();
+  for (const session of sessions) {
+    liveKeys.add(transcriptSessionKey(session.ticket, session.attempt));
+  }
+  for (const session of prSessions) {
+    liveKeys.add(prTranscriptSessionKey(session.pr, session.kind));
+  }
   const toRemove = transcriptsToPrune(files, now, retentionMs, liveKeys);
   for (const name of toRemove) {
     await removeTranscript(join(dir, name));
@@ -444,6 +464,11 @@ function prLabelArgs(session: PrSessionLabels): string[] {
  * this PR's liveness from the container's own labels (`liveContainerPrs`
  * below) rather than waiting on it here.
  *
+ * Bind-mounts and symlinks this repository's host transcript directory the
+ * same way `dispatchContainerWorker` does (issue #198): `pr-N-conflict.*`
+ * shares the Attempt's own per-repository directory rather than getting one
+ * of its own, so `pruneTranscripts` sweeps both from the one place.
+ *
  * `--rm`, and the dynamic-value-through-`--env`-never-interpolated rule: the
  * same reasoning `dispatchContainerWorker`'s own doc comment gives.
  */
@@ -454,7 +479,10 @@ export async function dispatchContainerConflictWorker(
   repository: string,
   config: ContainerWorkerConfig,
   exec: Exec = realExec,
+  ensureDir: EnsureDir = realEnsureDir,
 ): Promise<undefined> {
+  const hostDir = transcriptHostDir(config.transcriptsRoot, repository);
+  await ensureDir(hostDir);
   await exec("docker", [
     "run",
     "--detach",
@@ -474,10 +502,12 @@ export async function dispatchContainerConflictWorker(
     `HEAD_REF=${headRef}`,
     "--env",
     `TIMEOUT_MINUTES=${config.timeoutMinutes}`,
+    "--volume",
+    `${hostDir}:${CONTAINER_TRANSCRIPTS_MOUNT}`,
     config.image,
     "sh",
     "-c",
-    'gh repo clone "$REPOSITORY" . && border-collie conflict-worker "$PR" "$TICKET" "$HEAD_REF" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+    `gh repo clone "$REPOSITORY" . && mkdir -p .border-collie && ln -sfn ${CONTAINER_TRANSCRIPTS_MOUNT} .border-collie/transcripts && border-collie conflict-worker "$PR" "$TICKET" "$HEAD_REF" --in-place --timeout-minutes "$TIMEOUT_MINUTES"`,
   ]);
   return undefined;
 }
@@ -492,6 +522,11 @@ export async function dispatchContainerConflictWorker(
  * inside the container. Runs `border-collie refine --in-place`, the settling
  * entrypoint that dispatches the round and pushes its branch when it
  * committed a fix.
+ *
+ * Bind-mounts and symlinks this repository's host transcript directory the
+ * same way `dispatchContainerConflictWorker` does (issue #198): `pr-N-
+ * refinement-round-R.*` shares the same per-repository directory rather
+ * than getting one of its own.
  */
 export async function dispatchContainerRefinementWorker(
   pr: number,
@@ -501,7 +536,10 @@ export async function dispatchContainerRefinementWorker(
   repository: string,
   config: ContainerWorkerConfig,
   exec: Exec = realExec,
+  ensureDir: EnsureDir = realEnsureDir,
 ): Promise<undefined> {
+  const hostDir = transcriptHostDir(config.transcriptsRoot, repository);
+  await ensureDir(hostDir);
   await exec("docker", [
     "run",
     "--detach",
@@ -523,10 +561,12 @@ export async function dispatchContainerRefinementWorker(
     `ROUND=${round}`,
     "--env",
     `TIMEOUT_MINUTES=${config.timeoutMinutes}`,
+    "--volume",
+    `${hostDir}:${CONTAINER_TRANSCRIPTS_MOUNT}`,
     config.image,
     "sh",
     "-c",
-    'gh repo clone "$REPOSITORY" . && border-collie refine "$PR" "$TICKET" "$HEAD_REF" "$ROUND" --in-place --timeout-minutes "$TIMEOUT_MINUTES"',
+    `gh repo clone "$REPOSITORY" . && mkdir -p .border-collie && ln -sfn ${CONTAINER_TRANSCRIPTS_MOUNT} .border-collie/transcripts && border-collie refine "$PR" "$TICKET" "$HEAD_REF" "$ROUND" --in-place --timeout-minutes "$TIMEOUT_MINUTES"`,
   ]);
   return undefined;
 }
@@ -544,24 +584,10 @@ export async function liveContainerPrs(
   kind: PrSessionKind,
   exec: Exec = realExec,
 ): Promise<Set<number>> {
-  const stdout = await exec("docker", [
-    "ps",
-    "--filter",
-    `label=${REPOSITORY_LABEL}=${repository}`,
-    "--format",
-    "{{.Labels}}",
-  ]);
+  const { prSessions } = await liveContainers(repository, exec);
   const live = new Set<number>();
-  for (const line of stdout.split("\n")) {
-    if (line.trim() === "") continue;
-    const session = parsePrSessionLabels(line);
-    if (
-      session !== undefined &&
-      session.repository === repository &&
-      session.kind === kind
-    ) {
-      live.add(session.pr);
-    }
+  for (const session of prSessions) {
+    if (session.kind === kind) live.add(session.pr);
   }
   return live;
 }

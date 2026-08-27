@@ -1,3 +1,6 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Exec } from "../../src/adapters/tracker.js";
 import { tickOnce } from "../../src/app/tick.js";
@@ -13,6 +16,17 @@ function fakeLog(): Log {
 }
 
 const REPOSITORY = "acme/widgets";
+
+/**
+ * A real, writable directory: `dispatchContainerConflictWorker`/
+ * `dispatchContainerRefinementWorker` (issue #198) ensure this exists on
+ * disk before `docker run`, same as `dispatchContainerWorker` already does
+ * for a Worker Attempt — a fixed path outside the test's own tmp tree would
+ * fail that `mkdir` in a sandboxed test run.
+ */
+const TRANSCRIPTS_ROOT = mkdtempSync(
+  join(tmpdir(), "border-collie-tick-test-"),
+);
 
 const SUB_ISSUES = "repos/{owner}/{repo}/issues/1/sub_issues?per_page=100";
 const comments = (n: number) =>
@@ -111,7 +125,7 @@ function runTick(exec: Exec) {
       image: "ghcr.io/acme/border-collie-session:1",
       ghToken: "ghs_token",
       claudeCodeOAuthToken: "oauth_token",
-      transcriptsRoot: "/var/lib/border-collie/transcripts",
+      transcriptsRoot: TRANSCRIPTS_ROOT,
     },
   });
 }
