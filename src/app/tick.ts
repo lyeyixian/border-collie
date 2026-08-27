@@ -1,5 +1,8 @@
 import {
+  dispatchContainerConflictWorker,
+  dispatchContainerRefinementWorker,
   dispatchContainerWorker,
+  liveContainerPrs,
   liveContainerTickets,
 } from "../adapters/container.js";
 import { openPrForOutcome } from "../adapters/pr.js";
@@ -37,19 +40,12 @@ export interface TickDeps {
    * (issue #74): a Ticket dispatch triggers the Worker's job and returns
    * (`dispatchRemoteWorker`) instead of running headless claude to
    * completion in-process (`dispatchWorker`). Conflict and Refinement
-   * Workers are unaffected by this particular flag — this Tick always
-   * dispatches them synchronously in-process, via `dispatchConflictWorker`/
-   * `dispatchRefinementWorker` — but they are no longer categorically
-   * synchronous the way they once were: both now accept a fire-and-forget
-   * outcome too (`DispatchConflictWorker`/`DispatchRefinementWorker`,
-   * src/app/act.ts), and a session-container backend for each exists
-   * (`dispatchContainerConflictWorker`/`dispatchContainerRefinementWorker`,
-   * adapters/container.ts, issue #181) for a future caller to wire in, the
-   * same way `dispatchContainerWorker` (issue #177) exists beside this
-   * Tick's own synchronous/Actions choice above without yet being reachable
-   * from it. Left undefined (falsy) by every caller but the real composition
-   * root, so the resident run loop and a manually-run tick keep today's
-   * synchronous local path.
+   * Workers are unaffected by this particular flag — an Actions-hosted Tick
+   * still dispatches them synchronously in-process, via
+   * `dispatchConflictWorker`/`dispatchRefinementWorker`; only `container`
+   * below moves them out of the Tick (issue #181). Left undefined (falsy) by
+   * every caller but the real composition root, so the resident run loop
+   * and a manually-run tick keep today's synchronous local path.
    */
   remoteDispatch?: boolean;
   /**
@@ -76,9 +72,13 @@ export interface TickDeps {
    * triggering a GitHub Actions job (ADR 0009), and to read Worker liveness
    * back from that container's own labels (`liveContainerTickets`,
    * adapters/container.ts) instead of an Actions job-run listing. Conflict
-   * Workers and Refinement rounds are unaffected either way — they still
-   * dispatch inline against `cwd`'s checkout until issue #181 moves them
-   * into containers too.
+   * Workers and Refinement rounds go the same way (issue #181): each is
+   * dispatched into its own PR-labelled session container
+   * (`dispatchContainerConflictWorker`/`dispatchContainerRefinementWorker`)
+   * that settles itself, so a session can never freeze a daemon's Tick for
+   * every repository at once, and a Conflict Worker's liveness is read back
+   * from those labels (`liveContainerPrs`) so a later Tick never dispatches
+   * a second one onto a PR whose first is still running.
    */
   container?: {
     /** `"owner/name"`, matched against a container's own repository label. */
@@ -135,6 +135,9 @@ export async function tickOnce(
     exec,
     container
       ? (execArg) => liveContainerTickets(container.repository, execArg)
+      : undefined,
+    container
+      ? (execArg) => liveContainerPrs(container.repository, "conflict", execArg)
       : undefined,
   );
   // Resolved fresh against wall-clock time each Tick (CONTEXT.md "Working
@@ -219,48 +222,81 @@ export async function tickOnce(
           titles.get(outcome.ticket) ?? `Ticket #${outcome.ticket}`,
           exec,
         ),
-      dispatchConflict: (pr, ticket, headRef) =>
-        dispatchConflictWorker(
-          pr,
-          ticket,
-          headRef,
-          {
-            model: config.model,
-            timeoutMs: config.timeoutMinutes * 60_000,
-            stallMs: config.stallMinutes * 60_000,
-            maxTurns: config.maxTurns,
-            // This Tick's own process dispatches at most one Conflict Worker
-            // concurrently with any dispatch Workers it also spawned, so it
-            // still needs an isolated worktree — never in-place (that path is
-            // a Conflict Worker's own session container; see
-            // src/app/conflict-worker.ts, issue #181).
-            inPlace: false,
-          },
-          exec,
-          realSpawnWorkerProcess,
-          log,
-        ),
-      dispatchRefinement: (pr, ticket, headRef, round) =>
-        dispatchRefinementWorker(
-          pr,
-          ticket,
-          headRef,
-          round,
-          {
-            model: config.model,
-            timeoutMs: config.timeoutMinutes * 60_000,
-            stallMs: config.stallMinutes * 60_000,
-            maxTurns: config.maxTurns,
-            // Never in-place here, for the same reason as the Conflict
-            // Worker above — a Refinement round's own session container is
-            // where in-place applies (src/app/refinement-worker.ts, issue
-            // #181).
-            inPlace: false,
-          },
-          exec,
-          realSpawnWorkerProcess,
-          log,
-        ),
+      dispatchConflict: container
+        ? (pr, ticket, headRef) =>
+            dispatchContainerConflictWorker(
+              pr,
+              ticket,
+              headRef,
+              container.repository,
+              {
+                image: container.image,
+                timeoutMinutes: config.timeoutMinutes,
+                ghToken: container.ghToken,
+                claudeCodeOAuthToken: container.claudeCodeOAuthToken,
+                transcriptsRoot: container.transcriptsRoot,
+              },
+              exec,
+            )
+        : (pr, ticket, headRef) =>
+            dispatchConflictWorker(
+              pr,
+              ticket,
+              headRef,
+              {
+                model: config.model,
+                timeoutMs: config.timeoutMinutes * 60_000,
+                stallMs: config.stallMinutes * 60_000,
+                maxTurns: config.maxTurns,
+                // This Tick's own process dispatches at most one Conflict
+                // Worker concurrently with any dispatch Workers it also
+                // spawned, so it still needs an isolated worktree — never
+                // in-place (that path is a Conflict Worker's own session
+                // container; see src/app/conflict-worker.ts, issue #181).
+                inPlace: false,
+              },
+              exec,
+              realSpawnWorkerProcess,
+              log,
+            ),
+      dispatchRefinement: container
+        ? (pr, ticket, headRef, round) =>
+            dispatchContainerRefinementWorker(
+              pr,
+              ticket,
+              headRef,
+              round,
+              container.repository,
+              {
+                image: container.image,
+                timeoutMinutes: config.timeoutMinutes,
+                ghToken: container.ghToken,
+                claudeCodeOAuthToken: container.claudeCodeOAuthToken,
+                transcriptsRoot: container.transcriptsRoot,
+              },
+              exec,
+            )
+        : (pr, ticket, headRef, round) =>
+            dispatchRefinementWorker(
+              pr,
+              ticket,
+              headRef,
+              round,
+              {
+                model: config.model,
+                timeoutMs: config.timeoutMinutes * 60_000,
+                stallMs: config.stallMinutes * 60_000,
+                maxTurns: config.maxTurns,
+                // Never in-place here, for the same reason as the Conflict
+                // Worker above — a Refinement round's own session container
+                // is where in-place applies (src/app/refinement-worker.ts,
+                // issue #181).
+                inPlace: false,
+              },
+              exec,
+              realSpawnWorkerProcess,
+              log,
+            ),
       exec,
       log,
       now,
