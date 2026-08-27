@@ -4,9 +4,12 @@ import {
   CLAUDE_CODE_OAUTH_TOKEN_ENV,
   ConfigError,
   type DaemonFlags,
+  type FleetConfig,
   modelForAttempt,
+  parseFleetConfig,
   resolveConfig,
   resolveDaemonConfig,
+  resolveFleetPolicy,
   resolveWorkerConfig,
   type Scope,
   scopeFromFlags,
@@ -16,6 +19,8 @@ import {
 import { DEFAULT_TRANSCRIPT_RETENTION_MS } from "../../src/core/container.js";
 
 const PARENT_SCOPE: Scope = { kind: "parent", parent: 1 };
+
+const EMPTY_FLEET_CONFIG: FleetConfig = { defaults: {}, repositories: {} };
 
 describe("scopeFromFlags", () => {
   it("defers to the tracker's Scope label when neither --parent nor --all is given", () => {
@@ -45,18 +50,18 @@ describe("scopeFromFlags", () => {
 
 describe("resolveConfig", () => {
   it("attaches the given Scope to the resolved config verbatim", () => {
-    expect(resolveConfig({}, {}, PARENT_SCOPE).scope).toEqual(PARENT_SCOPE);
-    expect(resolveConfig({}, {}, { kind: "all" }).scope).toEqual({
+    expect(resolveConfig({}, PARENT_SCOPE).scope).toEqual(PARENT_SCOPE);
+    expect(resolveConfig({}, { kind: "all" }).scope).toEqual({
       kind: "all",
     });
   });
 
-  it("takes max_workers from the config file", () => {
-    const resolved = resolveConfig({ max_workers: 5 }, {}, PARENT_SCOPE);
+  it("resolves every field to this package's built-in default with no flags", () => {
+    const resolved = resolveConfig({}, PARENT_SCOPE);
 
     expect(resolved).toEqual({
       scope: PARENT_SCOPE,
-      maxWorkers: 5,
+      maxWorkers: 3,
       model: "sonnet",
       retryModel: "opus",
       timeoutMinutes: 45,
@@ -68,282 +73,237 @@ describe("resolveConfig", () => {
     });
   });
 
-  it("defaults max_workers to 3", () => {
-    const resolved = resolveConfig({}, {}, PARENT_SCOPE);
-
-    expect(resolved.maxWorkers).toBe(3);
+  it("leaves the working-hours gate unconfigured — there is no flag surface for it locally, only the daemon's fleet policy file", () => {
+    expect(resolveConfig({}, PARENT_SCOPE).workingHours).toBeUndefined();
   });
 
-  it("lets flags override the config file", () => {
+  it("lets flags override every default", () => {
     const resolved = resolveConfig(
-      { max_workers: 5, worker_model: "haiku" },
-      { maxWorkers: 2, model: "opus" },
+      {
+        maxWorkers: 2,
+        maxOpenPrs: 8,
+        pollSeconds: 10,
+        model: "opus",
+        retryModel: "haiku",
+        timeoutMinutes: 50,
+      },
       PARENT_SCOPE,
     );
 
     expect(resolved).toEqual({
       scope: PARENT_SCOPE,
       maxWorkers: 2,
+      maxOpenPrs: 8,
+      pollSeconds: 10,
       model: "opus",
-      retryModel: "opus",
-      timeoutMinutes: 45,
+      retryModel: "haiku",
+      timeoutMinutes: 50,
       stallMinutes: 10,
-      maxOpenPrs: 5,
-      pollSeconds: 30,
       maxTurns: 200,
       maxCostUsd: 20,
     });
   });
 
-  it("works with flags alone when there is no config file", () => {
-    const resolved = resolveConfig(undefined, {}, PARENT_SCOPE);
-
-    expect(resolved).toEqual({
-      scope: PARENT_SCOPE,
-      maxWorkers: 3,
-      model: "sonnet",
-      retryModel: "opus",
-      timeoutMinutes: 45,
-      stallMinutes: 10,
-      maxOpenPrs: 5,
-      pollSeconds: 30,
-      maxTurns: 200,
-      maxCostUsd: 20,
-    });
-  });
-
-  it("takes the worker model from the config file", () => {
-    const resolved = resolveConfig({ worker_model: "opus" }, {}, PARENT_SCOPE);
-    expect(resolved.model).toBe("opus");
-  });
-
-  it("rejects a worker model that is not a non-empty string", () => {
-    expect(() => resolveConfig({ worker_model: "" }, {}, PARENT_SCOPE)).toThrow(
+  it("rejects a non-positive --max-workers, --max-open-prs, --poll-seconds or --timeout-minutes", () => {
+    expect(() => resolveConfig({ maxWorkers: -2 }, PARENT_SCOPE)).toThrow(
       ConfigError,
     );
-    expect(() => resolveConfig({ worker_model: 4 }, {}, PARENT_SCOPE)).toThrow(
+    expect(() => resolveConfig({ maxOpenPrs: 0 }, PARENT_SCOPE)).toThrow(
+      ConfigError,
+    );
+    expect(() => resolveConfig({ pollSeconds: 0 }, PARENT_SCOPE)).toThrow(
+      ConfigError,
+    );
+    expect(() => resolveConfig({ timeoutMinutes: 0 }, PARENT_SCOPE)).toThrow(
       ConfigError,
     );
   });
 
-  it("takes the retry model from the config file, with a flag override", () => {
-    expect(
-      resolveConfig({ retry_model: "sonnet" }, {}, PARENT_SCOPE).retryModel,
-    ).toBe("sonnet");
-    expect(
-      resolveConfig(
-        { retry_model: "sonnet" },
-        { retryModel: "haiku" },
-        PARENT_SCOPE,
-      ).retryModel,
-    ).toBe("haiku");
-  });
-
-  it("rejects a retry model that is not a non-empty string", () => {
-    expect(() => resolveConfig({ retry_model: "" }, {}, PARENT_SCOPE)).toThrow(
+  it("rejects an empty --model or --retry-model", () => {
+    expect(() => resolveConfig({ model: "" }, PARENT_SCOPE)).toThrow(
       ConfigError,
     );
-  });
-
-  it("takes the Worker timeout and stall windows from the config file", () => {
-    const resolved = resolveConfig(
-      { worker_timeout_minutes: 90, worker_stall_minutes: 5 },
-      {},
-      PARENT_SCOPE,
+    expect(() => resolveConfig({ retryModel: "" }, PARENT_SCOPE)).toThrow(
+      ConfigError,
     );
-
-    expect(resolved.timeoutMinutes).toBe(90);
-    expect(resolved.stallMinutes).toBe(5);
-  });
-
-  it("rejects non-positive timeout and stall windows", () => {
-    expect(() =>
-      resolveConfig({ worker_timeout_minutes: 0 }, {}, PARENT_SCOPE),
-    ).toThrow(ConfigError);
-    expect(() =>
-      resolveConfig({ worker_stall_minutes: -1 }, {}, PARENT_SCOPE),
-    ).toThrow(ConfigError);
-  });
-
-  it("lets a --timeout-minutes flag override the config file's Worker timeout", () => {
-    expect(
-      resolveConfig(
-        { worker_timeout_minutes: 90 },
-        { timeoutMinutes: 50 },
-        PARENT_SCOPE,
-      ).timeoutMinutes,
-    ).toBe(50);
-  });
-
-  it("takes the Worker budget backstops from the config file, allowing a fractional cost cap", () => {
-    const resolved = resolveConfig(
-      { worker_max_turns: 80, worker_max_cost_usd: 7.5 },
-      {},
-      PARENT_SCOPE,
-    );
-
-    expect(resolved.maxTurns).toBe(80);
-    expect(resolved.maxCostUsd).toBe(7.5);
-  });
-
-  it("rejects non-positive or non-numeric budget backstops", () => {
-    expect(() =>
-      resolveConfig({ worker_max_turns: 0 }, {}, PARENT_SCOPE),
-    ).toThrow(ConfigError);
-    expect(() =>
-      resolveConfig({ worker_max_turns: 1.5 }, {}, PARENT_SCOPE),
-    ).toThrow(ConfigError);
-    expect(() =>
-      resolveConfig({ worker_max_cost_usd: -2 }, {}, PARENT_SCOPE),
-    ).toThrow(ConfigError);
-    expect(() =>
-      resolveConfig({ worker_max_cost_usd: "20" }, {}, PARENT_SCOPE),
-    ).toThrow(ConfigError);
   });
 
   it("binds attempt one to the base model and later attempts to the retry model", () => {
-    const config = resolveConfig({}, {}, PARENT_SCOPE);
+    const config = resolveConfig({}, PARENT_SCOPE);
 
     expect(modelForAttempt(config, 1)).toBe("sonnet");
     expect(modelForAttempt(config, 2)).toBe("opus");
   });
+});
 
-  it("rejects a non-positive max_workers", () => {
-    expect(() => resolveConfig({ max_workers: 0 }, {}, PARENT_SCOPE)).toThrow(
-      ConfigError,
-    );
-    expect(() => resolveConfig({}, { maxWorkers: -2 }, PARENT_SCOPE)).toThrow(
-      ConfigError,
-    );
+describe("resolveWorkerConfig", () => {
+  it("resolves with no scope flags at all (issue #71: a Worker attempt needs no Scope)", () => {
+    const resolved = resolveWorkerConfig({});
+
+    expect(resolved).toEqual({
+      maxWorkers: 3,
+      maxOpenPrs: 5,
+      pollSeconds: 30,
+      model: "sonnet",
+      retryModel: "opus",
+      timeoutMinutes: 45,
+      stallMinutes: 10,
+      maxTurns: 200,
+      maxCostUsd: 20,
+    });
+    expect(resolved).not.toHaveProperty("scope");
   });
 
-  it("takes max_open_prs and poll_seconds from the config file", () => {
-    const resolved = resolveConfig(
-      { max_open_prs: 2, poll_seconds: 60 },
-      {},
-      PARENT_SCOPE,
-    );
+  it("lets --model, --retry-model and --timeout-minutes override the defaults", () => {
+    const resolved = resolveWorkerConfig({
+      model: "opus",
+      retryModel: "haiku",
+      timeoutMinutes: 50,
+    });
 
-    expect(resolved.maxOpenPrs).toBe(2);
-    expect(resolved.pollSeconds).toBe(60);
+    expect(resolved.model).toBe("opus");
+    expect(resolved.retryModel).toBe("haiku");
+    expect(resolved.timeoutMinutes).toBe(50);
   });
 
-  it("lets flags override max_open_prs and poll_seconds", () => {
-    const resolved = resolveConfig(
-      { max_open_prs: 2, poll_seconds: 60 },
-      { maxOpenPrs: 8, pollSeconds: 10 },
-      PARENT_SCOPE,
-    );
+  it("leaves the working-hours gate unconfigured, the same as resolveConfig", () => {
+    expect(resolveWorkerConfig({}).workingHours).toBeUndefined();
+  });
+});
 
-    expect(resolved.maxOpenPrs).toBe(8);
-    expect(resolved.pollSeconds).toBe(10);
+describe("parseFleetConfig", () => {
+  it("treats a missing file as valid, yielding no defaults and no overrides", () => {
+    expect(parseFleetConfig(undefined)).toEqual(EMPTY_FLEET_CONFIG);
   });
 
-  it("rejects a non-positive max_open_prs or poll_seconds", () => {
-    expect(() => resolveConfig({ max_open_prs: 0 }, {}, PARENT_SCOPE)).toThrow(
-      ConfigError,
-    );
-    expect(() => resolveConfig({}, { pollSeconds: 0 }, PARENT_SCOPE)).toThrow(
-      ConfigError,
-    );
-  });
-
-  it("resolves the working-hours window from the config file", () => {
-    const resolved = resolveConfig(
-      {
+  it("parses fleet-wide defaults", () => {
+    const parsed = parseFleetConfig({
+      defaults: {
+        max_workers: 5,
+        max_open_prs: 8,
+        worker_model: "haiku",
+        retry_model: "sonnet",
+        worker_timeout_minutes: 60,
+        worker_stall_minutes: 15,
+        worker_max_turns: 100,
+        worker_max_cost_usd: 12.5,
         timezone: "Europe/London",
-        work_start_hour: 9,
-        work_end_hour: 18,
+        work_start_hour: 20,
+        work_end_hour: 6,
       },
-      {},
-      PARENT_SCOPE,
-    );
+    });
 
-    expect(resolved.workingHours).toEqual({
-      timezone: "Europe/London",
-      startHour: 9,
-      endHour: 18,
+    expect(parsed).toEqual({
+      defaults: {
+        maxWorkers: 5,
+        maxOpenPrs: 8,
+        model: "haiku",
+        retryModel: "sonnet",
+        timeoutMinutes: 60,
+        stallMinutes: 15,
+        maxTurns: 100,
+        maxCostUsd: 12.5,
+        workingHours: {
+          timezone: "Europe/London",
+          startHour: 20,
+          endHour: 6,
+        },
+      },
+      repositories: {},
     });
   });
 
-  it("leaves the working-hours gate unconfigured when the file omits it", () => {
-    const resolved = resolveConfig({}, {}, PARENT_SCOPE);
+  it("parses per-repository overrides keyed by owner/name", () => {
+    const parsed = parseFleetConfig({
+      repositories: {
+        "acme/website": { max_open_prs: 10 },
+        "acme/internal-tools": { worker_model: "opus" },
+      },
+    });
 
-    expect(resolved.workingHours).toBeUndefined();
+    expect(parsed.repositories).toEqual({
+      "acme/website": { maxOpenPrs: 10 },
+      "acme/internal-tools": { model: "opus" },
+    });
+  });
+
+  it("defaults an absent defaults or repositories section to empty", () => {
+    expect(parseFleetConfig({})).toEqual(EMPTY_FLEET_CONFIG);
+    expect(parseFleetConfig({ defaults: {} })).toEqual(EMPTY_FLEET_CONFIG);
+    expect(parseFleetConfig({ repositories: {} })).toEqual(EMPTY_FLEET_CONFIG);
+  });
+
+  it("rejects a root that is not a JSON object", () => {
+    expect(() => parseFleetConfig("not an object")).toThrow(ConfigError);
+    expect(() => parseFleetConfig(["defaults"])).toThrow(ConfigError);
+  });
+
+  it("rejects an unknown top-level key rather than silently ignoring it", () => {
+    expect(() => parseFleetConfig({ default: {} })).toThrow(ConfigError);
+  });
+
+  it("rejects repositories that is not a JSON object", () => {
+    expect(() => parseFleetConfig({ repositories: "acme/website" })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it("rejects an unknown key inside defaults", () => {
+    expect(() => parseFleetConfig({ defaults: { max_wokers: 5 } })).toThrow(
+      ConfigError,
+    );
+  });
+
+  it("rejects an unknown key inside a repository override", () => {
+    expect(() =>
+      parseFleetConfig({
+        repositories: { "acme/website": { max_wokers: 5 } },
+      }),
+    ).toThrow(ConfigError);
+  });
+
+  it("rejects a repository override that is not a JSON object", () => {
+    expect(() =>
+      parseFleetConfig({ repositories: { "acme/website": "many" } }),
+    ).toThrow(ConfigError);
+  });
+
+  it("rejects a non-positive or wrongly typed field the same way resolveConfig does", () => {
+    expect(() => parseFleetConfig({ defaults: { max_workers: 0 } })).toThrow(
+      ConfigError,
+    );
+    expect(() => parseFleetConfig({ defaults: { worker_model: "" } })).toThrow(
+      ConfigError,
+    );
+    expect(() =>
+      parseFleetConfig({ defaults: { worker_max_cost_usd: "20" } }),
+    ).toThrow(ConfigError);
   });
 
   it("rejects a partial working-hours window", () => {
     expect(() =>
-      resolveConfig({ timezone: "Europe/London" }, {}, PARENT_SCOPE),
-    ).toThrow(ConfigError);
-    expect(() =>
-      resolveConfig(
-        { work_start_hour: 9, work_end_hour: 18 },
-        {},
-        PARENT_SCOPE,
-      ),
+      parseFleetConfig({ defaults: { timezone: "Europe/London" } }),
     ).toThrow(ConfigError);
   });
 
   it("rejects an unrecognized timezone", () => {
     expect(() =>
-      resolveConfig(
-        {
+      parseFleetConfig({
+        defaults: {
           timezone: "Not/AZone",
           work_start_hour: 9,
           work_end_hour: 18,
         },
-        {},
-        PARENT_SCOPE,
-      ),
-    ).toThrow(ConfigError);
-  });
-
-  it("rejects an out-of-range or non-integer working hour", () => {
-    expect(() =>
-      resolveConfig(
-        { timezone: "UTC", work_start_hour: 24, work_end_hour: 18 },
-        {},
-        PARENT_SCOPE,
-      ),
-    ).toThrow(ConfigError);
-    expect(() =>
-      resolveConfig(
-        { timezone: "UTC", work_start_hour: 9.5, work_end_hour: 18 },
-        {},
-        PARENT_SCOPE,
-      ),
-    ).toThrow(ConfigError);
-  });
-
-  it("rejects equal start and end working hours", () => {
-    expect(() =>
-      resolveConfig(
-        { timezone: "UTC", work_start_hour: 9, work_end_hour: 9 },
-        {},
-        PARENT_SCOPE,
-      ),
-    ).toThrow(ConfigError);
-  });
-
-  it("rejects a malformed config file", () => {
-    expect(() => resolveConfig("not an object", {}, PARENT_SCOPE)).toThrow(
-      ConfigError,
-    );
-    expect(() =>
-      resolveConfig({ max_workers: "many" }, {}, { kind: "all" }),
+      }),
     ).toThrow(ConfigError);
   });
 });
 
-describe("resolveWorkerConfig", () => {
-  it("resolves with no config file and no scope flags at all (issue #71: a Worker attempt needs no Scope)", () => {
-    const resolved = resolveWorkerConfig(undefined, {});
-
-    expect(resolved).toEqual({
+describe("resolveFleetPolicy", () => {
+  it("falls all the way back to this package's built-in defaults when the file is empty", () => {
+    expect(resolveFleetPolicy(EMPTY_FLEET_CONFIG, "acme/website")).toEqual({
       maxWorkers: 3,
       maxOpenPrs: 5,
-      pollSeconds: 30,
       model: "sonnet",
       retryModel: "opus",
       timeoutMinutes: 45,
@@ -351,69 +311,59 @@ describe("resolveWorkerConfig", () => {
       maxTurns: 200,
       maxCostUsd: 20,
     });
-    expect(resolved).not.toHaveProperty("scope");
   });
 
-  it("ignores a parent in the config file — no scope is ever resolved", () => {
-    const resolved = resolveWorkerConfig({ parent: 1 }, {});
+  it("applies the fleet-wide default to every repository that states no override", () => {
+    const fleetConfig: FleetConfig = {
+      defaults: { maxOpenPrs: 8 },
+      repositories: {},
+    };
 
-    expect(resolved).not.toHaveProperty("scope");
+    expect(resolveFleetPolicy(fleetConfig, "acme/website").maxOpenPrs).toBe(8);
+    expect(
+      resolveFleetPolicy(fleetConfig, "acme/internal-tools").maxOpenPrs,
+    ).toBe(8);
   });
 
-  it("lets --model and --retry-model override the config file", () => {
-    const resolved = resolveWorkerConfig(
-      { worker_model: "haiku" },
-      { model: "opus", retryModel: "haiku" },
-    );
+  it("lets a per-repository override win over the fleet-wide default", () => {
+    const fleetConfig: FleetConfig = {
+      defaults: { maxOpenPrs: 8 },
+      repositories: { "acme/website": { maxOpenPrs: 20 } },
+    };
 
-    expect(resolved.model).toBe("opus");
-    expect(resolved.retryModel).toBe("haiku");
+    expect(resolveFleetPolicy(fleetConfig, "acme/website").maxOpenPrs).toBe(20);
+    expect(
+      resolveFleetPolicy(fleetConfig, "acme/internal-tools").maxOpenPrs,
+    ).toBe(8);
   });
 
-  it("lets --timeout-minutes override the config file's Worker timeout", () => {
-    const resolved = resolveWorkerConfig(
-      { worker_timeout_minutes: 90 },
-      { timeoutMinutes: 50 },
-    );
+  it("falls back to the fleet-wide default field by field when the override states only some fields", () => {
+    const fleetConfig: FleetConfig = {
+      defaults: { maxOpenPrs: 8, model: "haiku" },
+      repositories: { "acme/website": { maxOpenPrs: 20 } },
+    };
 
-    expect(resolved.timeoutMinutes).toBe(50);
+    const resolved = resolveFleetPolicy(fleetConfig, "acme/website");
+    expect(resolved.maxOpenPrs).toBe(20);
+    expect(resolved.model).toBe("haiku");
   });
 
-  it("takes the Worker timeout, stall window, and budget backstops from the config file", () => {
-    const resolved = resolveWorkerConfig(
-      {
-        worker_timeout_minutes: 90,
-        worker_stall_minutes: 5,
-        worker_max_turns: 80,
-        worker_max_cost_usd: 7.5,
-      },
-      {},
-    );
+  it("has no per-repository entry fall back to the built-in default, not the fleet-wide default, for a field the defaults never state", () => {
+    const fleetConfig: FleetConfig = {
+      defaults: { maxOpenPrs: 8 },
+      repositories: { "acme/website": {} },
+    };
 
-    expect(resolved.timeoutMinutes).toBe(90);
-    expect(resolved.stallMinutes).toBe(5);
-    expect(resolved.maxTurns).toBe(80);
-    expect(resolved.maxCostUsd).toBe(7.5);
+    expect(resolveFleetPolicy(fleetConfig, "acme/website").maxWorkers).toBe(3);
   });
 
-  it("rejects a malformed config file the same way resolveConfig does", () => {
-    expect(() => resolveWorkerConfig("not an object", {})).toThrow(ConfigError);
-    expect(() => resolveWorkerConfig({ worker_model: "" }, {})).toThrow(
-      ConfigError,
-    );
-  });
-
-  it("resolves the working-hours window the same way resolveConfig does", () => {
-    const resolved = resolveWorkerConfig(
-      { timezone: "Europe/London", work_start_hour: 9, work_end_hour: 18 },
-      {},
-    );
-
-    expect(resolved.workingHours).toEqual({
-      timezone: "Europe/London",
-      startHour: 9,
-      endHour: 18,
+  it("is a pure function over already-parsed values — no I/O, called directly with plain objects", () => {
+    const fleetConfig = parseFleetConfig({
+      defaults: { max_open_prs: 8 },
+      repositories: { "acme/website": { max_open_prs: 20 } },
     });
+
+    expect(resolveFleetPolicy(fleetConfig, "acme/website").maxOpenPrs).toBe(20);
   });
 });
 
@@ -425,7 +375,7 @@ describe("resolveDaemonConfig", () => {
     [WORKER_IMAGE_ENV]: "ghcr.io/acme/border-collie-base:latest",
   };
 
-  it("resolves every field from flags and environment, defaulting the state dir under the home directory", () => {
+  it("resolves every field from flags and environment, defaulting the state dir under the home directory and the fleet config path under the state dir", () => {
     const resolved = resolveDaemonConfig({}, ENV, "/home/operator");
 
     expect(resolved).toEqual({
@@ -437,14 +387,16 @@ describe("resolveDaemonConfig", () => {
       claudeCodeOAuthToken: "claude-token",
       probeModel: "sonnet",
       transcriptRetentionMs: DEFAULT_TRANSCRIPT_RETENTION_MS,
+      fleetConfigPath: "/home/operator/.border-collie/fleet.json",
     });
   });
 
-  it("lets flags override the poll interval, image and state dir", () => {
+  it("lets flags override the poll interval, image, state dir and fleet config path", () => {
     const flags: DaemonFlags = {
       pollSeconds: 60,
       image: "ghcr.io/acme/other:latest",
       stateDir: "/srv/border-collie",
+      fleetConfig: "/etc/border-collie/fleet.json",
     };
 
     const resolved = resolveDaemonConfig(flags, ENV, "/home/operator");
@@ -452,6 +404,17 @@ describe("resolveDaemonConfig", () => {
     expect(resolved.pollSeconds).toBe(60);
     expect(resolved.image).toBe("ghcr.io/acme/other:latest");
     expect(resolved.stateDir).toBe("/srv/border-collie");
+    expect(resolved.fleetConfigPath).toBe("/etc/border-collie/fleet.json");
+  });
+
+  it("defaults the fleet config path under an overridden state dir when only --state-dir is given", () => {
+    const resolved = resolveDaemonConfig(
+      { stateDir: "/srv/border-collie" },
+      ENV,
+      "/home/operator",
+    );
+
+    expect(resolved.fleetConfigPath).toBe("/srv/border-collie/fleet.json");
   });
 
   it("lets a flag override the transcript retention window", () => {

@@ -96,8 +96,7 @@ export const workerCommand = buildCommand<
       timeoutMinutes: {
         kind: "parsed",
         parse: parseInteger,
-        brief:
-          "wall-clock ceiling for this Worker, in minutes (default 45, overrides config file)",
+        brief: "wall-clock ceiling for this Worker, in minutes (default 45)",
         placeholder: "n",
         optional: true,
       },

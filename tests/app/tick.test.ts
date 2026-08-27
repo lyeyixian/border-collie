@@ -50,7 +50,7 @@ const prItem = (overrides: Record<string, unknown> = {}) => ({
  * here is claimable and the only dispatch a Tick can make is the PR-scoped
  * one under test.
  */
-const config = resolveConfig({}, {}, { kind: "parent", parent: 1 });
+const config = resolveConfig({}, { kind: "parent", parent: 1 });
 
 /**
  * Fake the subprocess seam for one whole Tick: the tracker reads that

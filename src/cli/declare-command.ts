@@ -70,8 +70,7 @@ export const declareCommand = buildCommand<DeclareFlags, [], Context>({
       retryModel: {
         kind: "parsed",
         parse: String,
-        brief:
-          "model the Onboarding Worker runs on (default opus, overrides config file)",
+        brief: "model the Onboarding Worker runs on (default opus)",
         placeholder: "name",
         optional: true,
       },
@@ -79,7 +78,7 @@ export const declareCommand = buildCommand<DeclareFlags, [], Context>({
         kind: "parsed",
         parse: parseInteger,
         brief:
-          "wall-clock ceiling for the Onboarding Worker, in minutes (default 45, overrides config file)",
+          "wall-clock ceiling for the Onboarding Worker, in minutes (default 45)",
         placeholder: "n",
         optional: true,
       },

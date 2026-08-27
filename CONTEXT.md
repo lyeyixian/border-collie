@@ -16,6 +16,10 @@ _Avoid_: run (the retired resident loop this replaces), loop (ambiguous with the
 The set of repositories a daemon herds — not a list border-collie keeps, but `GET /installation/repositories` read fresh every poll, so installing the GitHub App on a repository is how the operator adds it and uninstalling is how they remove it.
 _Avoid_: registry, roster (both imply a list border-collie owns and could let drift out of sync)
 
+**Fleet policy**:
+The daemon's own loop-policy configuration — max_workers, max_open_prs, worker_model, retry_model, worker_timeout_minutes, worker_stall_minutes, worker_max_turns, worker_max_cost_usd, and Working hours — read from one file on the daemon's own host (`--fleet-config`), never from the repository being herded (ADR 0009). The file states fleet-wide defaults plus per-repository overrides keyed by `"owner/name"`; a repository's own value wins field by field, an absent one falls back to the defaults, and either falling back to this package's built-in default. Retires `border-collie.json`, which used to sit in the target repository — the wrong place for policy a repository could edit out from under the daemon herding it.
+_Avoid_: border-collie.json (retired), repo config (implies it lives in the repository, which is exactly what this replaces)
+
 **Ticket**:
 An open issue on the tracker produced by `/to-tickets`: a tracer-bullet vertical slice sized to one fresh agent context window, carrying native blocking edges and the `ready-for-agent` label.
 _Avoid_: task, story

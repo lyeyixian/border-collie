@@ -10,12 +10,12 @@ import {
   repositoryFullName,
 } from "../adapters/app-auth.js";
 import { ensureCheckout, execAtRepo } from "../adapters/checkout.js";
-import { loadConfigFile } from "../adapters/config-file.js";
 import {
   pruneTranscripts,
   realListTranscripts,
   realRemoveTranscript,
 } from "../adapters/container.js";
+import { loadFleetConfigFile } from "../adapters/fleet-config-file.js";
 import {
   readScopeFromLabel,
   realExec,
@@ -35,9 +35,11 @@ import {
   type DaemonConfig,
   type DaemonFlags,
   type Flags,
+  parseFleetConfig,
   type ResolvedConfig,
   resolveConfig,
   resolveDaemonConfig,
+  resolveFleetPolicy,
   resolveWorkerConfig,
   scopeFromFlags,
   type WorkerAttemptConfig,
@@ -328,7 +330,19 @@ function buildDaemonDeps(
       // this instead of the every-other-caller default.
       const exec = execAtRepo(dir, token);
       const scope = await readScopeFromLabel(withDebugLogging(exec, repoLog));
-      const repoConfig = resolveConfig(loadConfigFile(dir), {}, scope);
+      const fleetConfig = parseFleetConfig(
+        loadFleetConfigFile(config.fleetConfigPath),
+      );
+      const policy = resolveFleetPolicy(fleetConfig, repository);
+      const repoConfig: ResolvedConfig = {
+        scope,
+        // Structurally required by ResolvedConfig but unused inside
+        // tickOnce (that field only ever drove `run.ts`'s own resident
+        // loop): reusing the daemon's own poll interval here keeps the
+        // type whole without inventing a second, meaningless value.
+        pollSeconds: config.pollSeconds,
+        ...policy,
+      };
       return tickOnce(repoConfig, false, dispatchPaused, {
         log: repoLog,
         now,
@@ -382,10 +396,9 @@ export function buildRealContext(
       const scope =
         scopeFromFlags(flags) ??
         (await readScopeFromLabel(withDebugLogging(realExec, log)));
-      return resolveConfig(loadConfigFile(cwd), flags, scope);
+      return resolveConfig(flags, scope);
     },
-    loadWorkerConfig: (flags) =>
-      resolveWorkerConfig(loadConfigFile(cwd), flags),
+    loadWorkerConfig: (flags) => resolveWorkerConfig(flags),
     loadDaemonConfig: (flags) => resolveDaemonConfig(flags, env, homedir()),
     tick: (config, dryRun, dispatchPaused) =>
       tickOnce(config, dryRun, dispatchPaused, {

@@ -25,6 +25,8 @@ function toDaemonConfigFlags(
   if (flags.probeModel !== undefined) configFlags.probeModel = flags.probeModel;
   if (flags.transcriptRetentionDays !== undefined)
     configFlags.transcriptRetentionDays = flags.transcriptRetentionDays;
+  if (flags.fleetConfig !== undefined)
+    configFlags.fleetConfig = flags.fleetConfig;
   return configFlags;
 }
 
@@ -105,6 +107,14 @@ export const daemonCommand = buildCommand<
         placeholder: "n",
         optional: true,
       },
+      fleetConfig: {
+        kind: "parsed",
+        parse: String,
+        brief:
+          "path to the fleet policy file: fleet-wide defaults plus per-repository overrides (default <state-dir>/fleet.json)",
+        placeholder: "path",
+        optional: true,
+      },
       verbose: sharedFlags.verbose,
     } as const satisfies FlagParametersForType<
       DaemonFlags & { verbose: boolean },
@@ -132,6 +142,16 @@ process (a service manager, or an interrupt signal). A restart loses no work
 in flight — every session container runs detached, settles its own Attempt
 against the tracker, and is re-adopted by container label the next time the
 daemon lists what is still running for that repository.
+
+Fleet policy — max_workers, max_open_prs, worker_model, retry_model,
+worker_timeout_minutes, worker_stall_minutes, worker_max_turns,
+worker_max_cost_usd, timezone/work_start_hour/work_end_hour — is read from
+--fleet-config's file: a top-level "defaults" object plus a "repositories"
+object keyed by "owner/name", each holding the same fields; a repository's
+own value wins, an absent one falls back to "defaults", and either falling
+back to this package's built-in default. A missing file is valid and yields
+those built-in defaults. There is no border-collie.json any more: it lived in
+the target repository, which was always the wrong place for loop policy.
 
 Requires BORDER_COLLIE_APP_ID, BORDER_COLLIE_APP_PRIVATE_KEY and
 CLAUDE_CODE_OAUTH_TOKEN in the environment, and a session image named either
