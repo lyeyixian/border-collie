@@ -39,6 +39,7 @@ function baseDeps(overrides: Partial<DaemonDeps> = {}): {
     listFleet: async () => [],
     mintToken: async (repository) => `token-${repository}`,
     tick: async () => tickResult(),
+    pruneTranscripts: async () => [],
     probe: async () => true,
     now: () => 0,
     sleep: async () => {},
@@ -289,5 +290,69 @@ describe("daemon", () => {
     const stillOpen = events.find((e) => e.kind === "breaker-still-open");
     expect(stillOpen?.level).toBe("warn");
     expect(stillOpen).toMatchObject({ trips: 2 });
+  });
+
+  it("runs the transcript retention sweep once per repository, after that repository's Tick", async () => {
+    const order: string[] = [];
+    const sweptRepositories: string[] = [];
+    const { deps } = baseDeps({
+      listFleet: async () => ["acme/widget"],
+      tick: async (repository) => {
+        order.push(`tick:${repository}`);
+        return tickResult();
+      },
+      pruneTranscripts: async (repository) => {
+        order.push(`sweep:${repository}`);
+        sweptRepositories.push(repository);
+        return [];
+      },
+      sleep: async () => {
+        await flush();
+        throw new StopDaemon();
+      },
+    });
+
+    await expect(daemon(deps)).rejects.toThrow(StopDaemon);
+    await vi.waitFor(() => expect(sweptRepositories).toEqual(["acme/widget"]));
+
+    expect(order).toEqual(["tick:acme/widget", "sweep:acme/widget"]);
+  });
+
+  it("reports a failed sweep for that repository without failing its Tick or touching a sibling", async () => {
+    const ticked: string[] = [];
+    const swept: string[] = [];
+    const { deps, events } = baseDeps({
+      listFleet: async () => ["acme/broken", "acme/widget"],
+      tick: async (repository) => {
+        ticked.push(repository);
+        return tickResult();
+      },
+      pruneTranscripts: async (repository) => {
+        if (repository === "acme/broken") {
+          throw new Error("disk full");
+        }
+        swept.push(repository);
+        return [];
+      },
+      sleep: async () => {
+        await flush();
+        throw new StopDaemon();
+      },
+    });
+
+    await expect(daemon(deps)).rejects.toThrow(StopDaemon);
+    await vi.waitFor(() =>
+      expect(ticked.sort()).toEqual(["acme/broken", "acme/widget"]),
+    );
+    await vi.waitFor(() => expect(swept).toEqual(["acme/widget"]));
+
+    // The Tick itself succeeded for the repository whose sweep failed — this
+    // is not the generic "repository unreachable" path.
+    expect(
+      events.find((e) => e.kind === "daemon-repository-unreachable"),
+    ).toBeUndefined();
+    const failed = events.find((e) => e.kind === "transcript-sweep-failed");
+    expect(failed?.level).toBe("warn");
+    expect(failed).toMatchObject({ reason: "disk full" });
   });
 });

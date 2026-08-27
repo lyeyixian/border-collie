@@ -12,6 +12,11 @@ import {
 import { ensureCheckout, execAtRepo } from "../adapters/checkout.js";
 import { loadConfigFile } from "../adapters/config-file.js";
 import {
+  pruneTranscripts,
+  realListTranscripts,
+  realRemoveTranscript,
+} from "../adapters/container.js";
+import {
   readScopeFromLabel,
   realExec,
   withDebugLogging,
@@ -300,6 +305,7 @@ function buildDaemonDeps(
   scheduleInterval: IntervalScheduler,
 ): DaemonDeps {
   const credentials = { appId: config.appId, privateKey: config.appPrivateKey };
+  const transcriptsRoot = join(config.stateDir, "transcripts");
   return {
     listFleet: async () => {
       const repositories = await listFleetRepositories(credentials, now());
@@ -334,9 +340,21 @@ function buildDaemonDeps(
           image: config.image,
           ghToken: token,
           claudeCodeOAuthToken: config.claudeCodeOAuthToken,
-          transcriptsRoot: join(config.stateDir, "transcripts"),
+          transcriptsRoot,
         },
       });
+    },
+    pruneTranscripts: (repository) => {
+      const repoLog = log.child({ repository });
+      return pruneTranscripts(
+        repository,
+        transcriptsRoot,
+        config.transcriptRetentionMs,
+        withDebugLogging(realExec, repoLog),
+        realListTranscripts,
+        realRemoveTranscript,
+        now(),
+      );
     },
     probe: () => probeEnvironment(config.probeModel),
     now,

@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import { APP_ID_ENV, APP_PRIVATE_KEY_ENV } from "./app-auth.js";
+import { DEFAULT_TRANSCRIPT_RETENTION_DAYS } from "./container.js";
 import { isValidTimeZone, type WorkingHours } from "./work-hours.js";
 
 /** File name looked up at the target repo's root. */
@@ -13,6 +14,12 @@ export const WORKER_IMAGE_ENV = "BORDER_COLLIE_WORKER_IMAGE";
 
 /** The daemon's own local checkout directory, under the operator-supplied home directory (issue #183). */
 export const DEFAULT_STATE_DIR_NAME = ".border-collie";
+
+/** Env var name for the transcript retention sweep's window, in days (issue #196). */
+export const TRANSCRIPT_RETENTION_DAYS_ENV =
+  "BORDER_COLLIE_TRANSCRIPT_RETENTION_DAYS";
+
+const MS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const DEFAULT_MAX_WORKERS = 3;
 const DEFAULT_MAX_OPEN_PRS = 5;
@@ -285,6 +292,8 @@ export interface DaemonFlags {
   stateDir?: string;
   /** Model the circuit breaker's recovery probe runs on — shared across every repository (an infrastructure failure is account-wide, not per-repository). */
   probeModel?: string;
+  /** Transcript retention sweep's window, in days (issue #196; default `DEFAULT_TRANSCRIPT_RETENTION_DAYS`). */
+  transcriptRetentionDays?: number;
 }
 
 /**
@@ -311,6 +320,12 @@ export interface DaemonConfig {
   claudeCodeOAuthToken: string;
   /** Model the circuit breaker's recovery probe runs on, shared across every repository. */
   probeModel: string;
+  /**
+   * The transcript retention sweep's window (issue #196), run once per
+   * repository after that repository's own Tick — see `pruneTranscripts`
+   * (adapters/container.ts) and `transcriptsToPrune` (core/container.ts).
+   */
+  transcriptRetentionMs: number;
 }
 
 /**
@@ -350,6 +365,17 @@ export function resolveDaemonConfig(
     flags.probeModel ?? DEFAULT_PROBE_MODEL,
     "probe_model",
   );
+  const rawTranscriptRetentionDaysEnv = env[TRANSCRIPT_RETENTION_DAYS_ENV];
+  const transcriptRetentionDays = asPositiveInt(
+    flags.transcriptRetentionDays ??
+      (rawTranscriptRetentionDaysEnv === undefined
+        ? DEFAULT_TRANSCRIPT_RETENTION_DAYS
+        : /^\d+$/.test(rawTranscriptRetentionDaysEnv)
+          ? Number(rawTranscriptRetentionDaysEnv)
+          : rawTranscriptRetentionDaysEnv),
+    `transcript retention days (--transcript-retention-days or ${TRANSCRIPT_RETENTION_DAYS_ENV})`,
+  );
+  const transcriptRetentionMs = transcriptRetentionDays * MS_PER_DAY;
   return {
     pollSeconds,
     image,
@@ -358,5 +384,6 @@ export function resolveDaemonConfig(
     appPrivateKey,
     claudeCodeOAuthToken,
     probeModel,
+    transcriptRetentionMs,
   };
 }

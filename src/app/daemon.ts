@@ -39,6 +39,16 @@ export interface DaemonDeps {
     token: string,
     dispatchPaused: boolean,
   ) => Promise<TickResult>;
+  /**
+   * The transcript retention sweep (issue #196), run once per repository
+   * after that repository's own Tick, over that repository's transcript
+   * directory alone — liveness is read fresh from the container labels
+   * inside this call, the same way the Tick itself reads Worker liveness.
+   * Returns the paths it removed. Never invoked for a repository whose Tick
+   * itself threw; a failure here is reported and skipped rather than
+   * treated as the repository being unreachable this poll.
+   */
+  pruneTranscripts: (repository: string) => Promise<string[]>;
   /** The circuit breaker's recovery probe — shared across every repository, since an infrastructure failure is an account-wide condition, not a per-repository one. */
   probe: () => Promise<boolean>;
   now: () => number;
@@ -114,6 +124,25 @@ export async function daemon(deps: DaemonDeps): Promise<never> {
           msg: `${repository}: circuit breaker open: ${result.infraFailures} infrastructure failure${result.infraFailures === 1 ? "" : "s"} this Tick — dispatch paused, claims held, probing in ${Math.round(nextProbeMs / 60_000)}m.`,
           infraFailures: result.infraFailures,
           nextProbeMs,
+        });
+      }
+      try {
+        const removed = await deps.pruneTranscripts(repository);
+        if (removed.length > 0) {
+          repoLog({
+            kind: "transcript-sweep",
+            level: "debug",
+            msg: `${repository}: transcript retention sweep removed ${removed.length} file${removed.length === 1 ? "" : "s"}`,
+            removed: removed.length,
+          });
+        }
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        repoLog({
+          kind: "transcript-sweep-failed",
+          level: "warn",
+          msg: `${repository}: transcript retention sweep failed (${reason}) — transcripts kept, next Tick's sweep tries again`,
+          reason,
         });
       }
     } catch (error) {
