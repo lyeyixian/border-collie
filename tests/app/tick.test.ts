@@ -1,12 +1,19 @@
-import { mkdtempSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import type { Exec } from "../../src/adapters/tracker.js";
-import { tickOnce } from "../../src/app/tick.js";
+import { type TickDeps, tickOnce } from "../../src/app/tick.js";
+import { BREAKER_BASE_COOLDOWN_MS } from "../../src/core/breaker.js";
 import { resolveConfig } from "../../src/core/config.js";
 import type { Log, LogEvent } from "../../src/core/log.js";
-import { SCOPE_LABEL } from "../../src/core/types.js";
+import { WORKER_SKILL_FILE } from "../../src/core/scaffold.js";
+import {
+  CLAIM_LABEL,
+  CLAIM_MARKER,
+  SCOPE_LABEL,
+  VOID_MARKER,
+} from "../../src/core/types.js";
 
 /** A `Log` that discards everything, for tests uninterested in narration. */
 function fakeLog(): Log {
@@ -210,5 +217,130 @@ describe("tickOnce on the daemon path (issue #181)", () => {
     expect(run.at(-1)).toContain("border-collie refine");
     expect(run.at(-1)).toContain("--in-place");
     expect(calls.some((c) => c[0] === "git")).toBe(false);
+  });
+});
+
+const VOIDED_AT = "2026-01-01T00:05:00.000Z";
+
+/** Fakes the subprocess seam `readScope` drives, the same shape as `tests/adapters/tracker.test.ts`'s own helper. */
+function fakeTrackerExec(api: Record<string, unknown>): Exec {
+  return async (cmd, args) => {
+    if (args[0] === "pr" && args[1] === "list") return "[]";
+    if (args[0] === "run" && args[1] === "list") return "[]";
+    if (args[0] === "api") {
+      const endpoint = args[1] ?? "";
+      if (!(endpoint in api)) {
+        throw new Error(`unexpected gh api call: ${[cmd, ...args].join(" ")}`);
+      }
+      return JSON.stringify(api[endpoint]);
+    }
+    throw new Error(`unexpected gh call: ${[cmd, ...args].join(" ")}`);
+  };
+}
+
+/**
+ * A tracker holding one open, claimed ticket whose Attempt was voided and
+ * never released — `deriveBreaker` reads this as an open breaker with no
+ * help from anything but the tracker (`core/breaker.ts`).
+ */
+function trackerWithHeldVoid(): Exec {
+  return fakeTrackerExec({
+    [SUB_ISSUES]: [
+      [
+        {
+          number: 5,
+          title: "Ticket #5",
+          state: "open",
+          assignees: [],
+          labels: [{ name: "ready-for-agent" }, { name: CLAIM_LABEL }],
+          issue_dependencies_summary: { blocked_by: 0 },
+        },
+      ],
+    ],
+    [comments(5)]: [
+      [
+        { body: `${CLAIM_MARKER}\n🐕 claimed` },
+        { body: `${VOID_MARKER}\n🐕 Attempt 1 voided`, created_at: VOIDED_AT },
+      ],
+    ],
+    [CLOSED_PULLS]: [[]],
+  });
+}
+
+/** A checkout root carrying the Worker skill, so `requiredSkillMissing` never confounds the comparisons below. */
+function checkoutWithSkill(): string {
+  const dir = mkdtempSync(join(tmpdir(), "border-collie-tick-test-"));
+  mkdirSync(join(dir, WORKER_SKILL_FILE, ".."), { recursive: true });
+  writeFileSync(join(dir, WORKER_SKILL_FILE), "");
+  return dir;
+}
+
+function tickDeps(exec: Exec, now: () => number): TickDeps {
+  return {
+    log: fakeLog(),
+    now,
+    scheduleInterval: () => () => {},
+    cwd: checkoutWithSkill(),
+    exec,
+  };
+}
+
+/**
+ * ADR 0009 ("The set of state the daemon may hold across Ticks... is
+ * exactly what `run` already held, and the list is closed"): a circuit
+ * breaker held in a caller's memory is only ever a redundant early warning
+ * — `tickOnce` also derives the same breaker fresh from the tracker's own
+ * void markers (`core/breaker.ts`'s `deriveBreaker`), so the tests below
+ * pin the property the ADR actually relies on: whatever the caller's own
+ * memory says, the tracker alone already governs the decision once it has
+ * caught up. A future change that makes some other decision depend on
+ * caller-held memory the tracker cannot reconstruct is exactly the drift
+ * this file exists to catch. The state list itself is already named in one
+ * place (ADR 0009, echoed in `app/daemon.ts`'s own doc comment) — this file
+ * is what proves the claim the list makes, rather than restating it.
+ */
+describe("tickOnce (ADR 0009 state discipline)", () => {
+  it("plans the same actions for two consecutive Ticks over an unchanged tracker", async () => {
+    const now = () => Date.parse(VOIDED_AT) + 1_000;
+    const first = await tickOnce(
+      config,
+      true,
+      false,
+      tickDeps(trackerWithHeldVoid(), now),
+    );
+    const second = await tickOnce(
+      config,
+      true,
+      false,
+      tickDeps(trackerWithHeldVoid(), now),
+    );
+
+    expect(second.actions).toEqual(first.actions);
+    expect(second.dispatchPaused).toBe(first.dispatchPaused);
+    expect(second.world).toEqual(first.world);
+  });
+
+  it("reaches the same decision whether the caller remembers a breaker the tracker already records or has just restarted with no memory of it", async () => {
+    // Well inside the base cooldown, so the tracker-derived breaker is still
+    // open on its own — the caller's own memory is not what is deciding this.
+    const now = () => Date.parse(VOIDED_AT) + BREAKER_BASE_COOLDOWN_MS / 2;
+
+    const keptRunning = await tickOnce(
+      config,
+      true,
+      // A process that watched the trip happen and still remembers it.
+      true,
+      tickDeps(trackerWithHeldVoid(), now),
+    );
+    const restarted = await tickOnce(
+      config,
+      true,
+      // A process restarted since — no memory of the trip at all.
+      false,
+      tickDeps(trackerWithHeldVoid(), now),
+    );
+
+    expect(restarted.dispatchPaused).toBe(true);
+    expect(restarted).toEqual(keptRunning);
   });
 });
