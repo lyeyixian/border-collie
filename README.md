@@ -115,7 +115,9 @@ Requires:
 - `CLAUDE_CODE_OAUTH_TOKEN` in the environment: a subscription OAuth token (`claude setup-token`), handed to every session container.
 - A session image named by `--image` or `BORDER_COLLIE_WORKER_IMAGE`: the border-collie base image (Node, git, the GitHub CLI, Claude Code and border-collie itself) a Worker Attempt's container runs from.
 
-Other flags: `--poll-seconds` (default 30 — how often the fleet is polled, and how long a repository must idle before it is due again), `--state-dir` (default `~/.border-collie` — where the daemon keeps its own local checkout of each repository, needed for Conflict Worker and Refinement round dispatch until issue #181 moves those into containers too), `--probe-model` (default `sonnet` — the model the circuit breaker's recovery probe runs on).
+Other flags: `--poll-seconds` (default 30 — how often the fleet is polled, and how long a repository must idle before it is due again), `--state-dir` (default `~/.border-collie` — where the daemon keeps its own local checkout of each repository, needed for Conflict Worker and Refinement round dispatch until issue #181 moves those into containers too), `--probe-model` (default `sonnet` — the model the circuit breaker's recovery probe runs on), `--transcript-retention-days` or `BORDER_COLLIE_TRANSCRIPT_RETENTION_DAYS` (default 14 — how long a session container's transcript is kept under `<state-dir>/transcripts` before the daemon's own retention sweep deletes it; a transcript whose Attempt is still running is never removed, however old).
+
+After each repository's Tick, the daemon prunes that repository's own transcript directory alone, reading which sessions are still live fresh from the container labels. A sweep that fails is reported and skipped, the same way an unreachable repository is: it neither fails that repository's Tick nor touches any other repository's.
 
 A minimal systemd unit:
 

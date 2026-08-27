@@ -119,6 +119,8 @@ export type LogEvent = LogEventBase &
       }
     | { kind: "daemon-fleet-unreachable"; reason: string }
     | { kind: "daemon-repository-unreachable"; reason: string }
+    | { kind: "transcript-sweep"; removed: number }
+    | { kind: "transcript-sweep-failed"; reason: string }
   );
 
 /**

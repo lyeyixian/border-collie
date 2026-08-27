@@ -190,6 +190,7 @@ const FAKE_DAEMON_CONFIG: DaemonConfig = {
   appPrivateKey: "-----BEGIN PRIVATE KEY-----",
   claudeCodeOAuthToken: "claude-token",
   probeModel: "sonnet",
+  transcriptRetentionMs: 14 * 24 * 60 * 60 * 1000,
 };
 
 function fakeContext(
@@ -690,7 +691,7 @@ describe("daemon command", () => {
     expect(fake.daemonCalls).toEqual([FAKE_DAEMON_CONFIG]);
   });
 
-  it("forwards --poll-seconds, --image, --state-dir and --probe-model to config resolution", async () => {
+  it("forwards --poll-seconds, --image, --state-dir, --probe-model and --transcript-retention-days to config resolution", async () => {
     const fake = fakeContext();
 
     await runCli(
@@ -704,6 +705,8 @@ describe("daemon command", () => {
         "/srv/border-collie",
         "--probe-model",
         "opus",
+        "--transcript-retention-days",
+        "7",
       ],
       fake.context,
     );
@@ -714,6 +717,7 @@ describe("daemon command", () => {
         image: "ghcr.io/acme/other:latest",
         stateDir: "/srv/border-collie",
         probeModel: "opus",
+        transcriptRetentionDays: 7,
       },
     ]);
   });

@@ -10,8 +10,10 @@ import {
   resolveWorkerConfig,
   type Scope,
   scopeFromFlags,
+  TRANSCRIPT_RETENTION_DAYS_ENV,
   WORKER_IMAGE_ENV,
 } from "../../src/core/config.js";
+import { DEFAULT_TRANSCRIPT_RETENTION_MS } from "../../src/core/container.js";
 
 const PARENT_SCOPE: Scope = { kind: "parent", parent: 1 };
 
@@ -434,6 +436,7 @@ describe("resolveDaemonConfig", () => {
       appPrivateKey: "-----BEGIN PRIVATE KEY-----",
       claudeCodeOAuthToken: "claude-token",
       probeModel: "sonnet",
+      transcriptRetentionMs: DEFAULT_TRANSCRIPT_RETENTION_MS,
     });
   });
 
@@ -449,6 +452,56 @@ describe("resolveDaemonConfig", () => {
     expect(resolved.pollSeconds).toBe(60);
     expect(resolved.image).toBe("ghcr.io/acme/other:latest");
     expect(resolved.stateDir).toBe("/srv/border-collie");
+  });
+
+  it("lets a flag override the transcript retention window", () => {
+    const resolved = resolveDaemonConfig(
+      { transcriptRetentionDays: 7 },
+      ENV,
+      "/home/operator",
+    );
+
+    expect(resolved.transcriptRetentionMs).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it("lets the environment override the transcript retention window when no flag is given", () => {
+    const resolved = resolveDaemonConfig(
+      {},
+      { ...ENV, [TRANSCRIPT_RETENTION_DAYS_ENV]: "3" },
+      "/home/operator",
+    );
+
+    expect(resolved.transcriptRetentionMs).toBe(3 * 24 * 60 * 60 * 1000);
+  });
+
+  it("a flag wins over the environment for the transcript retention window", () => {
+    const resolved = resolveDaemonConfig(
+      { transcriptRetentionDays: 7 },
+      { ...ENV, [TRANSCRIPT_RETENTION_DAYS_ENV]: "3" },
+      "/home/operator",
+    );
+
+    expect(resolved.transcriptRetentionMs).toBe(7 * 24 * 60 * 60 * 1000);
+  });
+
+  it("names an invalid transcript retention window rather than crashing", () => {
+    expect(() =>
+      resolveDaemonConfig(
+        { transcriptRetentionDays: 0 },
+        ENV,
+        "/home/operator",
+      ),
+    ).toThrow(ConfigError);
+  });
+
+  it("names a malformed environment value for the transcript retention window, showing the bad input rather than a stray null", () => {
+    expect(() =>
+      resolveDaemonConfig(
+        {},
+        { ...ENV, [TRANSCRIPT_RETENTION_DAYS_ENV]: "abc" },
+        "/home/operator",
+      ),
+    ).toThrow('got "abc"');
   });
 
   it("names a missing worker image rather than crashing", () => {

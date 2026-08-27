@@ -7,7 +7,9 @@ import {
   ConfigError,
   type DaemonConfig,
   type DaemonFlags,
+  TRANSCRIPT_RETENTION_DAYS_ENV,
 } from "../core/config.js";
+import { DEFAULT_TRANSCRIPT_RETENTION_DAYS } from "../core/container.js";
 import type { Context } from "./context.js";
 import { parseInteger, sharedFlags } from "./flags.js";
 
@@ -21,6 +23,8 @@ function toDaemonConfigFlags(
   if (flags.image !== undefined) configFlags.image = flags.image;
   if (flags.stateDir !== undefined) configFlags.stateDir = flags.stateDir;
   if (flags.probeModel !== undefined) configFlags.probeModel = flags.probeModel;
+  if (flags.transcriptRetentionDays !== undefined)
+    configFlags.transcriptRetentionDays = flags.transcriptRetentionDays;
   return configFlags;
 }
 
@@ -92,6 +96,13 @@ export const daemonCommand = buildCommand<
         brief:
           "model the circuit breaker's recovery probe runs on (default sonnet)",
         placeholder: "name",
+        optional: true,
+      },
+      transcriptRetentionDays: {
+        kind: "parsed",
+        parse: parseInteger,
+        brief: `days a session container's transcript is kept before the retention sweep deletes it (default ${DEFAULT_TRANSCRIPT_RETENTION_DAYS}, or set ${TRANSCRIPT_RETENTION_DAYS_ENV})`,
+        placeholder: "n",
         optional: true,
       },
       verbose: sharedFlags.verbose,
