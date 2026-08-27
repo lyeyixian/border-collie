@@ -30,13 +30,13 @@ const routeMap = buildRouteMap({
   docs: {
     brief:
       "an orchestration loop that herds a ticket DAG to Done with a fleet of Claude Code agents",
-    fullDescription: `Config: border-collie.json at the target repo root,
-e.g. {"max_workers": 3, "max_open_prs": 5, "poll_seconds": 30,
-"worker_model": "sonnet", "retry_model": "opus",
-"worker_timeout_minutes": 45, "worker_stall_minutes": 10,
-"worker_max_turns": 200, "worker_max_cost_usd": 20}. Scope lives on the
-tracker instead (CONTEXT.md "Scope"): label the parent issue
-border-collie:scope, or pass --parent <n> / --all.`,
+    fullDescription: `Config: CLI flags over this package's own built-in defaults for
+tick/run/worker/declare — there is no target-repo config file any more
+(border-collie.json is retired). daemon additionally reads fleet-wide
+defaults and per-repository overrides from its own fleet policy file
+(--fleet-config; "border-collie daemon --help"). Scope lives on the tracker
+(CONTEXT.md "Scope"): label the parent issue border-collie:scope, or pass
+--parent <n> / --all.`,
   },
 });
 

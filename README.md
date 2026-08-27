@@ -115,9 +115,29 @@ Requires:
 - `CLAUDE_CODE_OAUTH_TOKEN` in the environment: a subscription OAuth token (`claude setup-token`), handed to every session container.
 - A session image named by `--image` or `BORDER_COLLIE_WORKER_IMAGE`: the border-collie base image (Node, git, the GitHub CLI, Claude Code and border-collie itself) a Worker Attempt's container runs from.
 
-Other flags: `--poll-seconds` (default 30 — how often the fleet is polled, and how long a repository must idle before it is due again), `--state-dir` (default `~/.border-collie` — where the daemon keeps its own local checkout of each repository, needed for Conflict Worker and Refinement round dispatch until issue #181 moves those into containers too), `--probe-model` (default `sonnet` — the model the circuit breaker's recovery probe runs on), `--transcript-retention-days` or `BORDER_COLLIE_TRANSCRIPT_RETENTION_DAYS` (default 14 — how long a session container's transcript is kept under `<state-dir>/transcripts` before the daemon's own retention sweep deletes it; a transcript whose Attempt is still running is never removed, however old).
+Other flags: `--poll-seconds` (default 30 — how often the fleet is polled, and how long a repository must idle before it is due again), `--state-dir` (default `~/.border-collie` — where the daemon keeps its own local checkout of each repository, needed for Conflict Worker and Refinement round dispatch until issue #181 moves those into containers too), `--probe-model` (default `sonnet` — the model the circuit breaker's recovery probe runs on), `--transcript-retention-days` or `BORDER_COLLIE_TRANSCRIPT_RETENTION_DAYS` (default 14 — how long a session container's transcript is kept under `<state-dir>/transcripts` before the daemon's own retention sweep deletes it; a transcript whose Attempt is still running is never removed, however old), `--fleet-config` (default `<state-dir>/fleet.json` — fleet policy, below).
 
 After each repository's Tick, the daemon prunes that repository's own transcript directory alone, reading which sessions are still live fresh from the container labels. A sweep that fails is reported and skipped, the same way an unreachable repository is: it neither fails that repository's Tick nor touches any other repository's.
+
+### Fleet policy
+
+There is no `border-collie.json` any more — it lived in the target repository, which was always the wrong place for loop policy a repository could edit out from under the daemon herding it (ADR 0009). Instead, `--fleet-config`'s file holds fleet-wide defaults plus per-repository overrides, read fresh every Tick so an edit takes effect without a restart:
+
+```json
+{
+  "defaults": { "max_open_prs": 5, "worker_model": "sonnet" },
+  "repositories": {
+    "acme/website": { "max_open_prs": 10 },
+    "acme/internal-tools": {
+      "timezone": "America/New_York",
+      "work_start_hour": 20,
+      "work_end_hour": 8
+    }
+  }
+}
+```
+
+Both `defaults` and each entry under `repositories` (keyed by `"owner/name"`) accept the same fields — `max_workers`, `max_open_prs`, `worker_model`, `retry_model`, `worker_timeout_minutes`, `worker_stall_minutes`, `worker_max_turns`, `worker_max_cost_usd`, and `timezone`/`work_start_hour`/`work_end_hour` together as the working-hours gate. A field a repository states wins over `defaults`; a field neither states falls back to this package's own built-in default. An unknown key is a named error rather than silently ignored, and a missing file is valid — every repository simply runs on the built-in defaults.
 
 A minimal systemd unit:
 

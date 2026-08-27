@@ -191,6 +191,7 @@ const FAKE_DAEMON_CONFIG: DaemonConfig = {
   claudeCodeOAuthToken: "claude-token",
   probeModel: "sonnet",
   transcriptRetentionMs: 14 * 24 * 60 * 60 * 1000,
+  fleetConfigPath: "/home/operator/.border-collie/fleet.json",
 };
 
 function fakeContext(
@@ -691,7 +692,7 @@ describe("daemon command", () => {
     expect(fake.daemonCalls).toEqual([FAKE_DAEMON_CONFIG]);
   });
 
-  it("forwards --poll-seconds, --image, --state-dir, --probe-model and --transcript-retention-days to config resolution", async () => {
+  it("forwards --poll-seconds, --image, --state-dir, --probe-model, --transcript-retention-days and --fleet-config to config resolution", async () => {
     const fake = fakeContext();
 
     await runCli(
@@ -707,6 +708,8 @@ describe("daemon command", () => {
         "opus",
         "--transcript-retention-days",
         "7",
+        "--fleet-config",
+        "/etc/border-collie/fleet.json",
       ],
       fake.context,
     );
@@ -718,6 +721,7 @@ describe("daemon command", () => {
         stateDir: "/srv/border-collie",
         probeModel: "opus",
         transcriptRetentionDays: 7,
+        fleetConfig: "/etc/border-collie/fleet.json",
       },
     ]);
   });
