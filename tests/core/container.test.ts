@@ -8,6 +8,8 @@ import {
   type PrSessionLabels,
   parsePrSessionLabels,
   parseSessionLabels,
+  prSessionFromTranscriptFileName,
+  prTranscriptSessionKey,
   REPOSITORY_LABEL,
   repositoryImageSlug,
   type SessionLabels,
@@ -273,5 +275,113 @@ describe("encodePrSessionLabels / parsePrSessionLabels", () => {
     const raw = `${REPOSITORY_LABEL}=acme/widgets,${PR_LABEL}=30,${KIND_LABEL}=worker`;
 
     expect(parsePrSessionLabels(raw)).toBeUndefined();
+  });
+});
+
+describe("prSessionFromTranscriptFileName", () => {
+  it("parses the PR from a Conflict Worker's stdout transcript file name", () => {
+    expect(prSessionFromTranscriptFileName("pr-30-conflict.jsonl")).toEqual({
+      pr: 30,
+      kind: "conflict",
+    });
+  });
+
+  it("parses the PR from a Conflict Worker's stderr file name", () => {
+    expect(
+      prSessionFromTranscriptFileName("pr-30-conflict.stderr.log"),
+    ).toEqual({ pr: 30, kind: "conflict" });
+  });
+
+  it("parses the PR from a Refinement round's stdout transcript file name, dropping the round", () => {
+    expect(
+      prSessionFromTranscriptFileName("pr-30-refinement-round-2.jsonl"),
+    ).toEqual({ pr: 30, kind: "refinement" });
+  });
+
+  it("parses the PR from a Refinement round's stderr file name", () => {
+    expect(
+      prSessionFromTranscriptFileName("pr-30-refinement-round-2.stderr.log"),
+    ).toEqual({ pr: 30, kind: "refinement" });
+  });
+
+  it("parses nothing from a file this shape did not write", () => {
+    expect(
+      prSessionFromTranscriptFileName("ticket-1-attempt-1.jsonl"),
+    ).toBeUndefined();
+    expect(prSessionFromTranscriptFileName("declare.jsonl")).toBeUndefined();
+    expect(prSessionFromTranscriptFileName("notes.txt")).toBeUndefined();
+  });
+});
+
+describe("transcriptsToPrune (PR-scoped sessions)", () => {
+  const HOUR = 60 * 60 * 1000;
+  const DAY = 24 * HOUR;
+  const now = 30 * DAY;
+
+  function file(name: string, ageMs: number): TranscriptFile {
+    return { name, mtimeMs: now - ageMs };
+  }
+
+  it("prunes a Conflict Worker transcript older than the retention window", () => {
+    const files = [file("pr-30-conflict.jsonl", 15 * DAY)];
+
+    expect(transcriptsToPrune(files, now, 14 * DAY, new Set())).toEqual([
+      "pr-30-conflict.jsonl",
+    ]);
+  });
+
+  it("keeps a Conflict Worker transcript within the retention window", () => {
+    const files = [file("pr-30-conflict.jsonl", DAY)];
+
+    expect(transcriptsToPrune(files, now, 14 * DAY, new Set())).toEqual([]);
+  });
+
+  it("never prunes a PR-and-kind session still running, no matter its age", () => {
+    const files = [
+      file("pr-30-conflict.jsonl", 30 * DAY),
+      file("pr-30-conflict.stderr.log", 30 * DAY),
+    ];
+    const live = new Set([prTranscriptSessionKey(30, "conflict")]);
+
+    expect(transcriptsToPrune(files, now, 14 * DAY, live)).toEqual([]);
+  });
+
+  it("prunes a stale Conflict Worker transcript even while a Refinement round for the same PR is running", () => {
+    const files = [file("pr-30-conflict.jsonl", 20 * DAY)];
+    const live = new Set([prTranscriptSessionKey(30, "refinement")]);
+
+    expect(transcriptsToPrune(files, now, 14 * DAY, live)).toEqual([
+      "pr-30-conflict.jsonl",
+    ]);
+  });
+
+  it("keeps a live Refinement round's transcript regardless of which round is running", () => {
+    const files = [file("pr-30-refinement-round-1.jsonl", 20 * DAY)];
+    const live = new Set([prTranscriptSessionKey(30, "refinement")]);
+
+    expect(transcriptsToPrune(files, now, 14 * DAY, live)).toEqual([]);
+  });
+
+  it("never confuses a Ticket-and-Attempt key with a PR-and-kind key of the same numbers", () => {
+    const files = [file("pr-1-conflict.jsonl", 20 * DAY)];
+    const live = new Set([transcriptSessionKey(1, 1)]);
+
+    expect(transcriptsToPrune(files, now, 14 * DAY, live)).toEqual([
+      "pr-1-conflict.jsonl",
+    ]);
+  });
+
+  it("prunes only what is old, across a mixed directory of Ticket and PR sessions", () => {
+    const files = [
+      file("ticket-1-attempt-1.jsonl", 20 * DAY),
+      file("pr-30-conflict.jsonl", 20 * DAY),
+      file("pr-30-refinement-round-1.jsonl", HOUR),
+      file("notes.txt", 30 * DAY),
+    ];
+
+    expect(transcriptsToPrune(files, now, 14 * DAY, new Set())).toEqual([
+      "ticket-1-attempt-1.jsonl",
+      "pr-30-conflict.jsonl",
+    ]);
   });
 });
