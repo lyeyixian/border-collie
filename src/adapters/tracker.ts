@@ -756,13 +756,12 @@ export type ReadLiveWorkerTickets = (exec: Exec) => Promise<Set<number>>;
 export type ReadLiveConflictPrs = (exec: Exec) => Promise<Set<number>>;
 
 /**
- * The default `readLiveConflictPrs`: no backend dispatches a Conflict Worker
- * into a session container yet (issue #181 adds the capability; wiring it in
- * as a Tick's actual dispatch backend is a later cutover, same as issue #177
- * left `dispatchContainerWorker`/`liveContainerTickets` unwired), so nothing
- * is ever live by this read — the same "no fire-and-forget backend in
- * production yet" state `conflictWorkerLive` would otherwise silently assume
- * without a caller having to inject anything.
+ * The default `readLiveConflictPrs`, for a Tick that dispatches its Conflict
+ * Workers synchronously in-process (the Actions-hosted and manually-run
+ * paths): such a Tick has settled its Conflict Worker before it returns, so
+ * nothing is ever live across Ticks by this read. Only the daemon's Tick,
+ * which dispatches into a session container (issue #181), injects a real
+ * backend (`liveContainerPrs`, adapters/container.ts).
  */
 async function noLiveConflictPrs(): Promise<Set<number>> {
   return new Set();
@@ -785,9 +784,9 @@ async function noLiveConflictPrs(): Promise<Set<number>> {
  *
  * `readLiveConflictPrs` is the same idea for a Conflict Worker
  * (`OpenAgentPr.conflictWorkerLive`, issue #181): `noLiveConflictPrs` by
- * default, since dispatching one into a session container is not yet any
- * caller's default; `liveContainerPrs` (adapters/container.ts) is the real
- * backend, injected once a caller actually dispatches that way.
+ * default for the synchronous in-process callers; `liveContainerPrs`
+ * (adapters/container.ts) is the session-container backend's own, injected
+ * by the daemon's Tick, which dispatches that way.
  */
 export async function readScope(
   scope: Scope,
