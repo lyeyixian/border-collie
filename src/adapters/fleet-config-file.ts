@@ -7,6 +7,12 @@ import { ConfigError, FLEET_CONFIG_FILE } from "../core/config.js";
  * which is exactly what retires `border-collie.json`. An absent file is
  * fine: `parseFleetConfig` (core/config.ts) treats `undefined` as no
  * defaults and no overrides.
+ *
+ * Returns `unknown`, not a `FleetConfig`, on purpose: this adapter's job
+ * (ADR 0005) is fetching bytes and parsing JSON syntax, nothing more —
+ * checking that the parsed value actually has the shape of a fleet policy
+ * file is `parseFleetConfig`'s job, in `core`, where it can be pure and
+ * tested without touching a filesystem.
  */
 export function loadFleetConfigFile(path: string): unknown {
   let raw: string;
