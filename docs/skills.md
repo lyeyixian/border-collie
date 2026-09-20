@@ -31,8 +31,8 @@ to change.
 
 | Session in the workflow | Entry skill | Pulls in | Exists | To do |
 | --- | --- | --- | --- | --- |
-| Planning | `grill-me`, then `to-spec`, then `to-tickets` | research subagents | Yes, upstream | `to-tickets` writes to the tracker the daemon watches, with the label vocabulary below |
-| Work, with me | `implement` | `tdd`, `code-review`, `codebase-design` | Yes, vendored | Nothing |
+| Planning | `grill`, then `to-spec`, then `to-tickets` | research subagents | Upstream, to fork | `grill` shows options as bullets, not paragraphs. `to-tickets` writes to the tracker the daemon watches, with the label vocabulary below |
+| Work, with me | `implement` | `tdd`, `code-review`, `codebase-design` | Upstream, to fork | Nothing beyond the fork |
 | Work, autonomous | `implement` | Same | Yes | Nothing. The daemon's prompt is the only difference |
 | Address review | `address-review` | `tdd` | No | New, small |
 | Triage | `triage` | `tdd` for the failing test | No | New. The most novel one. Runs on every bug, no label needed |
@@ -43,8 +43,9 @@ to change.
 | Release | None | | This repo's own `release` skill covers this repo | Not an agent job. A tag and a pipeline |
 | Review | None | | Hosted product | Becomes a row only if that changes |
 
-Four new skills, one wrapper, one edit. Everything else is composition of
-what is already vendored.
+Four new skills, one wrapper, and a fork of the seven I already use. The
+fork comes first: every skill in the table, existing or new, lives in my
+own library from then on, not in a plugin I install (LIFE-45).
 
 ## The new skills
 
@@ -117,10 +118,17 @@ session starts.
 
 ## Where skills live
 
-In the target repository, under its own skills directory. `init` already
-vendors the closure `implement` reaches there, byte-identical to upstream,
-and leaves a re-run alone. The new skills go in the same place by the same
-route.
+In my own skills library, one repo I maintain, and from there vendored
+into each target repository under its own skills directory. `init` does
+the vendoring today from an upstream plugin, byte-identical, and leaves a
+re-run alone. After the fork it vendors from my library instead, and the
+byte-identical rule points there. Each target repo also gets an
+`AGENTS.md` rather than a tool-specific instructions file, so the same
+context reads for any agent (LIFE-45).
+
+Owning the skills is what makes the new ones and the edits possible.
+`grill` in bullets, `to-tickets` writing to Linear, `triage` at all: none
+of those land in an upstream plugin on my schedule.
 
 This matters for the session client: a session started in a worktree of
 the repo loads the repo's skills with no extra setup. Anything that runs
